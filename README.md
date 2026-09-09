@@ -142,12 +142,21 @@ passes unnoticed.
 
 ## Getting started
 
-You need Go 1.26 and a `restic` binary.
+You need Go 1.26.
 
 ```sh
 make build
+make restic                  # the pinned restic, verified against deploy/restic.pin
 ./sion-backup paths          # where it will keep things — nothing is in this tree
 ./sion-backup doctor         # what is missing
+```
+
+For a machine rather than a working copy, take the binaries from a
+[release](https://github.com/jroedel/sion-backup/releases) and verify them
+before running anything:
+
+```sh
+sha256sum --ignore-missing -c SHA256SUMS
 ```
 
 To set up a machine:
@@ -411,6 +420,11 @@ Named here rather than left to be discovered.
   `TestTheRunnerCannotDeleteBackupData` fails if they come back. See
   [`docs/model.md`](docs/model.md) §5.4 — the payoff is that no credential
   anywhere in the system can delete backup data.
+- **restic is pinned but not signature-checked.** `deploy/restic.pin` carries
+  the version and upstream hashes, and every installer verifies against it —
+  but the hashes were copied from upstream's `SHA256SUMS` by hand. Verifying
+  restic's GPG signature when bumping the pin is a manual step, documented in
+  that file rather than automated.
 - **The whole Eumaeus side is unbuilt.** The client speaks five endpoints that
   do not exist yet, so nothing can currently enrol. See
   [`docs/eumaeus-api.md`](docs/eumaeus-api.md) §10 for what is done on this
