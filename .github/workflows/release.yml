@@ -1,0 +1,103 @@
+name: Release
+
+# Tag-triggered, because a release is a deliberate act and a push to main is
+# not. `git tag v0.1.0 && git push --tags` is the whole interface.
+on:
+  push:
+    tags: ['v*']
+
+# Only this job may write, and only to releases. Everything else in this
+# repository runs read-only.
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          # `make release` stamps the version from `git describe --tags`, and
+          # actions/checkout fetches a shallow, tagless tree by default.
+          # Without this every binary reports its version as a bare commit
+          # hash — which is exactly the field the fleet dashboard uses to
+          # answer "which machines are behind".
+          fetch-depth: 0
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      # The restic this release is tested against, verified against the pin.
+      # Fetching it here means the real-restic tests actually run before a
+      # release is cut, rather than skipping as they do on a bare runner.
+      - name: Fetch the pinned restic
+        run: |
+          scripts/fetch-restic linux amd64 "$RUNNER_TEMP/bin"
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+
+      # Deliberately not `make check`: that target runs `go fmt`, which
+      # rewrites files rather than complaining about them, so it would pass on
+      # a tree CI should have rejected. Formatting is enforced on every push by
+      # the ci workflow; what matters here is that the tag builds for every
+      # target and its tests pass.
+      - name: Verify before building
+        run: |
+          go vet ./...
+          go test ./...
+          make cross
+
+      - name: Build every binary
+        run: make release-all
+
+      - name: Checksums
+        run: make checksums
+
+      # Shipped so an installer can verify restic without cloning the repo.
+      - name: Include the restic pin
+        run: cp deploy/restic.pin dist/
+
+      - name: Write the release notes
+        run: |
+          cat > "$RUNNER_TEMP/notes.md" <<'NOTES'
+          ## Installing
+
+          Download the binary for the machine and **verify it before running
+          it** — it is about to hold the credentials to somebody's off-site
+          copy.
+
+          ```sh
+          sha256sum --ignore-missing -c SHA256SUMS
+          ```
+
+          Then fetch the restic build this release was tested against.
+          `restic.pin` carries the version and its upstream hashes; from a
+          clone, `scripts/fetch-restic` does the download and the check.
+
+          Enrol the machine with a code from Eumaeus:
+
+          ```sh
+          sion-backup enroll --code XXXX-XXXX
+          sion-backup doctor
+          ```
+
+          The machine keeps exactly one secret: a revocable token. The S3 keys
+          and the repository password are fetched at the start of every backup
+          and discarded when it ends.
+
+          Service files for systemd, launchd and Windows are in `deploy/`.
+
+          ---
+          NOTES
+
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" \
+            --title "$GITHUB_REF_NAME" \
+            --generate-notes \
+            --notes-file "$RUNNER_TEMP/notes.md" \
+            dist/sion-backup-* dist/SHA256SUMS dist/restic.pin

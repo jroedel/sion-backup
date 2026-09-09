@@ -37,6 +37,18 @@ jobs:
           go-version-file: go.mod
           cache: true
 
+      # Validates deploy/restic.pin on every push, and lets the real-restic
+      # tests run instead of skipping. A stale or wrong pin is then caught the
+      # day it is introduced rather than the day somebody installs from it.
+      #
+      # Unix only: the fetch script is /bin/sh, and the tests it unlocks skip
+      # on Windows anyway.
+      - name: Fetch the pinned restic
+        if: runner.os != 'Windows'
+        run: |
+          scripts/fetch-restic "" "" "$RUNNER_TEMP/bin"
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+
       - name: Build
         run: go build ./...
 

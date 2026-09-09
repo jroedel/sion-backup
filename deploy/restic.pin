@@ -1,0 +1,41 @@
+# The restic build this fleet runs, and the hashes that prove it.
+#
+# restic is the program that actually reads every file on somebody's computer
+# and holds the credentials to their off-site copy. It is downloaded from the
+# internet during installation. Verifying it is therefore not box-ticking: an
+# unverified binary here is a compromise of the machine and of the bucket, and
+# it is the single weakest link in an otherwise careful chain.
+#
+# These hashes are a subset of the upstream SHA256SUMS published with the
+# release, copied verbatim:
+#
+#   https://github.com/restic/restic/releases/download/v0.19.1/SHA256SUMS
+#
+# restic signs that file. If you are bumping the version, check the signature
+# before trusting the hashes you copy from it:
+#
+#   gpg --verify SHA256SUMS.asc SHA256SUMS
+#
+# The signing key is published at https://restic.net/gpg-key-alex.asc
+#
+# # Why pin at all
+#
+# Two reasons beyond supply chain. A pinned version means "which restic wrote
+# this snapshot", recorded on every run, is a fact rather than a guess. And a
+# repository written by a newer restic can require a newer restic to read —
+# the owner's restore card promises "any version 0.14 or newer will read this
+# backup", and that promise is only keepable if the fleet's version is known.
+#
+# # Format
+#
+# Shell-sourceable, and simple enough for the PowerShell installer to parse
+# with a regex. Keep it that way: this file is read by three different things
+# and none of them should need a YAML parser.
+
+RESTIC_VERSION=0.19.1
+
+RESTIC_SHA256_linux_amd64=f415415624dcc452f2a02b8c33641791a8c6d6d3b65bbb3543fcf9a25151585c
+RESTIC_SHA256_linux_arm64=a5f64aaab53d51e311fa3829124c5b703f2d14cf187d8640b6be3b2b49376465
+RESTIC_SHA256_darwin_amd64=c38d579622cf602f665234c5a8c315030b6cf70656028fe6dc29a786b60e5f35
+RESTIC_SHA256_darwin_arm64=7be0a144ccc377880f294204aa271d76e4b79554b42a751151d425ce6ebac143
+RESTIC_SHA256_windows_amd64=da948ad707ed690426473aaba2046cd61f8f90f6f0e7dab6be0d5796531de67d

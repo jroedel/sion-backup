@@ -73,6 +73,13 @@ cover: ## Run the tests and open a coverage report
 	$(GO) test -coverprofile=coverage.out ./...
 	$(GO) tool cover -html=coverage.out
 
+.PHONY: restic
+restic: ## Download the pinned restic and verify it (make restic GOOS=windows)
+	@# The version and its hashes live in deploy/restic.pin, copied from a
+	@# signed upstream SHA256SUMS. The script refuses anything that does not
+	@# match and leaves nothing behind when it does.
+	./scripts/fetch-restic "$(GOOS)" "$(GOARCH)" $(DIST)
+
 .PHONY: api-check
 api-check: ## Validate docs/openapi.yaml and every example in it
 	@# A venv rather than the system Python: this is the only Python in the

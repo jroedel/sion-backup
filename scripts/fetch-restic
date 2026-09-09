@@ -1,0 +1,121 @@
+#!/bin/sh
+# Download the pinned restic build and verify it before it is ever executed.
+#
+#   scripts/fetch-restic [GOOS] [GOARCH] [destination-dir]
+#
+# Defaults to this machine and ./dist.
+#
+# # Why fetch rather than vendor
+#
+# We could ship restic inside our own release and save a download. We do not,
+# and the reason is the same one the owner's restore card rests on: the
+# repository must be readable by the *stock* restic anybody can download. A
+# binary that came from us is a binary somebody has to trust us about. This
+# way the bytes come from restic's own release and we only assert which ones.
+#
+# # The verification is the point
+#
+# restic reads every file on the machine and holds the credentials to the
+# off-site copy. If this script cannot prove the hash, it must leave nothing
+# behind — a half-downloaded or unverified binary sitting where the installer
+# expects one is worse than no binary at all, because the next step will run
+# it.
+
+set -eu
+
+PIN="$(CDPATH= cd -- "$(dirname -- "$0")/../deploy" && pwd)/restic.pin"
+
+if [ ! -f "$PIN" ]; then
+    echo "fetch-restic: cannot find $PIN" >&2
+    exit 1
+fi
+
+# shellcheck source=../deploy/restic.pin
+. "$PIN"
+
+goos="${1:-$(go env GOOS 2>/dev/null || uname -s | tr '[:upper:]' '[:lower:]')}"
+goarch="${2:-$(go env GOARCH 2>/dev/null || uname -m)}"
+dest="${3:-dist}"
+
+case "$goarch" in
+    x86_64) goarch=amd64 ;;
+    aarch64) goarch=arm64 ;;
+esac
+
+# Indirect expansion, portably: the pin file names one variable per platform.
+want="$(eval "printf '%s' \"\${RESTIC_SHA256_${goos}_${goarch}:-}\"")"
+
+if [ -z "$want" ]; then
+    echo "fetch-restic: no pinned hash for ${goos}/${goarch} in $PIN" >&2
+    echo "  add one from the upstream SHA256SUMS, having checked its signature" >&2
+    exit 1
+fi
+
+case "$goos" in
+    windows) ext=zip; binary=restic.exe ;;
+    *)       ext=bz2; binary=restic ;;
+esac
+
+asset="restic_${RESTIC_VERSION}_${goos}_${goarch}.${ext}"
+url="https://github.com/restic/restic/releases/download/v${RESTIC_VERSION}/${asset}"
+
+mkdir -p "$dest"
+
+work="$(mktemp -d)"
+# Cleaned up on every exit path, so a failed verification leaves nothing an
+# installer could pick up by mistake.
+trap 'rm -rf "$work"' EXIT INT TERM
+
+echo "fetching  $asset"
+
+# --retry-all-errors matters: without it, --retry ignores HTTP 5xx and only
+# retries connection failures, so one bad response from a CDN fails the whole
+# install.
+curl -fsSL --retry 4 --retry-all-errors --retry-delay 3 --connect-timeout 20 \
+    -o "$work/$asset" "$url"
+
+# Picked explicitly rather than with a `||` fallback after the pipeline: in a
+# pipeline the exit status is the LAST command's, so `sha256sum ... | cut ||
+# shasum ...` succeeds with empty output when sha256sum is absent — which is
+# every macOS runner, and it would fail closed with a baffling "hash does not
+# match" against an empty string.
+if command -v sha256sum >/dev/null 2>&1; then
+    got="$(sha256sum "$work/$asset" | cut -d' ' -f1)"
+elif command -v shasum >/dev/null 2>&1; then
+    got="$(shasum -a 256 "$work/$asset" | cut -d' ' -f1)"
+else
+    echo "fetch-restic: no sha256sum or shasum on this machine; cannot verify" >&2
+    exit 1
+fi
+
+if [ "$got" != "$want" ]; then
+    echo "fetch-restic: REFUSING $asset — hash does not match the pin" >&2
+    echo "  expected $want" >&2
+    echo "  got      $got" >&2
+    echo >&2
+    echo "  Do not work around this. Either the pin is stale (bump it from a" >&2
+    echo "  signed upstream SHA256SUMS) or the download was tampered with." >&2
+    exit 1
+fi
+
+echo "verified  sha256 $got"
+
+case "$ext" in
+    zip) unzip -q -o "$work/$asset" -d "$work" ;;
+    bz2) bunzip2 -kf "$work/$asset" ;;
+esac
+
+# Upstream names the extracted file after the asset; find it either way.
+extracted="$(find "$work" -type f ! -name "*.${ext}" | head -n 1)"
+
+if [ -z "$extracted" ]; then
+    echo "fetch-restic: nothing was extracted from $asset" >&2
+    exit 1
+fi
+
+install -m 0755 "$extracted" "$dest/$binary" 2>/dev/null || {
+    cp "$extracted" "$dest/$binary"
+    chmod 0755 "$dest/$binary"
+}
+
+echo "installed $dest/$binary  (restic $RESTIC_VERSION, ${goos}/${goarch})"
