@@ -1,8 +1,8 @@
 package restic
 
 import (
-	"bytes"
 	"context"
+	"crypto/rand"
 	"errors"
 	"os"
 	"os/exec"
@@ -471,9 +471,16 @@ func TestMeasureAgainstRealRestic(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Compressible-but-not-trivial content, so the two figures are non-zero.
-	big := bytes.Repeat([]byte("the quick brown fox jumps over the lazy dog\n"), 20_000)
-	if err := os.WriteFile(filepath.Join(src, "a.txt"), big, 0o600); err != nil {
+	// Incompressible and undedupable on purpose. Repetitive text would collapse
+	// to a few kilobytes, and then restic's own per-snapshot metadata would be
+	// a large fraction of the repository — which makes the ratio this test
+	// checks meaningless. Random bytes keep the payload dominant.
+	big := make([]byte, 4<<20)
+	if _, err := rand.Read(big); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := os.WriteFile(filepath.Join(src, "a.bin"), big, 0o600); err != nil {
 		t.Fatal(err)
 	}
 
@@ -515,11 +522,23 @@ func TestMeasureAgainstRealRestic(t *testing.T) {
 		t.Errorf("snapshots = %d, want 2", size.Snapshots)
 	}
 
-	// The point: two backups of unchanged data store it once. If restic had a
-	// "full backup" that re-uploaded everything, Now would be about twice
-	// Fresh here and rotation would be pointless.
-	if size.Reclaimable() != 0 {
-		t.Errorf("backing up unchanged data twice reclaimed %d bytes; "+
-			"expected deduplication to make the second run free", size.Reclaimable())
+	// The point: two backups of unchanged data store that data once. If restic
+	// had a "full backup" mode that re-uploaded everything, Now would be about
+	// twice Fresh here and bucket rotation would be pointless.
+	//
+	// Not exactly zero, and the difference is worth knowing about. Each
+	// snapshot carries a little metadata of its own that the next one does not
+	// share — a few hundred bytes on 0.19.1, and it varies by platform and by
+	// restic version. An earlier version of this test asserted zero, passed
+	// against the 0.14 that happened to be installed locally, and failed on CI
+	// the moment CI started using the pinned 0.19.1. What matters is the order
+	// of magnitude: overhead, not a second copy.
+	const tolerance = 0.01
+
+	if limit := int64(float64(size.Fresh) * tolerance); size.Reclaimable() > limit {
+		t.Errorf("backing up unchanged data twice left %d bytes reclaimable, "+
+			"more than %.0f%% of the %d bytes stored — that is a second copy, "+
+			"not snapshot metadata, and it would mean restic had stopped "+
+			"deduplicating", size.Reclaimable(), tolerance*100, size.Fresh)
 	}
 }
