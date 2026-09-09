@@ -1,0 +1,22 @@
+{{define "page-head"}}<title>{{.Title}} — sion-backup</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="stylesheet" href="/style.css">
+{{if .Refresh}}<meta http-equiv="refresh" content="{{.Refresh}}">{{end}}
+{{end}}
+
+{{define "page-top"}}
+<header>
+  <a class="brand" href="/">sion&#8209;backup</a>
+  <nav>
+    {{range .Nav}}<a href="{{.Href}}"{{if .Current}} aria-current="page"{{end}}>{{.Label}}</a>{{end}}
+  </nav>
+</header>
+{{end}}
+
+{{define "page-foot"}}
+<footer>
+  <span>{{.NodeID}}</span>
+  <span>{{.Version}}</span>
+  <span>data in <code>{{.DataDir}}</code></span>
+</footer>
+{{end}}

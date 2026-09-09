@@ -1,0 +1,51 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  A launchd USER AGENT, not a daemon.
+
+    cp us.schoenstatt.sion-backup.plist ~/Library/LaunchAgents/
+    launchctl load -w ~/Library/LaunchAgents/us.schoenstatt.sion-backup.plist
+
+  An agent rather than a daemon because the credentials are in the login
+  Keychain, which is only unlocked inside a user session. A LaunchDaemon runs
+  as root before anybody logs in and would find the Keychain locked.
+
+  RunAtLoad plus KeepAlive means it starts when the user logs in and is
+  restarted if it exits. The scheduling is the program's own — see
+  business/domain/plan for why a StartCalendarInterval would be the wrong
+  answer for a laptop that is asleep at the appointed hour.
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>us.schoenstatt.sion-backup</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>/usr/local/bin/sion-backup</string>
+    <string>daemon</string>
+  </array>
+
+  <key>RunAtLoad</key>
+  <true/>
+
+  <key>KeepAlive</key>
+  <dict>
+    <key>SuccessfulExit</key>
+    <false/>
+  </dict>
+
+  <!-- Both streams to one file. The program writes structured lines, so
+       interleaving them loses nothing and halves the number of files somebody
+       has to be talked through finding over the phone. -->
+  <key>StandardOutPath</key>
+  <string>/tmp/sion-backup.log</string>
+  <key>StandardErrorPath</key>
+  <string>/tmp/sion-backup.log</string>
+
+  <!-- Below normal, so a backup does not make the machine feel slow. -->
+  <key>ProcessType</key>
+  <string>Background</string>
+  <key>Nice</key>
+  <integer>10</integer>
+</dict>
+</plist>

@@ -1,0 +1,83 @@
+{{define "settings.html"}}<!doctype html>
+<html lang="en">
+<head>{{template "page-head" .}}</head>
+<body>
+{{template "page-top" .}}
+<main>
+
+<h1>Settings</h1>
+
+{{if .Saved}}<div class="verdict good"><h1>Saved</h1><p>The next run will use these.</p></div>{{end}}
+{{if .Problem}}<div class="verdict bad"><h1>Not saved</h1><p>{{.Problem}}</p></div>{{end}}
+
+<form method="post" action="/settings" class="settings">
+  <input type="hidden" name="form_token" value="{{.Token}}">
+
+  <div>
+    <label for="targets">Folders to back up</label>
+    <textarea id="targets" name="targets" spellcheck="false">{{.Targets}}</textarea>
+    <p class="hint">One per line. Everything inside them is included.</p>
+  </div>
+
+  <div>
+    <label for="excludes">Leave out</label>
+    <textarea id="excludes" name="excludes" spellcheck="false">{{.Excludes}}</textarea>
+    <p class="hint">
+      One pattern per line, in restic's syntax — a folder path, or something like
+      <code>*.iso</code>. Caches and downloads are worth excluding; they are large,
+      they change constantly, and nobody has ever needed one back.
+    </p>
+  </div>
+
+  <div>
+    <label for="times">Run at</label>
+    <input type="text" id="times" name="times" value="{{.Times}}" spellcheck="false">
+    <p class="hint">
+      Local times, as HH:MM, separated by commas. If the computer is asleep or
+      switched off at that time, it backs up as soon as it is next on.
+    </p>
+  </div>
+
+  <div>
+    <label for="read_concurrency">Files read at once</label>
+    <input type="number" id="read_concurrency" name="read_concurrency" min="0" max="32" value="{{.Plan.ReadConcurrency}}">
+    <p class="hint">
+      Higher finishes sooner and makes the computer feel slower while it runs.
+      2 suits an older hard disk, 6 an SSD. 0 leaves it to restic.
+    </p>
+  </div>
+
+  <div>
+    <label for="pack_size_mib">Upload chunk size (MiB)</label>
+    <input type="number" id="pack_size_mib" name="pack_size_mib" min="0" max="128" value="{{.Plan.PackSizeMiB}}">
+    <p class="hint">16 is right for most connections. 32 does fewer round trips on a fast one. 0 leaves it to restic.</p>
+  </div>
+
+  <div>
+    <label><input type="checkbox" name="paused" {{if .Plan.Paused}}checked{{end}}> Pause backups</label>
+    <p class="hint">
+      For a metered connection or a long trip. Nothing is deleted and the
+      schedule is remembered; it simply stops running until you turn this off.
+    </p>
+  </div>
+
+  <div class="actions">
+    <button class="primary" type="submit">Save</button>
+    <a href="/">Back to status</a>
+  </div>
+</form>
+
+<h2>Not changed here</h2>
+<p class="hint">
+  The name this computer reports under ({{if .Plan.NodeID}}<code>{{.Plan.NodeID}}</code>{{else}}not set{{end}})
+  and the repository it writes to are set when the machine is enrolled, by whoever
+  administers the fleet. Changing either would detach this computer from its own
+  backup history, so it is done deliberately with <code>sion-backup enroll</code>
+  rather than from a web form.
+</p>
+
+</main>
+{{template "page-foot" .}}
+</body>
+</html>
+{{end}}

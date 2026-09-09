@@ -1,0 +1,121 @@
+{{define "status.html"}}<!doctype html>
+<html lang="en">
+<head>{{template "page-head" .}}</head>
+<body>
+{{template "page-top" .}}
+<main>
+
+<div class="verdict {{.Verdict.Level}}">
+  <h1>{{.Verdict.Heading}}</h1>
+  <p>{{.Verdict.Detail}}</p>
+</div>
+
+{{if .Running}}
+  <progress value="{{.Progress.PercentDone}}" max="1"></progress>
+  <dl class="facts">
+    <dt>Progress</dt><dd>{{percent .Progress.PercentDone}} — {{.Progress.FilesDone}} of {{.Progress.TotalFiles}} files, {{bytes .Progress.BytesDone}} of {{bytes .Progress.TotalBytes}}</dd>
+    <dt>Started</dt><dd>{{clock .Progress.Started}}</dd>
+    {{if .Progress.CurrentFile}}<dt>Reading</dt><dd><code>{{.Progress.CurrentFile}}</code></dd>{{end}}
+  </dl>
+{{end}}
+
+{{if .Configured}}
+<form method="post" action="/run" class="actions">
+  <input type="hidden" name="form_token" value="{{.Token}}">
+  <button class="primary" type="submit" {{if .Running}}disabled{{end}}>Back up now</button>
+  {{if nonzero .NextRun}}<span class="hint">Next scheduled run at {{clock .NextRun}}{{if .Paused}} — but backups are paused{{end}}</span>{{end}}
+</form>
+
+{{if .Rotation.Show}}
+<div class="verdict warn">
+  <h1>A fresh start would free {{bytes .Rotation.Reclaimable}}</h1>
+  <p>
+    This backup has been running for {{duration .Rotation.Discards}}, and
+    {{percent .Rotation.Fraction}} of what it stores is old versions of files that
+    have since changed or been deleted.
+    {{if .Saving}}Starting again in a new bucket would save {{.Saving}}.{{end}}
+  </p>
+</div>
+
+<dl class="facts">
+  <dt>Stored now</dt><dd>{{bytes .Measurement.Now}} across {{.Measurement.Snapshots}} backups</dd>
+  <dt>Your files today</dt><dd>{{bytes .Measurement.Fresh}}</dd>
+  <dt>Would need uploading</dt>
+  <dd>{{bytes .Rotation.Upload}} — best started on a Friday, on a connection you are not paying for by the gigabyte</dd>
+  <dt>Would be lost</dt>
+  <dd>The ability to recover a file as it was at any point in the last {{duration .Rotation.Discards}}. Everything you have <em>now</em> is kept.</dd>
+</dl>
+
+<p class="hint">
+  Nothing happens unless you ask. If the trade looks worth it, tell whoever
+  looks after your backups and they will set up a new bucket — you would then
+  run one long backup, and the old one is deleted once the new one is proven.
+</p>
+{{end}}
+
+<h2>This computer</h2>
+<dl class="facts">
+  <dt>Backing up</dt>
+  <dd>{{if .Targets}}{{range .Targets}}<code>{{.}}</code><br>{{end}}{{else}}nothing yet{{end}}</dd>
+
+  <dt>Repository</dt>
+  <dd><code>{{.Repository}}</code></dd>
+
+  {{if nonzero .Measurement.Since}}
+  <dt>History</dt>
+  <dd>Backups available from {{day .Measurement.Since}} onwards ({{duration .Rotation.Discards}})</dd>
+  {{end}}
+
+  <dt>Credentials</dt>
+  <dd>
+    {{if .Enrolled}}<span class="pill good">nothing stored here</span>{{else}}<span class="pill bad">not enrolled</span>{{end}}
+    <p class="hint">{{.Credentials}}</p>
+  </dd>
+</dl>
+
+{{if .HasLast}}
+<h2>The last run</h2>
+<dl class="facts">
+  <dt>Finished</dt><dd>{{day .Last.FinishedAt}} <span class="pill {{pill .Last.Outcome}}">{{.Last.Outcome}}</span></dd>
+  <dt>Took</dt><dd>{{duration .Last.Duration}}</dd>
+  <dt>Files</dt><dd>{{.Last.TotalFilesProcessed}} seen, {{.Last.FilesNew}} new, {{.Last.FilesChanged}} changed</dd>
+  <dt>Uploaded</dt><dd>{{bytes .Last.DataAdded}}</dd>
+  <dt>Verified</dt>
+  <dd>{{if .Last.Verified}}yes — a file written just before the run was restored and matched{{else}}<strong>no</strong>{{end}}</dd>
+  {{if .Last.SnapshotID}}<dt>Snapshot</dt><dd><code>{{.Last.SnapshotID}}</code></dd>{{end}}
+</dl>
+
+{{if .Last.UnreadableFiles}}
+<h2>Not in the backup</h2>
+<p class="hint">restic could not read these. They are the files a restore would not bring back.</p>
+<ul class="files">{{range .Last.UnreadableFiles}}<li><code>{{.}}</code></li>{{end}}</ul>
+{{end}}
+{{end}}
+
+<h2>Recent runs</h2>
+{{if .Recent}}
+<table>
+  <thead><tr><th>Started</th><th>Outcome</th><th class="num">Files</th><th class="num">Uploaded</th><th class="num">Took</th><th>Reported</th></tr></thead>
+  <tbody>
+  {{range .Recent}}
+    <tr>
+      <td>{{day .StartedAt}}</td>
+      <td><span class="pill {{pill .Outcome}}">{{.Outcome}}</span></td>
+      <td class="num">{{.TotalFilesProcessed}}</td>
+      <td class="num">{{bytes .DataAdded}}</td>
+      <td class="num">{{duration .Duration}}</td>
+      <td>{{if .ReportedAt}}yes{{else}}pending{{end}}</td>
+    </tr>
+  {{end}}
+  </tbody>
+</table>
+{{else}}
+<p class="hint">Nothing yet.</p>
+{{end}}
+{{end}}
+
+</main>
+{{template "page-foot" .}}
+</body>
+</html>
+{{end}}

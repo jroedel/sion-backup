@@ -1,0 +1,80 @@
+# sion-backup.
+#
+# This file is a convenience, NOT the security boundary. An ignore rule is
+# advisory: `git add -f`, a tool writing through a symlink, or a rename defeats
+# it silently. The real boundary is that sion-backup never writes anything
+# inside this tree — run `sion-backup paths` to see where it does write, and
+# see foundation/paths, which has a test that fails if that ever changes.
+
+# ---------------------------------------------------------------------------
+# Credentials. Nothing matching these belongs in version control, ever.
+# ---------------------------------------------------------------------------
+
+# A real config.toml holds a Eumaeus token and names somebody's bucket.
+# config.example.toml is the one that is committed, and it is listed as an
+# exception below.
+config.toml
+*.token
+eumaeus.token
+rclone.conf
+
+# The secrets directory's contents: the DPAPI blob on Windows, the 0600
+# fallback on Linux.
+/secrets/
+*.bin
+
+# SSH and signing keys, which have no extension to key on.
+id_rsa
+id_ecdsa
+id_ed25519
+*_ed25519
+deploy_key
+known_hosts
+*.pub
+*.pem
+*.key
+
+# ---------------------------------------------------------------------------
+# Machine state. Not secret in the cryptographic sense; still nobody's
+# business but the machine's owner.
+# ---------------------------------------------------------------------------
+*.db
+*.db-wal
+*.db-shm
+*.sqlite
+*.sqlite3
+sion-backup.log
+/verify/
+/scratch/
+
+# ---------------------------------------------------------------------------
+# Build output.
+# ---------------------------------------------------------------------------
+/sion-backup
+/sion-backup-*
+/dist/
+.venv-api/
+
+# Generated from docs/openapi.yaml by `make api-docs`. Regenerate rather than
+# commit it, so it can never disagree with the spec it was rendered from.
+docs/api.html
+*.exe
+*.test
+*.out
+coverage.*
+
+# The restic binary, which is shipped beside ours and is not ours to vendor.
+/restic
+/restic.exe
+
+# ---------------------------------------------------------------------------
+# Editors and platforms.
+# ---------------------------------------------------------------------------
+.idea/
+.vscode/
+*.swp
+.DS_Store
+Thumbs.db
+
+# The one file above that IS committed.
+!config.example.toml

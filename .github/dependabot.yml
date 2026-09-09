@@ -1,0 +1,17 @@
+version: 2
+
+updates:
+  - package-ecosystem: gomod
+    directory: /
+    schedule:
+      interval: weekly
+    # Grouped, because this module has few dependencies and a pull request per
+    # patch bump is how a repository trains its maintainer to ignore them.
+    groups:
+      go-modules:
+        patterns: ["*"]
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly

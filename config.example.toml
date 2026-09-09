@@ -1,0 +1,185 @@
+# sion-backup — the file an installer drops on a machine.
+#
+# Copy it to the machine's data directory (run "sion-backup paths" to see
+# where), edit it, then run "sion-backup enroll".
+#
+# ---------------------------------------------------------------------------
+# TWO KINDS OF SETTING, AND THEY BEHAVE DIFFERENTLY
+# ---------------------------------------------------------------------------
+#
+# THE PLAN -- node_id, repository, targets, excludes, schedule and
+# tuning -- is read ONCE, on a machine that has no plan yet, and lives in the
+# database from then on. Editing this file afterwards changes nothing. That is
+# deliberate: the person using the machine edits their own excludes on the
+# status page, and a re-read at every reboot would silently undo them.
+#
+# THE DEPLOYMENT SETTINGS -- [eumaeus]
+# Where this machine gets its credentials, and where it reports.
+#
+# NOT optional any more. Nothing is cached on this computer: the S3 keys and
+# the repository password are fetched from Eumaeus at the start of every backup
+# and discarded when it ends. A machine that cannot reach Eumaeus cannot back
+# up -- which is a fair trade, because a machine that cannot reach Eumaeus
+# almost certainly cannot reach the bucket either.
+url = "https://eumaeus.example.org"
+
+# There is no token here. Enrollment is a login:
+#
+#   1. Sign in to Eumaeus, choose "Enrol a computer", pick the owner and the
+#      bucket. It shows a code, good for fifteen minutes, usable once.
+#   2. On the machine:  sion-backup enroll --code K4TP-9QX2
+#
+# That writes a machine token -- the only secret this program keeps on disk --
+# to the data directory, and prints the owner's restore card. Revoking that
+# token in Eumaeus cuts the machine off immediately.
+
+[server] -- are read on EVERY start.
+# They are facts about how the machine was installed and are yours to change.
+#
+# ---------------------------------------------------------------------------
+
+# What this machine is called on the fleet dashboard.
+#
+# Chosen by you, not derived from the hostname: "DESKTOP-4KJ2P1" tells nobody
+# whose laptop stopped backing up. Keep it stable -- it is the key the
+# dashboard and the credential escrow both use.
+node_id = "office-laptop-1"
+
+# The restic repository, in restic's own URL syntax.
+#
+# One bucket per machine. Not one bucket for the fleet: restic deduplicates
+# within a repository and not across them, so a shared bucket would save space
+# -- and it would also mean every machine's credentials open every machine's
+# backups, and one compromised laptop is the whole fleet.
+#
+# Wasabi's endpoints are listed at
+# https://docs.wasabi.com/docs/what-are-the-service-urls-for-wasabis-different-regions
+repository = "s3:https://s3.us-central-1.wasabisys.com/example-node-bucket"
+
+# What to back up. Everything inside these, minus the excludes below.
+#
+# Windows: back up the user's profile rather than all of C:. The rest of C: is
+# an operating system that a reinstall replaces faster than a restore does,
+# and it is most of the bytes.
+targets = [
+  "/home/user",
+  # "C:\\Users\\Example",
+  # "/Users/example",
+]
+
+# What to leave out, in restic's exclude syntax.
+#
+# Caches and package directories are the ones that matter: they are large,
+# they change completely between runs so deduplication does not help, and
+# nobody has ever needed one back.
+excludes = [
+  # Everywhere
+  "**/node_modules",
+  "**/.cache",
+  "**/Cache",
+  "**/CacheStorage",
+  "*.iso",
+  "*.vmdk",
+
+  # Windows
+  # "C:\\Users\\*\\AppData\\Local\\Temp",
+  # "C:\\Users\\*\\AppData\\Local\\Packages",
+  # "C:\\Users\\*\\AppData\\Local\\Google\\Chrome",
+  # "C:\\Users\\*\\OneDrive",          # already in the cloud
+
+  # macOS
+  # "/Users/*/Library/Caches",
+  # "/Users/*/Library/Containers/com.apple.mail/Data/Library/Caches",
+
+  # Linux
+  # "/home/*/.cache",
+  # "/home/*/snap/*/common/.cache",
+]
+
+[schedule]
+# Local times of day, as HH:MM.
+#
+# 13:00 rather than an overnight slot, because a work computer is switched on,
+# awake and on a network in the middle of the working day -- which is exactly
+# when an overnight schedule fails. If the machine is asleep at this time it
+# backs up as soon as it is next on; see business/domain/plan.
+times = ["13:00"]
+
+# Spread the fleet out so thirty machines do not hit the bucket in one minute.
+# The offset is derived from node_id and the date, so it survives a reboot.
+jitter_minutes = 30
+
+# The floor between two runs, whatever the times say.
+min_interval = "6h"
+
+# There is no [storage] section, and that is not an omission.
+#
+# This fleet does not prune. A single restic prune on a real repository over a
+# gigabit uplink took more than 24 hours -- prune downloads every pack it wants
+# to consolidate, extracts the live blobs and re-uploads them, so it moves a
+# large fraction of the repository in both directions.
+#
+# Space is reclaimed by rotating the bucket instead: a fresh repository roughly
+# once a year, the old bucket deleted whole. The history a machine has is
+# therefore the age of its current repository, which the status page shows.
+#
+# The security property this buys is worth more than the space: no key in the
+# system can delete backup data. The machine's S3 key may delete only under
+# locks/, and no prune key exists. See docs/model.md.
+
+[tuning]
+# restic's target pack size. 16 is its default and suits most connections;
+# 32 does fewer round trips on 300Mbit or better.
+pack_size_mib = 16
+
+# How many files restic reads at once. 2 suits an older hard disk, 6 an NVMe.
+# Higher finishes sooner and makes the machine feel slower while it runs.
+read_concurrency = 4
+
+# Back up from a filesystem snapshot (VSS on Windows) so open files -- Outlook
+# data files, above all -- are included. Requires administrator rights.
+# Unset means "on for Windows, off elsewhere", which is almost always right.
+# use_fs_snapshot = true
+
+# If VSS is refused, back up the live tree anyway and mark the run degraded.
+# The alternative is a non-administrator machine taking no backups at all.
+allow_vss_fallback = true
+
+# Do not follow mounts: network shares, external drives, and on Linux the
+# pseudo-filesystems the old scripts had to exclude by hand.
+one_file_system = true
+
+[eumaeus]
+# Where the credential escrow and the fleet dashboard live.
+#
+# Leave both empty and this machine still backs up, verifies and keeps its own
+# history -- it simply appears on no dashboard, and its repository password is
+# escrowed nowhere. The second half of that sentence is the reason not to.
+url = "https://eumaeus.example.org"
+
+# A Eumaeus token, minted read-write and scoped to the backup vault alone:
+#
+#   eumaeus token mint -label sion-backup-office-laptop-1 -vaults backup -write -days 3650
+#
+# It must NOT be able to read the finance vault. A token on a work computer is
+# a token that can be taken off a work computer.
+#
+# "sion-backup enroll" caches this in the platform keyring and tells you to
+# remove the line; "sion-backup doctor" complains until you do. Prefer
+# token_file, or the SION_BACKUP_EUMAEUS_TOKEN environment variable, over
+# putting the secret in a file that also gets copied around as a template.
+# token = "..."
+# token_file = "/etc/sion-backup/eumaeus.token"
+
+[server]
+# The status page. Loopback only -- it has no login, and the daemon refuses to
+# bind anything else. Reach it from elsewhere over SSH, not by changing this.
+addr = "127.0.0.1:7391"
+
+# The restic binary, by absolute path.
+#
+# Shipped beside this one rather than taken from PATH: a PATH lookup for a
+# program about to be handed the credentials to the only off-site copy of
+# somebody's work is not a lookup worth doing. Empty falls back to PATH, which
+# is right on a developer's machine and wrong on a deployed one.
+restic = "/opt/sion-backup/restic"

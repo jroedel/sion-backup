@@ -1,0 +1,54 @@
+# A systemd USER unit, not a system one.
+#
+#   mkdir -p ~/.config/systemd/user
+#   cp sion-backup.service ~/.config/systemd/user/
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now sion-backup
+#   loginctl enable-linger "$USER"     # keep it running when nobody is logged in
+#
+# User rather than system, deliberately. The credentials live in the login
+# keyring, which belongs to a user session; a system service runs as root with
+# no session and no keyring, and would fall back to the file store — see
+# foundation/secrets. It also only needs to read one person's files.
+#
+# The cost is `loginctl enable-linger`: without it the unit stops when the last
+# session ends, and a machine that is switched on but not logged into takes no
+# backups. With it, the user manager starts at boot and the unit with it.
+
+[Unit]
+Description=sion-backup — keeps this computer backed up
+Documentation=https://github.com/jroedel/sion-backup
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=%h/.local/bin/sion-backup daemon
+
+# Restart, always, with a delay. The failure this program exists to prevent is
+# a backup agent that died in March and was noticed in September.
+Restart=always
+RestartSec=30s
+
+# Journal, and the program's own log file beside its data. Both, because the
+# journal is where an administrator looks and the file is what a user can be
+# asked to send.
+StandardOutput=journal
+StandardError=journal
+
+# It reads everything the user can read — that is the job — so most sandboxing
+# would break it. These four cost nothing and close the obvious holes.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectKernelTunables=true
+RestrictSUIDSGID=true
+
+# Nice, not idle. A backup that never finishes because the machine is busy is
+# not politeness, it is a missing backup; but it should not make the machine
+# feel slow either.
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=6
+
+[Install]
+WantedBy=default.target

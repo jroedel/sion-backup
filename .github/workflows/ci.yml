@@ -1,0 +1,100 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# The default token can read this repository and nothing else. CI here builds
+# and tests; it does not publish, so it needs nothing more.
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    # Three runners, because this program's whole job is to work on three
+    # platforms and the parts most likely to break — the keyring, the paths,
+    # the Windows path mapping — are exactly the parts a Linux-only CI would
+    # never execute.
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          # Read from go.mod, so the version CI uses and the version the
+          # module declares cannot drift apart.
+          go-version-file: go.mod
+          cache: true
+
+      - name: Build
+        run: go build ./...
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Test
+        run: go test -race ./...
+
+  cross:
+    # A separate job rather than a step in the matrix: it is fast, it needs
+    # one runner, and its failure means something different — a build tag
+    # broke a platform, not a test.
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Type-check every platform
+        run: make cross
+
+      - name: Check formatting
+        run: |
+          unformatted="$(gofmt -l .)"
+          if [ -n "$unformatted" ]; then
+            echo "these files are not gofmt'd:"
+            echo "$unformatted"
+            exit 1
+          fi
+
+      - name: Check go.mod is tidy
+        run: |
+          go mod tidy
+          git diff --exit-code go.mod go.sum
+
+  api-spec:
+    # The OpenAPI document and its examples. Separate from the Go jobs because
+    # it needs Python and nothing else does, and because its failure means
+    # something different: the contract handed to the Eumaeus team has drifted
+    # from itself.
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: scripts/requirements-api.txt
+
+      - name: Install
+        run: pip install -r scripts/requirements-api.txt
+
+      - name: Validate the OpenAPI document and its examples
+        run: python scripts/check-api-spec.py
