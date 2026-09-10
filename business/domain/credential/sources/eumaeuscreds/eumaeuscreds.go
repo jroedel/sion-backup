@@ -28,6 +28,7 @@ import (
 	"github.com/jroedel/sion-backup/foundation/eumaeusapi"
 )
 
+// path is relative to eumaeusapi.APIPrefix.
 const path = "/machines/me/credentials"
 
 // payload is the wire form.

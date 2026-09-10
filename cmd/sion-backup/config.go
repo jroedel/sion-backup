@@ -82,6 +82,16 @@ type TuningConfig struct {
 	OneFileSystem    *bool `toml:"one_file_system"`
 }
 
+// DefaultEumaeusURL is the installation this fleet belongs to.
+//
+// Hardcoded, because there is exactly one and every machine that runs this
+// binary reports to it. A default is not a lock: [eumaeus] url in config.toml
+// or --server on enroll still wins, which is what a staging server or a
+// loopback test needs. What it buys is that a machine with no config file at
+// all can still be enrolled with nothing but a code, and that thirty installs
+// cannot end up with thirty spellings of the same host.
+const DefaultEumaeusURL = "https://terraboskamp.org"
+
 // EumaeusConfig points at the server this machine depends on.
 //
 // There is no token here, and that is the point of the enrollment flow: an
@@ -91,7 +101,8 @@ type TuningConfig struct {
 // this file.
 //
 // The URL is not optional for a working machine. Nothing is cached locally, so
-// a backup begins by asking this server for the credentials.
+// a backup begins by asking this server for the credentials — which is why it
+// has a default rather than an empty string. See DefaultEumaeusURL.
 type EumaeusConfig struct {
 	URL string `toml:"url"`
 }
@@ -135,6 +146,15 @@ func LoadConfig(path string) (Config, bool, error) {
 	}
 
 	return cfg, true, nil
+}
+
+// EumaeusURL is the server this machine talks to, with the default applied.
+func (c Config) EumaeusURL() string {
+	if c.Eumaeus.URL == "" {
+		return DefaultEumaeusURL
+	}
+
+	return c.Eumaeus.URL
 }
 
 // Addr is the listen address, with the default applied.

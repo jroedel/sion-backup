@@ -223,11 +223,14 @@ func wire(ctx context.Context, verbose bool) (*deps, error) {
 //
 // Both hang off one client and one token. Unlike the previous design, the
 // credential source is not optional: with nothing cached on this machine, a
-// backup cannot happen without it. A machine with no server configured can
+// backup cannot happen without it. A machine that has not been enrolled can
 // still serve its status page and report what it has done in the past, which
 // is why this returns cleanly rather than refusing to start.
+//
+// The token is what decides that, not the URL: the server has a default
+// (Config.EumaeusURL), so "no URL" is no longer a state a machine can be in.
 func (d *deps) wireEumaeus() error {
-	if d.cfg.Eumaeus.URL == "" || d.machineToken == "" {
+	if d.machineToken == "" {
 		d.fleet = fleetbus.NewBusiness(fleetbus.Nop{}, d.log)
 		d.creds = credentialbus.NewBusiness(nil)
 
@@ -235,7 +238,7 @@ func (d *deps) wireEumaeus() error {
 	}
 
 	client, err := eumaeusapi.New(eumaeusapi.Config{
-		BaseURL:   d.cfg.Eumaeus.URL,
+		BaseURL:   d.cfg.EumaeusURL(),
 		Token:     d.machineToken,
 		UserAgent: "sion-backup/" + version,
 	})
