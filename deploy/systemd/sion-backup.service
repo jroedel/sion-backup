@@ -6,14 +6,33 @@
 #   systemctl --user enable --now sion-backup
 #   loginctl enable-linger "$USER"     # keep it running when nobody is logged in
 #
-# User rather than system, deliberately. The credentials live in the login
-# keyring, which belongs to a user session; a system service runs as root with
-# no session and no keyring, and would fall back to the file store — see
-# foundation/secrets. It also only needs to read one person's files.
+# User rather than system, for now, and the reason is no longer the one it used
+# to be. This unit predates the change that stopped caching credentials: there
+# was a login keyring to unlock, and a system service running as root had no
+# session to unlock it from. Nothing is cached any more — the S3 keys and the
+# repository password are fetched from Eumaeus at the start of every run and
+# discarded at the end — so that argument is gone.
 #
-# The cost is `loginctl enable-linger`: without it the unit stops when the last
-# session ends, and a machine that is switched on but not logged into takes no
-# backups. With it, the user manager starts at boot and the unit with it.
+# What is left is smaller: this backs up one person's files, and running as
+# that person is the simplest way to be able to read them.
+#
+# It is not the end state. A dedicated system account is better, and is what
+# the legacy scripts this replaces actually did:
+#
+#   useradd --system --shell /sbin/nologin sion-backup
+#   setcap cap_dac_read_search=+ep /usr/local/bin/restic
+#
+# That capability lets an unprivileged account read every file on the machine
+# without being root, and it means the machine token — the one secret on this
+# disk — is owned by an account the desktop user cannot read. Against
+# ransomware running as the desktop user, that is the difference that matters.
+# Moving needs machine-scope paths first (foundation/paths is per-user today)
+# and an answer to who may change the excludes on the status page.
+#
+# The cost of the user unit is `loginctl enable-linger`: without it the unit
+# stops when the last session ends, and a machine that is switched on but not
+# logged into takes no backups. With it, the user manager starts at boot and
+# the unit with it.
 
 [Unit]
 Description=sion-backup — keeps this computer backed up
