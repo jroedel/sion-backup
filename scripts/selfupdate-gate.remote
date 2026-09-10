@@ -1,0 +1,297 @@
+#!/usr/bin/env bash
+#
+# selfupdate-gate.remote — the gate, as it runs on the machine being tested.
+#
+# Pushed to a fresh box by scripts/selfupdate-gate along with:
+#
+#   /root/gate/baseline           the previously published release, or absent
+#   /root/gate/candidate          the binary about to be published
+#   /root/gate/releaseserver      the fake GitHub
+#   /root/gate/release/           a release tree: the binary and deploy/
+#
+# It runs as root to set the machine up and then does everything that matters
+# as an ordinary user, because that is who runs it on a client's laptop.
+
+set -euo pipefail
+
+CANDIDATE_VERSION="${CANDIDATE_VERSION:?}"
+BASELINE_VERSION="${BASELINE_VERSION:-}"
+USER_NAME="${GATE_USER:-sion}"
+
+GATE=/root/gate
+HOME_DIR="/home/${USER_NAME}"
+EXE="${HOME_DIR}/.local/bin/sion-backup"
+
+fail=0
+
+say()  { printf '\n\033[1m== %s\033[0m\n' "$*"; }
+note() { printf '   %s\n' "$*"; }
+good() { printf '   \033[32mok\033[0m   %s\n' "$*"; }
+bad()  { printf '   \033[31mFAIL\033[0m %s\n' "$*"; fail=1; }
+
+# XDG_RUNTIME_DIR and the bus address by hand, because runuser opens no login
+# session and pam_systemd is what would otherwise set them. A person logging in
+# gets both; this is the same environment, assembled.
+as_user() {
+  local uid
+  uid=$(id -u "$USER_NAME")
+
+  runuser -u "$USER_NAME" -- env \
+    HOME="$HOME_DIR" \
+    XDG_RUNTIME_DIR="/run/user/${uid}" \
+    DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/${uid}/bus" \
+    "$@"
+}
+
+# ---------------------------------------------------------------------------
+# 1. A machine, set up the way a client's is.
+# ---------------------------------------------------------------------------
+
+say "Preparing the machine"
+
+export DEBIAN_FRONTEND=noninteractive
+apt-get update -qq
+# libpam-systemd is the one that is easy to miss: without it the user instance
+# gets no XDG_RUNTIME_DIR and user@UID.service dies on start, so `systemctl
+# --user enable` fails and install.sh stops at install-service. A minimal
+# Debian image does not have it.
+apt-get install -y -qq --no-install-recommends \
+  ca-certificates bzip2 curl systemd libpam-systemd dbus-user-session >/dev/null
+
+id "$USER_NAME" >/dev/null 2>&1 || useradd --create-home --shell /bin/bash "$USER_NAME"
+
+# Lingering, because without it the user manager stops with the last session
+# and this whole gate would be testing a service that is not running. It is
+# also the step install.sh most often cannot do, so failing here is a finding.
+loginctl enable-linger "$USER_NAME"
+
+# The runtime directory existing is not the user manager running: logind
+# creates the directory, and user@UID.service can still fail immediately
+# afterwards. Asked separately, because the first version of this gate reported
+# a healthy machine on one where the user instance had died on start.
+UID_N=$(id -u "$USER_NAME")
+
+for _ in $(seq 1 30); do
+  [ -d "/run/user/${UID_N}" ] && systemctl is-active "user@${UID_N}.service" >/dev/null 2>&1 && break
+  sleep 1
+done
+
+if ! systemctl is-active "user@${UID_N}.service" >/dev/null 2>&1; then
+  bad "user@${UID_N}.service is not running: nothing here would run a backup"
+  systemctl status "user@${UID_N}.service" --no-pager || true
+  journalctl -u "user@${UID_N}.service" -n 20 --no-pager || true
+
+  exit 1
+fi
+
+good "lingering is on and user@${UID_N}.service is running"
+
+# ---------------------------------------------------------------------------
+# 2. Install the baseline the way a client got it.
+#
+# install.sh, not a cp: the thing being gated is an upgrade of a machine that
+# was installed by the documented procedure, including the service unit and
+# the restic fetch. A release whose restic pin no longer resolves should fail
+# here, loudly, before it reaches anybody.
+# ---------------------------------------------------------------------------
+
+if [ -f "$GATE/baseline" ]; then
+  say "Installing the baseline (${BASELINE_VERSION}) with install.sh"
+  cp "$GATE/baseline" "$GATE/release/sion-backup-linux-amd64"
+else
+  say "Installing the candidate with install.sh"
+  note "no published release to upgrade from: this run gates a fresh install only"
+  cp "$GATE/candidate" "$GATE/release/sion-backup-linux-amd64"
+fi
+
+# Moved out of /root before it is handed over. /root is 0700, so a tree the
+# user owns underneath it is a tree the user cannot cd into — and the whole
+# point is to run install.sh as the person whose files get backed up.
+RELEASE=/opt/sion-release
+
+rm -rf "$RELEASE"
+cp -a "$GATE/release" "$RELEASE"
+chown -R "$USER_NAME" "$RELEASE"
+
+if as_user bash -c "cd '$RELEASE' && ./install.sh --yes"; then
+  good "install.sh finished"
+else
+  bad "install.sh failed on a clean machine"
+
+  exit 1
+fi
+
+installed_now() { as_user "$EXE" version 2>&1 | head -1; }
+
+note "installed: $(installed_now)"
+
+# The unit is enabled but not started by install.sh, on purpose: it has nothing
+# to do until the machine is enrolled. Started here because the question this
+# gate asks is what happens to a RUNNING service when its binary is replaced.
+as_user systemctl --user start sion-backup
+sleep 3
+
+if as_user systemctl --user is-active sion-backup >/dev/null; then
+  good "the service is running"
+else
+  bad "the service would not start"
+  as_user systemctl --user status sion-backup --no-pager || true
+  as_user journalctl --user -u sion-backup -n 40 --no-pager || true
+
+  exit 1
+fi
+
+# Restart=always is what turns exit 75 into a new version running. Read from
+# the effective unit rather than from the file, because a drop-in somebody
+# added on a client machine is exactly the sort of thing that would silently
+# turn self-update into a service that stops after updating.
+policy=$(as_user systemctl --user show -p Restart --value sion-backup)
+
+if [ "$policy" = always ]; then
+  good "Restart=always: an exit-75 daemon comes back"
+else
+  bad "Restart=${policy}: a daemon that replaced itself would stay stopped"
+fi
+
+# ---------------------------------------------------------------------------
+# 3. Something that answers as GitHub, on this machine.
+#
+# On the box rather than on the CI runner, because a GitHub-hosted runner has
+# no inbound address a Vultr box could reach. Bound to loopback and pointed at
+# by /etc/hosts, so the binary under test does a real DNS lookup, a real TLS
+# handshake against a certificate it verifies through the system trust store,
+# and a real download — of a release that does not exist.
+#
+# AFTER the install, and that ordering is not incidental. api.github.com and
+# objects.githubusercontent.com are also where restic comes from, so hijacking
+# them first makes install.sh fail fetching restic — which is what happened the
+# first time this ran. It is also the more faithful sequence: a client machine
+# fetched restic from the real internet when it was set up, months before any
+# update. Nothing after this line may need the real GitHub.
+# ---------------------------------------------------------------------------
+
+say "Standing up the release server"
+
+mkdir -p "$GATE/assets"
+cp "$GATE/candidate" "$GATE/assets/sion-backup-linux-amd64"
+
+# api.github.com and the asset host only. Not github.com itself: restic's
+# download URL lives there, and a machine that cannot reach it is a machine
+# whose next enrol fails for a reason this gate invented.
+for host in api.github.com objects.githubusercontent.com; do
+  grep -q "127.0.0.1 ${host}\$" /etc/hosts || echo "127.0.0.1 ${host}" >>/etc/hosts
+done
+
+"$GATE/releaseserver" \
+  -addr 127.0.0.1:443 \
+  -assets "$GATE/assets" \
+  -tag "$CANDIDATE_VERSION" \
+  -ca-out "$GATE/ca.pem" \
+  -ready "$GATE/ready" \
+  >"$GATE/releaseserver.log" 2>&1 &
+
+for _ in $(seq 1 100); do
+  [ -f "$GATE/ready" ] && break
+  sleep 0.2
+done
+
+[ -f "$GATE/ready" ] || { bad "the release server never came up"; cat "$GATE/releaseserver.log"; exit 1; }
+
+cp "$GATE/ca.pem" /usr/local/share/ca-certificates/sion-gate.crt
+update-ca-certificates >/dev/null 2>&1
+
+good "api.github.com is this machine, and it offers ${CANDIDATE_VERSION}"
+
+if [ ! -f "$GATE/baseline" ]; then
+  say "Result"
+  note "fresh install gated; no upgrade was tested (no previous release)"
+
+  exit "$fail"
+fi
+
+# ---------------------------------------------------------------------------
+# 4. The upgrade. This is the whole point.
+# ---------------------------------------------------------------------------
+
+say "Upgrading ${BASELINE_VERSION} -> ${CANDIDATE_VERSION}"
+
+if as_user "$EXE" update; then
+  good "update exited 0"
+else
+  bad "update failed"
+  exit "$fail"
+fi
+
+after=$(installed_now)
+
+if [[ "$after" == *"$CANDIDATE_VERSION"* ]]; then
+  good "the binary on the disk is ${CANDIDATE_VERSION}"
+else
+  bad "the binary reports ${after}"
+
+  exit "$fail"
+fi
+
+# ---------------------------------------------------------------------------
+# 5. And now the brick: does the service come back on the new binary?
+#
+# Everything above this line the container harness already proves. This is the
+# part it cannot: a real user-manager restart of a real unit into a binary that
+# was swapped underneath it, on a machine whose database, config and restic
+# were written by the previous version.
+# ---------------------------------------------------------------------------
+
+say "Restarting the service into the new binary"
+
+as_user systemctl --user restart sion-backup
+sleep 5
+
+if as_user systemctl --user is-active sion-backup >/dev/null; then
+  good "the service is running after the upgrade"
+else
+  bad "THE SERVICE DID NOT COME BACK — this release bricks an upgraded machine"
+  as_user systemctl --user status sion-backup --no-pager || true
+  as_user journalctl --user -u sion-backup -n 60 --no-pager || true
+
+  exit 1
+fi
+
+# Not just active: active and answering. A daemon that started and then failed
+# to open its database sits in "active" for a second before systemd notices.
+# The default from config.example.toml. No config was written on this machine,
+# and the daemon refuses to bind anything but loopback anyway.
+addr=127.0.0.1:7391
+
+if curl -fsS --max-time 10 "http://${addr}/" >/dev/null 2>&1; then
+  good "the status page answers at ${addr}"
+else
+  bad "the status page does not answer at ${addr} after the upgrade"
+fi
+
+if as_user journalctl --user -u sion-backup -n 200 --no-pager 2>/dev/null |
+     grep -q "$CANDIDATE_VERSION"; then
+  good "the journal shows ${CANDIDATE_VERSION} running"
+fi
+
+# CleanupOld runs at startup, so by now the previous binary should be gone. It
+# is also the only rollback copy that existed, which is worth seeing stated in
+# the gate's own output.
+if [ -e "${EXE}.old" ]; then
+  bad "${EXE}.old survived a restart; CleanupOld did not run"
+else
+  good "the previous binary was cleaned up on the first start"
+  note "note: that copy was also the only way back. There is no rollback."
+fi
+
+say "Doctor"
+as_user "$EXE" doctor || note "doctor is unhappy, which on an unenrolled machine is expected"
+
+say "Result"
+
+if [ "$fail" -eq 0 ]; then
+  note "an upgraded machine came back and is serving. Safe to publish."
+else
+  note "something above failed. Do not publish."
+fi
+
+exit "$fail"

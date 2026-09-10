@@ -1,0 +1,45 @@
+#!/bin/sh
+#
+# supervise — the service manager, as far as self-update can tell.
+#
+# systemd's Restart=always with RestartSec=30s, and a Windows scheduled task's
+# RestartCount=999 with a five-minute interval, differ in the numbers and not
+# in the shape: run it, and when it stops, run it again. Exit code 75 is a
+# clean exit to systemd and a failure to schtasks, and both restart, which is
+# the whole reason updateExitCode is 75.
+#
+# The delay is compressed to a second. Thirty seconds times a restart limit is
+# a harness that takes an hour to tell you the fleet is bricked.
+#
+# Usage: supervise <exe> <max-starts> <log>
+
+set -eu
+
+EXE="$1"
+MAX="$2"
+LOG="$3"
+
+: >"$LOG"
+
+n=0
+
+while [ "$n" -lt "$MAX" ]; do
+  n=$((n + 1))
+
+  # What is on the disk right now, recorded before each start. This is the line
+  # the assertions read: a machine that came back on the new version has two
+  # different answers here, and a machine in a crash loop has the same wrong
+  # one over and over.
+  printf 'start %d: %s\n' "$n" "$("$EXE" version 2>&1 || echo 'version failed')" >>"$LOG"
+
+  set +e
+  "$EXE" daemon >>"$LOG" 2>&1
+  status=$?
+  set -e
+
+  printf 'start %d exited %d\n' "$n" "$status" >>"$LOG"
+
+  sleep 1
+done
+
+printf 'gave up after %d starts\n' "$MAX" >>"$LOG"

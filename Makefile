@@ -163,6 +163,17 @@ tag-major: ## Tag the next major release, v(X+1).0.0, and push it
 
 ##@ Housekeeping
 
+.PHONY: selfupdate-e2e
+selfupdate-e2e: ## Every way a release can be wrong, in containers (needs docker)
+	scripts/selfupdate-e2e/run
+
+.PHONY: selfupdate-gate
+selfupdate-gate: ## Upgrade the published release to this build on a real machine
+	@test -f $(DIST)/sion-backup-linux-amd64 || $(MAKE) release GOOS=linux GOARCH=amd64
+	scripts/selfupdate-gate --docker \
+		--candidate $(DIST)/sion-backup-linux-amd64 \
+		--version $(VERSION)
+
 .PHONY: tidy
 tidy: ## Tidy go.mod
 	$(GO) mod tidy

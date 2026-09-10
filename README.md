@@ -459,6 +459,24 @@ that has not implemented an endpoint as clearly as it reports a wrong token.
 
 Named here rather than left to be discovered.
 
+- **Self-update can neither roll back nor be stopped.** `swap` keeps the
+  previous binary as `.old`, but nothing ever restores it, and `CleanupOld`
+  deletes it at the next startup — before the new version has taken a single
+  backup. And every machine takes the newest published release within an hour
+  of it existing, so there is no staged rollout and no kill switch. A build
+  that passes the hash and the smoke test and then fails to start is a machine
+  somebody has to visit. What stands in for both today is a release gate: the
+  release is published as a draft, the previously published version is
+  upgraded to it on a real machine, and it is only un-drafted if that machine
+  comes back. See [`docs/selfupdate-testing.md`](docs/selfupdate-testing.md),
+  which also has the fix worth building.
+- **Self-update never happens on two of the three platforms.** On Windows the
+  binary lives in `%ProgramFiles%` and the task runs as the signed-in user; on
+  macOS it lives in `/usr/local/bin` and the agent runs as the user. Neither
+  can write its own binary, so `writable()` refuses — correctly, and logged
+  once at Info rather than reported, because it will be true again in an hour.
+  The consequence is that the dashboard cannot tell a machine that *cannot*
+  update from one that has stopped checking in.
 - **Windows service.** The daemon is installed as a scheduled task, not a real
   service: it does not implement the service control handler
   (`golang.org/x/sys/windows/svc`). "Restart on failure" gets the same

@@ -94,12 +94,74 @@ jobs:
           ---
           NOTES
 
-      - name: Publish
+      # A DRAFT, and this is the whole safety property.
+      #
+      # foundation/selfupdate reads /releases/latest, and GitHub excludes
+      # drafts from it — the code checks rel.Draft again anyway. So between
+      # this step and the last one the artifacts exist, are addressable, and
+      # are invisible to every machine in the fleet. If the gate below fails,
+      # this stays a draft forever and no client ever sees it.
+      #
+      # There is no earlier place to put the gate: the tag push is what
+      # triggers this workflow, so "before tagging" is not a moment CI can
+      # act on. Publication is the moment that matters, and this is it.
+      - name: Publish as a draft
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           gh release create "$GITHUB_REF_NAME" \
+            --draft \
             --title "$GITHUB_REF_NAME" \
             --generate-notes \
             --notes-file "$RUNNER_TEMP/notes.md" \
             dist/sion-backup-* dist/SHA256SUMS dist/restic.pin
+
+      # Every way a release can be broken, against the binary that is about to
+      # ship: a wrong hash, a truncated download, a rate-limited API, a build
+      # for the wrong platform, an install directory this process may not
+      # write. Containers, so it costs seconds.
+      - name: Gate — does a broken release leave a machine alone?
+        run: scripts/selfupdate-e2e/run
+
+      # The one that would have caught a brick: the PREVIOUSLY PUBLISHED
+      # release, installed on a machine that has never seen either binary by
+      # the same install.sh a client ran, then upgraded to this candidate over
+      # a real TLS connection, then restarted by a real systemd user manager.
+      # If the service does not come back, this release does not ship.
+      #
+      # On a Vultr instance bought for this and destroyed after, when the key
+      # is configured; in a privileged container on the runner when it is not.
+      # Never skipped: an ungated release is the thing this is here to prevent.
+      - name: Gate — does an upgraded machine come back?
+        env:
+          VULTR_API_KEY: ${{ secrets.VULTR_API_KEY }}
+        run: |
+          if [ -n "${VULTR_API_KEY:-}" ]; then
+            where=""
+          else
+            echo "::warning::VULTR_API_KEY is not set; gating in a container."
+            echo "::warning::A container is weaker evidence: it runs privileged."
+            where="--docker"
+          fi
+
+          scripts/selfupdate-gate $where \
+            --candidate dist/sion-backup-linux-amd64 \
+            --version "$GITHUB_REF_NAME"
+
+      # Whatever the gate leaked. It destroys its own instance from a trap, so
+      # this is for the run that was cancelled between buying one and getting
+      # to the trap — which is the only way a box is ever left billing.
+      - name: Destroy anything the gate left behind
+        if: always()
+        env:
+          VULTR_API_KEY: ${{ secrets.VULTR_API_KEY }}
+        run: |
+          [ -n "${VULTR_API_KEY:-}" ] || exit 0
+          scripts/vultr-testbed down || true
+          scripts/vultr-testbed reap --older-than 0 || true
+
+      # Only now can the fleet see it.
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release edit "$GITHUB_REF_NAME" --draft=false
