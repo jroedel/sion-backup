@@ -1,0 +1,256 @@
+#!/usr/bin/env bash
+#
+# run — take real backups to a real bucket, several machines at once.
+#
+#     scripts/backup-e2e/run                  # every shape, in parallel
+#     scripts/backup-e2e/run --shapes 2       # fewer
+#     scripts/backup-e2e/run --keep           # leave the repositories behind
+#     scripts/backup-e2e/run --reap-only      # just delete old test repositories
+#
+# WHAT THIS TESTS THAT NOTHING ELSE DOES
+#
+# Everything from the credentials round trip to the bytes in the bucket. The
+# self-update harness proves a machine comes back after an upgrade; this proves
+# it still backs up, which is what the program is for. Between them they cover
+# the two halves of a release.
+#
+# Every restic operation the binary performs is exercised against a real
+# repository -- backup, cat config, snapshots, restore, unlock, stats -- plus
+# `check`, which the binary never calls and which is the only thing that
+# catches a pack file that is present, correctly named and wrong.
+#
+# PARALLELISM
+#
+# One restic repository per machine, each under its own prefix, so the
+# machines share a bucket and nothing else. restic locks per repository, so
+# separate prefixes are separate repositories and there is nothing to
+# contend over. A shared prefix would serialise them and, worse, would make one
+# machine's lock look like another machine's crash.
+#
+# COST
+#
+# Each machine writes roughly 5 MB. Wasabi bills a minimum storage duration --
+# deleting a repository does not stop it being billed for that period -- but
+# also a 1 TB monthly minimum, and this is thousands of runs away from that.
+# The reaper below is for keeping the bucket legible, not cheap.
+
+set -uo pipefail
+
+cd "$(dirname "$0")/../.."
+
+IMAGE=sion-backup-e2e
+SHAPES=3
+KEEP=0
+REAP_ONLY=0
+REAP_DAYS=${REAP_DAYS:-7}
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --shapes)    SHAPES="$2"; shift 2 ;;
+    --keep)      KEEP=1; shift ;;
+    --reap-only) REAP_ONLY=1; shift ;;
+    -h|--help)   sed -n '2,40p' "$0" | sed 's/^#\{0,1\} \{0,1\}//'; exit 0 ;;
+    *)           echo "backup-e2e: unknown option $1" >&2; exit 2 ;;
+  esac
+done
+
+# ---------------------------------------------------------------------------
+# Credentials. Same file the rest of the release path uses.
+# ---------------------------------------------------------------------------
+
+CREDENTIALS=${SION_DEPLOY_ENV:-$HOME/.config/sion-backup/sion-backup-deploy.env}
+
+if [ -z "${WASABI_ACCESS_KEY_ID:-}" ] && [ -f "$CREDENTIALS" ]; then
+  # shellcheck source=/dev/null
+  . "$CREDENTIALS"
+fi
+
+for required in WASABI_ACCESS_KEY_ID WASABI_SECRET_ACCESS_KEY WASABI_BUCKET WASABI_REGION; do
+  if [ -z "$(eval "printf '%s' \"\${${required}:-}\"")" ]; then
+    echo "backup-e2e: ${required} is not set." >&2
+    echo "            Put it in ${CREDENTIALS}, or see 'make deploy-ready'." >&2
+
+    exit 1
+  fi
+done
+
+if [ "$WASABI_REGION" = us-east-1 ]; then
+  ENDPOINT="s3.wasabisys.com"
+else
+  ENDPOINT="s3.${WASABI_REGION}.wasabisys.com"
+fi
+
+BASE="s3:https://${ENDPOINT}/${WASABI_BUCKET}"
+
+# RUN_ID separates this invocation from every other one, so two people running
+# this at the same time cannot land in the same repository.
+RUN_ID="$(date -u +%Y%m%dT%H%M%SZ)-$$"
+PREFIX_ROOT="gate/$(date -u +%Y-%m-%d)/${RUN_ID}"
+
+say() { printf '\n\033[1m==> %s\033[0m\n' "$*"; }
+
+# ---------------------------------------------------------------------------
+# Reaping old repositories.
+#
+# Wasabi will not delete a prefix, only objects, so this lists and deletes.
+# Bounded by age so that a run in progress elsewhere is never touched -- the
+# same reasoning as the Vultr reaper, and for the same reason: a filter whose
+# failure mode is "delete somebody's data" does not get to be careless.
+# ---------------------------------------------------------------------------
+
+sig="aws:amz:${WASABI_REGION}:s3"
+auth="${WASABI_ACCESS_KEY_ID}:${WASABI_SECRET_ACCESS_KEY}"
+
+reap() {
+  local cutoff
+  cutoff=$(date -u -d "${REAP_DAYS} days ago" +%Y-%m-%d 2>/dev/null) || return 0
+
+  say "Reaping test repositories older than ${cutoff}"
+
+  local listing keys removed=0
+  listing=$(curl -fsS --aws-sigv4 "$sig" --user "$auth" \
+    "https://${ENDPOINT}/${WASABI_BUCKET}?list-type=2&prefix=gate/&max-keys=1000" 2>/dev/null) || {
+      echo "    could not list the bucket; nothing reaped" >&2
+
+      return 0
+    }
+
+  # Every key under gate/<date>/ whose date is older than the cutoff. Parsed
+  # from the key rather than from the object's timestamp, because the date in
+  # the path is what this harness controls and a re-uploaded object would
+  # otherwise look young.
+  keys=$(printf '%s' "$listing" |
+    grep -oE '<Key>[^<]+</Key>' | sed 's/<[^>]*>//g' |
+    awk -F/ -v cutoff="$cutoff" '$1 == "gate" && $2 < cutoff')
+
+  for key in $keys; do
+    curl -fsS -o /dev/null -X DELETE --aws-sigv4 "$sig" --user "$auth" \
+      "https://${ENDPOINT}/${WASABI_BUCKET}/${key}" 2>/dev/null && removed=$((removed + 1))
+  done
+
+  echo "    removed ${removed} object(s)"
+}
+
+if [ "$REAP_ONLY" -eq 1 ]; then
+  reap
+
+  exit 0
+fi
+
+# ---------------------------------------------------------------------------
+# Build.
+# ---------------------------------------------------------------------------
+
+WORK="$(mktemp -d)"
+
+cleanup() {
+  for i in $(seq 1 "$SHAPES"); do
+    docker rm -f "${IMAGE}-${i}" >/dev/null 2>&1 || true
+  done
+
+  if [ "$KEEP" -eq 1 ]; then
+    printf '\n\033[1m==> kept: %s/%s/*\033[0m\n' "$BASE" "$PREFIX_ROOT"
+    printf '    repository passwords are in %s/*.password\n' "$WORK"
+  else
+    rm -rf "$WORK"
+  fi
+}
+
+trap cleanup EXIT
+
+say "Building"
+
+mkdir -p "$WORK/ctx"
+
+CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath \
+  -ldflags "-s -w -X main.version=$(git describe --tags --always 2>/dev/null || echo dev)" \
+  -o "$WORK/ctx/sion-backup" ./cmd/sion-backup
+
+CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags '-s -w' \
+  -o "$WORK/ctx/eumaeusstub" ./scripts/backup-e2e/eumaeusstub
+
+cp scripts/backup-e2e/run-machine "$WORK/ctx/"
+
+cat > "$WORK/ctx/Dockerfile" <<'DOCKER'
+# A machine that can reach a real bucket.
+#
+# jq for the assertions, ca-certificates for Wasabi's TLS and for restic's own
+# download from GitHub. No restic here: the binary installs its own pinned
+# build, and that download is part of what is being tested.
+FROM debian:stable-slim
+
+RUN apt-get update -qq \
+ && apt-get install -y -qq --no-install-recommends ca-certificates jq procps \
+ && rm -rf /var/lib/apt/lists/*
+
+COPY sion-backup /usr/local/bin/sion-backup
+COPY eumaeusstub /harness/eumaeusstub
+COPY run-machine /harness/run-machine
+RUN chmod 0755 /usr/local/bin/sion-backup /harness/eumaeusstub /harness/run-machine
+
+ENTRYPOINT ["/harness/run-machine"]
+DOCKER
+
+docker build -q -t "$IMAGE" "$WORK/ctx" >/dev/null
+
+# ---------------------------------------------------------------------------
+# Run, in parallel, one repository each.
+# ---------------------------------------------------------------------------
+
+say "Backing up ${SHAPES} machine(s) to ${WASABI_BUCKET}"
+echo "    ${BASE}/${PREFIX_ROOT}/<shape>"
+
+pids=()
+
+for i in $(seq 1 "$SHAPES"); do
+  shape="machine-${i}"
+  repo="${BASE}/${PREFIX_ROOT}/${shape}"
+
+  # Each in its own container, its own repository, its own log. Nothing is
+  # shared but the bucket and the credentials.
+  docker run --rm --name "${IMAGE}-${i}" \
+    -e "REPO_URL=${repo}" \
+    -e "KEY_ID=${WASABI_ACCESS_KEY_ID}" \
+    -e "SECRET=${WASABI_SECRET_ACCESS_KEY}" \
+    -e "NODE_ID=gate-${RUN_ID}-${i}" \
+    -e "SHAPE=${shape}" \
+    "$IMAGE" >"$WORK/${shape}.log" 2>&1 &
+
+  pids+=("$!")
+
+  echo "    started ${shape}"
+done
+
+failed=0
+i=0
+
+for pid in "${pids[@]}"; do
+  i=$((i + 1))
+
+  if ! wait "$pid"; then
+    failed=$((failed + 1))
+  fi
+done
+
+# Printed after the wait rather than streamed, because three machines writing
+# to one terminal at once is unreadable and the whole point is to be read.
+for i in $(seq 1 "$SHAPES"); do
+  shape="machine-${i}"
+
+  printf '\n\033[1m==================== %s ====================\033[0m\n' "$shape"
+  cat "$WORK/${shape}.log"
+done
+
+# ---------------------------------------------------------------------------
+
+say "Result"
+
+if [ "$failed" -gt 0 ]; then
+  printf '  \033[31m%d of %d machine(s) failed\033[0m\n\n' "$failed" "$SHAPES"
+else
+  printf '  \033[32mall %d machine(s) backed up, restored and verified\033[0m\n\n' "$SHAPES"
+fi
+
+[ "$KEEP" -eq 0 ] && reap
+
+exit "$([ "$failed" -gt 0 ] && echo 1 || echo 0)"

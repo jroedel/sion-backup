@@ -91,7 +91,16 @@ type Summary struct {
 	// Errors are the per-file failures restic reported as it went. A backup
 	// can finish with exit 3 and a valid snapshot while this list is long, and
 	// the list is the only place that says which files are not in it.
+	//
+	// Capped at maxErrorsKept. ErrorCount is how many there really were.
 	Errors []FileError
+
+	// ErrorCount is every per-file failure restic reported, including the ones
+	// past the cap. Separate from len(Errors) because "4000 files could not be
+	// read, here are the first hundred" and "100 files could not be read" are
+	// different sentences, and a machine reporting the second when the first
+	// is true is a machine nobody will investigate hard enough.
+	ErrorCount int `json:"-"`
 
 	// VSSFellBack records that a filesystem snapshot was asked for, refused,
 	// and the backup was retried against the live tree. The snapshot is real;
@@ -182,6 +191,15 @@ func (r *Runner) backupOnce(ctx context.Context, repo Repository, opts BackupOpt
 	// one line that carries the snapshot ID.
 	waitErr := cmd.Wait()
 
+	// And now stderr, which is where restic puts the per-file errors. Read
+	// after Wait because the buffer is only complete once the process has
+	// exited; safe to ignore a parse failure here because stderr also carries
+	// ordinary prose, and losing an error list must not turn a successful
+	// backup into a failed one.
+	if errs, err := parseBackup(bytes.NewReader(stderr.Bytes()), nil); err == nil {
+		summary.mergeErrors(errs)
+	}
+
 	if waitErr != nil {
 		var exit *exec.ExitError
 		if errors.As(waitErr, &exit) {
@@ -254,6 +272,19 @@ const maxErrorsKept = 100
 // It reads to the end even on a malformed line, deliberately: the summary is
 // the last message, and abandoning the parse over one unrecognised line in the
 // middle would discard the snapshot ID of a backup that actually succeeded.
+//
+// # Both streams carry JSON, and only one of them carries the errors
+//
+// restic writes progress and the summary to stdout, and per-file errors to
+// STDERR -- as JSON, with the same message_type envelope. A parser that reads
+// only stdout therefore sees a backup that exited 3 with an empty error list,
+// and reports "0 files could not be read" about a snapshot with holes in it.
+// That is what this did, and the list it could not fill is the one somebody
+// actually needs: which files are not in my backup.
+//
+// So the caller parses stderr too and merges. The counts are kept apart from
+// the merge so that a file appearing on both streams -- which no restic
+// version does today, and one might -- cannot be counted twice.
 func parseBackup(r interface{ Read([]byte) (int, error) }, onProgress func(Progress)) (Summary, error) {
 	var summary Summary
 
@@ -302,9 +333,19 @@ func parseBackup(r interface{ Read([]byte) (int, error) }, onProgress func(Progr
 			}
 
 		case "summary":
-			if err := json.Unmarshal(line, &summary); err != nil {
+			// Into a fresh value, then copied field by field. Unmarshalling
+			// over `summary` in place used to blank the errors collected
+			// above, and the code that compensated for it replaced real paths
+			// with the sentence "and N more" -- which is the count nobody was
+			// missing and none of the filenames anybody wanted.
+			var got Summary
+
+			if err := json.Unmarshal(line, &got); err != nil {
 				return summary, fmt.Errorf("restic: its summary line was unreadable: %w", err)
 			}
+
+			got.Errors = summary.Errors
+			summary = got
 		}
 	}
 
@@ -312,14 +353,25 @@ func parseBackup(r interface{ Read([]byte) (int, error) }, onProgress func(Progr
 		return summary, fmt.Errorf("restic: reading backup output: %w", err)
 	}
 
-	// Re-attached after the summary line overwrote the struct.
-	if errorCount > len(summary.Errors) {
-		summary.Errors = append(summary.Errors, FileError{
-			Error: fmt.Sprintf("and %d more", errorCount-len(summary.Errors)),
-		})
-	}
+	summary.ErrorCount = errorCount
 
 	return summary, nil
+}
+
+// mergeErrors folds the errors from a second stream into a summary.
+//
+// restic reports per-file failures on stderr while everything else goes to
+// stdout, so this is how the two halves of one backup are put back together.
+func (s *Summary) mergeErrors(other Summary) {
+	s.ErrorCount += other.ErrorCount
+
+	for _, e := range other.Errors {
+		if len(s.Errors) >= maxErrorsKept {
+			break
+		}
+
+		s.Errors = append(s.Errors, e)
+	}
 }
 
 // describeError reduces restic's error object to one sentence.
