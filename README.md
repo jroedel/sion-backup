@@ -159,6 +159,32 @@ before running anything:
 sha256sum --ignore-missing -c SHA256SUMS
 ```
 
+Before installing on a machine that is already backing up with the old
+scripts — which is most of them — look at what is there:
+
+```sh
+./sion-backup recon              # reads and reports; changes nothing
+```
+
+It finds the legacy install, says which bucket it has been writing to, what
+it backs up, what starts it, and what an upgrade means for that particular
+machine. It never prints a credential: the old scripts carry the S3 keys in
+plain text, and this says which file they are in and leaves them there. If the
+install is somewhere the notes never mentioned — they were done by hand —
+point at it with `--legacy-dir`.
+
+The installers run it for you and stop before doing anything irreversible:
+
+```sh
+./deploy/linux/install.sh                  # or: -ReconOnly on Windows
+powershell -File deploy\windows\install.ps1 -Elevated
+```
+
+Neither disables the old backup. That is the last step, after the new install
+has taken one verified backup: `install.sh --disable-legacy`, or
+`install.ps1 -DisableLegacyTask`. Two backup systems for one night is untidy;
+none is worse.
+
 To set up a machine:
 
 ```sh
