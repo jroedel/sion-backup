@@ -5,9 +5,20 @@
     cp us.schoenstatt.sion-backup.plist ~/Library/LaunchAgents/
     launchctl load -w ~/Library/LaunchAgents/us.schoenstatt.sion-backup.plist
 
-  An agent rather than a daemon because the credentials are in the login
-  Keychain, which is only unlocked inside a user session. A LaunchDaemon runs
-  as root before anybody logs in and would find the Keychain locked.
+  An agent rather than a daemon. The original reason — the credentials sat in
+  the login Keychain, which only unlocks inside a user session — no longer
+  applies: nothing is cached, and every run fetches its credentials from
+  Eumaeus and discards them. The reason now is Full Disk Access. Reading
+  ~/Documents, ~/Desktop and Mail is gated by TCC rather than by Unix
+  permissions, and the grant belongs to a user. Whatever runs this has to hold
+  it: for an agent, that is a checkbox the person clicks in System Settings ›
+  Privacy & Security › Full Disk Access; for a LaunchDaemon it is a PPPC
+  profile pushed by MDM.
+
+  NOTE: no Mac has ever run this. The legacy project scoped macOS and shipped
+  nothing — its "mac 0.2" folder is empty — so this file is reasoned from the
+  documentation rather than from a machine that took a backup. Treat the first
+  Mac as a test, not a deployment.
 
   RunAtLoad plus KeepAlive means it starts when the user logs in and is
   restarted if it exits. The scheduling is the program's own — see

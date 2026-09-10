@@ -6,22 +6,38 @@
   Run this from an elevated PowerShell, once per machine, while you are
   standing at it.
 
-  It registers a SCHEDULED TASK rather than a Windows service, and that is a
-  deliberate limitation worth understanding:
+  It registers a SCHEDULED TASK rather than a Windows service, and it runs as
+  the signed-in user. Both are worth understanding, because one of the reasons
+  is out of date.
 
-    * The credentials are sealed with DPAPI to the user's account, so whatever
-      runs the daemon must run AS THAT USER. A service running as
-      LocalSystem could not open them.
+    * The credentials are NO LONGER sealed with DPAPI. That used to be the
+      reason a service running as LocalSystem was impossible, and it is not
+      true any more: nothing is cached on this machine, and every run fetches
+      the S3 keys and the repository password from Eumaeus and discards them.
+      The one secret on disk is the machine token, in %LOCALAPPDATA%.
+
+      Which means running as SYSTEM, or as a dedicated local account, is now
+      open to us -- and it is better. The token would sit behind an ACL the
+      signed-in user cannot read, so ransomware running as that user could not
+      reach it, and Volume Shadow Copy would work without making the person an
+      administrator. It needs machine-scope paths first: foundation/paths
+      resolves %LOCALAPPDATA%, which under SYSTEM lands somewhere nobody would
+      look. Until then, this.
 
     * A proper Windows service also needs the binary to implement the service
       control handler (golang.org/x/sys/windows/svc). It does not yet, and a
       scheduled task with "restart on failure" gets the same practical result.
       See "Known gaps" in the README.
 
-  -Elevated registers the task to run with highest privileges, which is what
-  Volume Shadow Copy needs. Without it, backups still run, and files that are
-  open at the time -- Outlook's .pst above all -- are backed up from the live
-  tree and marked degraded. See restic.BackupOptions.AllowVSSFallback.
+  USE -Elevated. It registers the task to run with highest privileges, which is
+  what Volume Shadow Copy needs, and VSS is not optional on a machine with
+  Outlook on it: without it, every open file is backed up from the live tree,
+  every run is recorded degraded, and a .pst that is open all day is backed up
+  in whatever state it happened to be in. The legacy Windows script used
+  --use-fs-snapshot from the start, for exactly this reason.
+
+  Without -Elevated the install still works and backups still run. They are
+  just worse, quietly, until somebody reads the status page.
 #>
 
 [CmdletBinding()]
@@ -113,8 +129,9 @@ finally {
 
 Write-Host "Installed to $InstallDir (restic $resticVersion)"
 
-# The task runs as the logged-in user, because that is whose profile is being
-# backed up and whose DPAPI keys seal the credentials.
+# The task runs as the signed-in user, because that is whose profile is being
+# backed up and whose %LOCALAPPDATA% holds the machine token. Not because of
+# DPAPI: see the note at the top of this file.
 $user = "$env:USERDOMAIN\$env:USERNAME"
 
 $action = New-ScheduledTaskAction `
@@ -153,9 +170,14 @@ Write-Host "Registered the scheduled task 'sion-backup' as $user (run level: $le
 if (-not $Elevated) {
   Write-Warning @"
 Registered WITHOUT elevation, so Volume Shadow Copy is unavailable.
-Files that are open during a backup -- Outlook data files especially -- will be
-read from the live tree and the run will be marked degraded.
-Re-run with -Elevated to fix that.
+
+Every file that is open during a backup -- Outlook data files above all -- will
+be read from the live tree, and every run will be recorded as degraded. This is
+the one setting on Windows that is worth going back for:
+
+    .\install.ps1 -Elevated
+
+"sion-backup doctor" will keep saying so until it is fixed.
 "@
 }
 

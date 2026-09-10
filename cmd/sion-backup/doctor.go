@@ -196,6 +196,19 @@ func doctorCmd(args []string) error {
 		}
 	})
 
+	// Windows only; snapshotCheck skips itself elsewhere.
+	c.check("shadow copies", func() (string, error) {
+		last, err := d.backups.Last(ctx)
+		if err != nil {
+			// Including ErrNoRuns: a machine checked before its first backup
+			// is the machine most worth telling, because whoever installed it
+			// is still standing there.
+			return snapshotCheck(false, false)
+		}
+
+		return snapshotCheck(last.VSSFellBack, true)
+	})
+
 	c.check("status page port", func() (string, error) {
 		addr := d.cfg.Addr()
 
@@ -223,6 +236,12 @@ func doctorCmd(args []string) error {
 	return nil
 }
 
+// errSkipCheck reports a check that does not apply to this machine, as
+// opposed to one that passed or failed. Returning it prints nothing and
+// counts as nothing: a Linux machine should not be told that a Windows
+// feature is fine, and it should not be told that it is missing either.
+var errSkipCheck = errors.New("this check does not apply on this platform")
+
 // checker runs and prints the checks.
 type checker struct {
 	total  int
@@ -238,6 +257,13 @@ func (c *checker) check(name string, fn func() (string, error)) {
 	c.total++
 
 	detail, err := fn()
+
+	if errors.Is(err, errSkipCheck) {
+		c.total--
+
+		return
+	}
+
 	if err != nil {
 		c.failed++
 
