@@ -113,10 +113,43 @@ func (r *Runner) Restore(ctx context.Context, repo Repository, opts RestoreOptio
 // `--read-data-subset` is for, and it costs egress on every byte it reads —
 // which on Wasabi is billed. The scheduler runs the cheap one weekly; the
 // expensive one is a decision for a person.
-func (r *Runner) Check(ctx context.Context, repo Repository) error {
-	_, err := r.run(ctx, repo, "check")
+func (r *Runner) Check(ctx context.Context, repo Repository, opts ...CheckOption) error {
+	args := []string{"check"}
+
+	var cfg checkConfig
+	for _, o := range opts {
+		o(&cfg)
+	}
+
+	if cfg.subset != "" {
+		args = append(args, "--read-data-subset="+cfg.subset)
+	}
+
+	_, err := r.run(ctx, repo, args...)
 
 	return err
+}
+
+// CheckOption varies what a check actually reads.
+type CheckOption func(*checkConfig)
+
+type checkConfig struct{ subset string }
+
+// ReadDataSubset makes the check re-read a slice of the pack data rather than
+// only the metadata that refers to it.
+//
+// This is the difference between "the repository is internally consistent" and
+// "the bytes are still there and still decrypt". A plain check reads indexes
+// and trees, so it catches a missing pack and a broken reference; it cannot
+// catch a pack that is present, correctly named, the right length, and wrong.
+// Only reading it back does.
+//
+// The cost is the point of the slice. Reading everything means downloading the
+// whole repository, which on a laptop is measured in hours and on a phone in
+// money. "1/52" a week covers all of it in a year and moves about two percent
+// of it at a time.
+func ReadDataSubset(spec string) CheckOption {
+	return func(c *checkConfig) { c.subset = spec }
 }
 
 // There is deliberately no Forget or Prune here.
