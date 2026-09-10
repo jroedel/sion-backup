@@ -3,6 +3,7 @@ package main
 import (
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/jroedel/sion-backup/business/domain/backup/backupbus"
 	"github.com/jroedel/sion-backup/business/domain/fleet/fleetbus"
 	"github.com/jroedel/sion-backup/business/domain/plan/planbus"
@@ -32,24 +33,49 @@ func backupOptions(plan planbus.Plan) restic.BackupOptions {
 	}
 }
 
+// newRunUUID mints the identity a run is known by on the dashboard.
+//
+// UUIDv7, because it sorts by time: the server can order one machine's runs
+// without trusting the clock of a laptop that has crossed three time zones,
+// and without an autoincrement that starts again at 1 on a reimaged machine.
+//
+// A failure here — crypto/rand being unavailable — must not stop a backup, so
+// it returns the empty string and the run goes ahead unreportable. The server
+// will reject its events with a 400 and fleetbus will discard them loudly,
+// which is the right order of priorities: the files matter, the dashboard row
+// does not.
+func newRunUUID() string {
+	id, err := uuid.NewV7()
+	if err != nil {
+		return ""
+	}
+
+	return id.String()
+}
+
 // startEvent announces that a run has begun.
 //
-// It carries no run ID, because the row is created inside backupbus and this
-// is sent before that happens. The dashboard matches it to the finished event
-// by node and time, and the point of it is not bookkeeping — it is that a
+// It carries the same run UUID the finished event will, which is what lets the
+// dashboard pair them, and the point of it is not bookkeeping — it is that a
 // machine which dies mid-backup leaves a start with no end.
-func startEvent(plan planbus.Plan) fleetbus.Event {
+func startEvent(plan planbus.Plan, runUUID string, seeding bool) fleetbus.Event {
 	return fleetbus.Event{
-		NodeID:     plan.NodeID,
-		Repository: plan.Repository,
-		Phase:      fleetbus.PhaseStarted,
-		StartedAt:  time.Now(),
-		Agent:      version,
-		OS:         osName(),
+		NodeID:        plan.NodeID,
+		RunUUID:       runUUID,
+		RepositoryURL: plan.Repository,
+		Seeding:       seeding,
+		Phase:         fleetbus.PhaseStarted,
+		StartedAt:     time.Now(),
+		Agent:         version,
+		OS:            osName(),
 	}
 }
 
 // eventFor turns a finished run into what the fleet dashboard is told.
+//
+// Everything it needs comes off the stored run, including the UUID and the
+// seeding flag, so a run reported days after it happened reports the same
+// thing it would have on the night.
 //
 // The paths of unreadable files are deliberately reduced to a count. They are
 // on the machine's own status page in full; sending them would put a list of
@@ -59,8 +85,9 @@ func eventFor(r backupbus.Run) fleetbus.Event {
 
 	return fleetbus.Event{
 		NodeID:          r.NodeID,
-		Repository:      r.Repository,
-		RunID:           r.ID,
+		RunUUID:         r.RunUUID,
+		RepositoryURL:   r.Repository,
+		Seeding:         r.Seeding,
 		Phase:           fleetbus.PhaseFinished,
 		StartedAt:       r.StartedAt,
 		FinishedAt:      &finished,

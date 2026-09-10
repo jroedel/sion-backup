@@ -84,9 +84,26 @@ func (o Outcome) Good() bool { return o == OutcomeSuccess }
 
 // Run is one backup attempt, as recorded.
 type Run struct {
-	ID         int64
-	NodeID     string
+	ID     int64
+	NodeID string
+
+	// RunUUID is how the fleet dashboard names this run: a UUIDv7 minted
+	// before the backup starts, sent on both the started and the finished
+	// event, and stored here so a run reported days later — a laptop that
+	// backed up on a plane — still reports the identity it announced.
+	//
+	// ID cannot do that job. It does not exist yet when the start is
+	// announced, and it counts from 1 again on a reimaged machine.
+	RunUUID string
+
 	Repository string
+
+	// Seeding marks the first backup into a newly provisioned repository: the
+	// one that uploads everything and that the server's cutover guard waits
+	// on. See docs/eumaeus-api.md §7 — it is not "full vs incremental", which
+	// is a distinction restic does not have.
+	Seeding bool
+
 	StartedAt  time.Time
 	FinishedAt time.Time
 	Outcome    Outcome
@@ -132,6 +149,7 @@ func (r Run) Duration() time.Duration {
 // Storer is the persistence this domain needs.
 type Storer interface {
 	Create(ctx context.Context, r Run) (int64, error)
+	SeenRepository(ctx context.Context, repository string) (bool, error)
 	Finish(ctx context.Context, r Run) error
 	Recent(ctx context.Context, limit int) ([]Run, error)
 	Last(ctx context.Context) (Run, error)
@@ -157,7 +175,19 @@ var ErrAlreadyRunning = errors.New("backupbus: a backup is already running")
 // composition root, which fetches them from Eumaeus and wipes them — means
 // there is one lifetime to reason about rather than one per domain.
 type Request struct {
-	NodeID     string
+	NodeID string
+
+	// RunUUID names this run to the fleet dashboard. Supplied by the caller
+	// because the "started" event goes out before Run is called and has to
+	// carry the same value; see cmd/sion-backup/events.go.
+	//
+	// An empty one is not refused. A run that cannot be reported is still a
+	// backup worth taking, and the reporting side is built to discard an event
+	// the server rejects rather than to retry it forever — see fleetbus.
+	RunUUID string
+
+	Seeding bool
+
 	Repository restic.Repository
 	Options    restic.BackupOptions
 }
@@ -229,6 +259,20 @@ func (b *Runner) Unreported(ctx context.Context, limit int) ([]Run, error) {
 	return b.store.Unreported(ctx, limit)
 }
 
+// Seeding reports whether the next run against this repository will be its
+// first — the one that uploads everything.
+//
+// Asked before a run starts, because both events it produces have to say the
+// same thing about it.
+func (b *Runner) Seeding(ctx context.Context, repository string) (bool, error) {
+	seen, err := b.store.SeenRepository(ctx, repository)
+	if err != nil {
+		return false, err
+	}
+
+	return !seen, nil
+}
+
 // MarkReported records that the fleet dashboard has been told about a run.
 func (b *Runner) MarkReported(ctx context.Context, id int64, at time.Time) error {
 	return b.store.MarkReported(ctx, id, at)
@@ -252,7 +296,9 @@ func (b *Runner) Run(ctx context.Context, req Request, now func() time.Time) (Ru
 
 	run := Run{
 		NodeID:     req.NodeID,
+		RunUUID:    req.RunUUID,
 		Repository: req.Repository.URL,
+		Seeding:    req.Seeding,
 		StartedAt:  started,
 		Outcome:    OutcomeFailed,
 	}

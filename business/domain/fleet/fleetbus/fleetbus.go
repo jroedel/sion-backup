@@ -48,11 +48,26 @@ const (
 // on the finance officer's laptop" is not information that needs to be there.
 // The status page on the machine itself shows the paths.
 type Event struct {
-	NodeID     string    `json:"node_id"`
-	Repository string    `json:"repository"`
-	RunID      int64     `json:"run_id"`
-	Phase      Phase     `json:"phase"`
-	StartedAt  time.Time `json:"started_at"`
+	// NodeID is not sent. The server identifies the machine by its token, and
+	// a client that could name a machine in the body could name somebody
+	// else's. It is kept here because every log line about a run wants it.
+	NodeID string `json:"-"`
+
+	// RunUUID is a UUIDv7 minted before the run began. Both phases of one run
+	// carry the same value, and the server is idempotent on it: an
+	// acknowledgement lost in transit produces a resend, not a second row on
+	// the dashboard.
+	RunUUID string `json:"run_uuid"`
+
+	RepositoryURL string `json:"repository_url"`
+
+	// Seeding is the first backup into a newly provisioned repository. It is
+	// what the server's cutover guard waits on, and it is why a machine that
+	// has been uploading for two days is not overdue.
+	Seeding bool `json:"seeding"`
+
+	Phase     Phase     `json:"phase"`
+	StartedAt time.Time `json:"started_at"`
 
 	FinishedAt *time.Time `json:"finished_at,omitempty"`
 	Outcome    string     `json:"outcome,omitempty"`
@@ -120,7 +135,7 @@ func NewBusiness(reporter Reporter, log *slog.Logger) *Business {
 func (b *Business) Report(ctx context.Context, e Event) error {
 	if err := b.reporter.Report(ctx, e); err != nil {
 		b.log.Warn("the fleet dashboard could not be told about a run",
-			"node", e.NodeID, "run", e.RunID, "phase", e.Phase, "err", err)
+			"node", e.NodeID, "run", e.RunUUID, "phase", e.Phase, "err", err)
 
 		return err
 	}
@@ -136,13 +151,31 @@ func (b *Business) Report(ctx context.Context, e Event) error {
 // will fail identically and thirty timeouts is thirty times the delay; and the
 // dashboard should see a machine's history in order, not with holes where a
 // transient error fell.
+//
+// An event the server rejects outright is the exception: it is marked reported
+// and the flush carries on. See ErrRejected.
 func (b *Business) Flush(ctx context.Context, pending []Pending,
 	markReported func(context.Context, int64) error) (sent int, err error) {
 
-	for _, p := range pending {
-		if err := b.reporter.Report(ctx, p.Event); err != nil {
+	for i, p := range pending {
+		landed := true
+
+		switch err := b.reporter.Report(ctx, p.Event); {
+		case errors.Is(err, ErrRejected):
+			// Loud, because this is a bug in this program rather than a
+			// condition of the world: the server is saying it could not parse
+			// what we sent, and no amount of resending will change that. It is
+			// still marked reported below — see ErrRejected.
+			landed = false
+
+			b.log.Error("the fleet dashboard rejected a run event as malformed; "+
+				"dropping it rather than resending it forever",
+				"node", p.Event.NodeID, "run", p.Event.RunUUID,
+				"phase", p.Event.Phase, "err", err)
+
+		case err != nil:
 			b.log.Debug("stopping the flush at the first failure",
-				"sent", sent, "remaining", len(pending)-sent, "err", err)
+				"sent", sent, "remaining", len(pending)-i, "err", err)
 
 			return sent, err
 		}
@@ -155,7 +188,9 @@ func (b *Business) Flush(ctx context.Context, pending []Pending,
 			return sent, err
 		}
 
-		sent++
+		if landed {
+			sent++
+		}
 	}
 
 	return sent, nil
@@ -165,3 +200,20 @@ func (b *Business) Flush(ctx context.Context, pending []Pending,
 // tell "not set up" from "set up and broken", which are different things to
 // show on a status page.
 var ErrNoServer = errors.New("fleetbus: no fleet server is configured")
+
+// ErrRejected reports an event the server will never accept — a malformed
+// body, not a server having a bad day.
+//
+// It exists because the two failures need opposite handling. A network error
+// means "try again later", and an event held back is a gap the dashboard will
+// fill in when the laptop comes home. A rejection means "this will never
+// parse", and an event held back for that reason is retried every hour until
+// somebody notices the log, blocking every later event behind it in the
+// process — Flush sends in order and stops at the first failure.
+//
+// So a rejection is logged at error level and the run is marked reported, on
+// the grounds that a run nobody can be told about is not worth stopping the
+// rest of the history for. The server's side of this bargain is that it
+// returns 400 only for a body it genuinely cannot parse, never for an event it
+// merely finds unwelcome — see docs/eumaeus-api.md §7.
+var ErrRejected = errors.New("fleetbus: the server rejected the event")

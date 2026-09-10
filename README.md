@@ -426,11 +426,15 @@ Named here rather than left to be discovered.
   but the hashes were copied from upstream's `SHA256SUMS` by hand. Verifying
   restic's GPG signature when bumping the pin is a manual step, documented in
   that file rather than automated.
-- **The Eumaeus side is half-built.** The server at https://terraboskamp.org
-  answers under `/api/backup/v1`, but the client has only three of the six
-  endpoints in [`docs/eumaeus-api.md`](docs/eumaeus-api.md) — claim,
-  credentials and runs — and the run event it posts is still the pre-`run_uuid`
-  shape from the first draft. See §11 there for what is done and what is not.
+- **Three of the six endpoints are unimplemented here.** The server at
+  https://terraboskamp.org answers all six; this client speaks claim,
+  credentials and runs. The hourly state poll, the rotation request and the
+  card-issued call are not built — see §11 of
+  [`docs/eumaeus-api.md`](docs/eumaeus-api.md) for the list and what each costs.
+- **Nothing has been enrolled end to end yet.** Every call is exercised against
+  a test server and the run event is checked field by field against the
+  specification, but no machine has claimed a real code, so the first real
+  enrollment is still the first real test.
 - **Bucket and IAM provisioning is not built.** Eumaeus is to hold a Wasabi key
   that creates buckets and mints two keys per bucket — a machine key that may
   delete only under `locks/*`, and a read-only restore key for the owner's
