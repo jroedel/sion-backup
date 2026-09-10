@@ -69,9 +69,16 @@ func (s *Source) Fetch(ctx context.Context) (credentialbus.Set, error) {
 	err := s.client.Do(ctx, http.MethodGet, path, nil, &got)
 
 	switch {
-	case errors.Is(err, eumaeusapi.ErrUnauthorised):
+	case errors.Is(err, eumaeusapi.ErrUnauthorised), errors.Is(err, eumaeusapi.ErrForbidden):
 		// Distinguished so the daemon stops retrying and the status page can
 		// say something true. A revoked token will still be revoked in an hour.
+		//
+		// Both statuses, and only on this endpoint. A machine that may not
+		// read its own credentials cannot back up whichever status says so,
+		// so the honest thing to show is de-enrolment. Elsewhere a 403 means
+		// something quite different — the fleet has fresh buckets switched
+		// off — and eumaeusapi keeps them apart so that only the calls where
+		// the two coincide put them back together.
 		return credentialbus.Set{}, &credentialbus.Unauthorised{Err: err}
 
 	case errors.Is(err, eumaeusapi.ErrNotFound):

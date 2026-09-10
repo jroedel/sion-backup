@@ -398,7 +398,7 @@ be read. That is theirs.
 
 ## The Eumaeus side does not exist yet
 
-The contract is three documents, in the order to read them:
+The contract is these documents, in the order to read them:
 
 | | |
 |---|---|
@@ -406,6 +406,7 @@ The contract is three documents, in the order to read them:
 | [`docs/eumaeus-api.md`](docs/eumaeus-api.md) | the endpoint specification, and the rules a correct server has to follow |
 | [`docs/openapi.yaml`](docs/openapi.yaml) | the same endpoints, machine-readable. `make api-check` validates it and all 29 examples in it |
 | [`docs/eumaeus-requests.md`](docs/eumaeus-requests.md) | what this client needs from the server, and the behaviours it now depends on — the document to hand to whoever works on Eumaeus |
+| [`docs/eumaeus-followup.md`](docs/eumaeus-followup.md) | the reply to Eumaeus's answers of 2026-09-10: what changed here because of them, what they did not see, and what is still open |
 
 Six endpoints. The installation at `https://terraboskamp.org` now answers
 under this base path; the client speaks the first, third and fourth of them:

@@ -102,9 +102,9 @@ cannot enrol, cannot write configuration, and cannot reach any other part of
 Eumaeus.
 
 **Revocation must be immediate**, and revoking it is how a lost laptop is cut
-off. The client treats `401`/`403` as terminal: it stops trying, and the status
-page says the machine has been de-enrolled rather than showing a network error
-forever.
+off. The client treats `401` as terminal: it stops trying, and the status page
+says the machine has been de-enrolled rather than showing a network error
+forever. A `403` is *not* that — see §3.3.
 
 > Revocation is now sufficient on its own. Because the machine caches no
 > credentials, cutting off a stolen laptop is one click: revoke the token and
@@ -153,14 +153,31 @@ The client distinguishes only four outcomes, so the choice of status matters:
 | Status | Client behaviour |
 |---|---|
 | `2xx` | Success. Response body discarded unless the endpoint returns data |
+| `400` | The `error` sentence and `field` are decoded out and shown as they stand — see below |
 | `404` | "No such thing" — an ordinary answer, not a failure |
 | `409` | Only meaningful on the claim: the code has already been used |
-| `401`, `403` | Terminal. Never retried. Surfaced to the user as de-enrolment |
+| `401` | Terminal. Never retried. Surfaced to the user as de-enrolment |
+| `403` | Refused, but not de-enrolment. What it means is the endpoint's business |
 | anything else `>= 300` | Generic failure: logged with the body included, retried later |
 
 Everything outside that list is one error to the client: a `429` and a `500`
 are indistinguishable. If you need it to behave differently, the case has to
-map onto one of the five.
+map onto one of the six.
+
+**`401` and `403` are two answers, not one.** They were one until 2026-09-10,
+and the bug that reading hides is quiet: `403` is how §8 says a fleet has
+fresh buckets switched off, which is the ordinary state of a fleet where
+nobody has turned them on, and a client that read it as `401` would tell an
+owner their machine had been de-enrolled because an administrator had never
+changed a setting. Where the two genuinely coincide — §6, where a token that
+may not read its own credentials is finished either way — it is the endpoint's
+own code that puts them back together, and says so.
+
+**The `error` sentence reaches a person.** On a refused claim it is printed to
+whoever is standing at the machine, so the client decodes `error` and `field`
+and shows that and nothing else: no JSON, no status, and no package name from
+either side. Anything unparseable is kept verbatim instead, because a proxy's
+error page is still better than an empty line.
 
 ### 3.4 Limits
 
@@ -331,7 +348,7 @@ Because this contains no secrets, it may be logged in full — unlike §6.
 | Status | When |
 |---|---|
 | `200` / `304` | |
-| `401`, `403` | Token revoked. Terminal for the client |
+| `401` | Token revoked or the machine retired. Terminal for the client |
 
 ---
 
@@ -487,8 +504,8 @@ future client adding a sixth value must not blank a dashboard.
 | Status | When |
 |---|---|
 | `200`, `204` | Recorded |
-| `400` | Malformed. **The client marks the run reported and logs loudly** — a request the server calls malformed will not become well-formed by being resent |
-| `401`, `403` | Terminal |
+| `400` | Malformed. **The client marks the run reported and logs loudly** — a request the server calls malformed will not become well-formed by being resent. This is why `400` may never mean "the server could not store it": see [`eumaeus-followup.md`](eumaeus-followup.md) §1 |
+| `401` | Terminal |
 
 ---
 
@@ -519,7 +536,7 @@ on the machine can create a bucket, and nothing should.
 |---|---|
 | `202` | Queued |
 | `409` | A request is already open for this machine, or a rotation is already in progress |
-| `403` | `fresh_bucket_available` is false for this machine |
+| `403` | Fresh buckets are not on offer. The setting is **fleet-wide**, not per machine, so this is an ordinary answer and not a fault of this machine's |
 
 > **Why a request and not an automatic provision.** Eumaeus holds the Wasabi
 > key and could create the bucket on the spot. It should not: provisioning
@@ -594,7 +611,9 @@ Done, in this repository:
 | One secret on disk, in a 0600 file | `foundation/token` |
 | `enroll --code`, claiming against this API | `cmd/sion-backup/enroll.go` |
 | The owner's restore card, printed at enrollment | `cmd/sion-backup/enroll.go` |
-| `401`/`403` surfaced as de-enrolment, not a network error | `credentialbus.Unauthorised` |
+| `401` surfaced as de-enrolment, not a network error | `credentialbus.Unauthorised` |
+| `403` kept apart from it, so a fleet setting cannot read as de-enrolment | `eumaeusapi.ErrForbidden` |
+| The server's own sentence shown to the installer, without a prefix | `eumaeusapi.BadRequest` |
 | Weekly `restic stats` measurement, stored locally | `foundation/restic.Measure`, `planbus.Measurement` |
 | The rotation card, with both halves of the trade | `statusapp`, `planbus.ConsiderRotation` |
 | Every call under the versioned base path (§3.1) | `eumaeusapi.APIPrefix` |
