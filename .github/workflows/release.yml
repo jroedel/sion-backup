@@ -202,6 +202,55 @@ jobs:
             --candidate dist/sion-backup-linux-amd64 \
             --version "$GITHUB_REF_NAME"
 
+      # The third gate: does a machine running this build still back up, and
+      # can what it wrote be read back?
+      #
+      # BLOCKS on a failed restore or a failed integrity check, and only WARNS
+      # when the bucket could not be reached. The line is one question -- did
+      # this tell us anything about the release? A restore that comes back
+      # wrong did. Wasabi having a bad afternoon did not, and failing a release
+      # over somebody else's outage turns a safety measure into the thing that
+      # stops work, which is what an IP allowlist did to v0.3.0.
+      #
+      # scripts/backup-e2e/run distinguishes them: exit 1 is the build, exit 2
+      # is the weather. It refuses to report exit 2 when it could not run the
+      # probe at all, so a gate that never gates is not a state this can reach
+      # quietly.
+      - name: Gate — does it still back up, and can it be restored?
+        env:
+          WASABI_ACCESS_KEY_ID: ${{ secrets.WASABI_ACCESS_KEY_ID }}
+          WASABI_SECRET_ACCESS_KEY: ${{ secrets.WASABI_SECRET_ACCESS_KEY }}
+          WASABI_BUCKET: ${{ vars.WASABI_BUCKET }}
+          WASABI_REGION: ${{ vars.WASABI_REGION }}
+        run: |
+          if [ -z "${WASABI_ACCESS_KEY_ID:-}" ] || [ -z "${WASABI_BUCKET:-}" ]; then
+            echo "::warning::Wasabi is not configured; this release ships without"
+            echo "::warning::anyone having checked that it can still take a backup."
+
+            exit 0
+          fi
+
+          set +e
+          scripts/backup-e2e/run --shapes 2
+          status=$?
+          set -e
+
+          case "$status" in
+            0)
+              echo "::notice::backed up, restored and verified on two machines."
+              ;;
+            2)
+              echo "::warning::The bucket could not be reached, so nothing was"
+              echo "::warning::learned about this build. Publishing anyway."
+              ;;
+            *)
+              echo "::error::A machine running this build could not back up or"
+              echo "::error::could not restore what it wrote. Not publishing."
+
+              exit 1
+              ;;
+          esac
+
       # Whatever the gate leaked. It destroys its own instance from a trap, so
       # this is for the run that was cancelled between buying one and getting
       # to the trap — which is the only way a box is ever left billing.

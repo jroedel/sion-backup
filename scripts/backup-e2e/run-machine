@@ -40,6 +40,19 @@ STUB_ADDR=127.0.0.1:8088
 
 fail=0
 
+# EXIT CODES, and the distinction they carry.
+#
+#   0  the machine backed up, restored and verified
+#   1  it ran and the program misbehaved -- BLOCK the release
+#   2  it could not run at all -- DEGRADE, and say so
+#
+# The line between 1 and 2 is one question: did this tell us anything about the
+# release? A restore that comes back wrong did. A bucket nobody could reach did
+# not, and failing a release over somebody else's outage turns a safety measure
+# into the thing that stops work -- which is exactly what a Vultr key with an
+# IP allowlist did to v0.3.0.
+readonly UNREACHABLE=2
+
 say()  { printf '\n\033[1m-- %s\033[0m\n' "$*"; }
 ok()   { printf '   \033[32mok\033[0m   %s\n' "$*"; }
 bad()  { printf '   \033[31mFAIL\033[0m %s\n' "$*"; fail=1; }
@@ -98,6 +111,53 @@ human() { awk -v b="$1" 'BEGIN{
 }'; }
 
 id "$USER_NAME" >/dev/null 2>&1 || useradd --create-home --shell /bin/bash "$USER_NAME"
+
+# ---------------------------------------------------------------------------
+# 0. Can the bucket be reached at all?
+#
+# Asked first, and asked directly rather than inferred from a later failure,
+# because everything after this point is ambiguous. `enroll` reaches S3 to
+# prove the repository opens, so an enroll that fails could be a broken release
+# or a broken network, and a gate that cannot tell those apart will eventually
+# block a good release or pass a bad one.
+#
+# Once this succeeds, every subsequent failure is the program's.
+# ---------------------------------------------------------------------------
+
+probe_bucket() {
+  local host path
+  host=${REPO_URL#s3:https://}
+  host=${host%%/*}
+  path=${REPO_URL#s3:https://"$host"/}
+  path=${path%%/*}
+
+  # HEAD on the bucket. Signed, so this also catches a key that has been
+  # revoked or a policy that has been narrowed -- neither of which is evidence
+  # about the release either.
+  curl -fsS -o /dev/null --max-time 30 -I \
+    --aws-sigv4 "aws:amz:${AWS_REGION:-us-central-1}:s3" \
+    --user "${KEY_ID}:${SECRET}" \
+    "https://${host}/${path}" 2>/tmp/probe.err
+}
+
+# The probe must be able to run. Degrading is how this harness declines to
+# block a release, so entering it by accident -- a missing tool, a typo -- would
+# be a gate that never gates, and nobody would notice because the output would
+# look like an outage. A harness that cannot probe is broken, not degraded.
+if ! command -v curl >/dev/null 2>&1; then
+  bad "curl is missing from this image, so the bucket cannot be probed"
+  note "refusing to report an outage this cannot distinguish from a bug"
+
+  exit 1
+fi
+
+if ! probe_bucket; then
+  printf '\n\033[33m-- the bucket could not be reached\033[0m\n'
+  sed 's/^/        /' /tmp/probe.err 2>/dev/null
+  printf '        nothing was learned about this build; not blocking on it\n'
+
+  exit "$UNREACHABLE"
+fi
 
 # ---------------------------------------------------------------------------
 # 1. Something worth backing up.
@@ -226,8 +286,14 @@ chown "$USER_NAME" "$CONFIG_DIR/config.toml"
 
 say "restic"
 
-as_user "$EXE" restic >/tmp/restic-install.log 2>&1 ||
-  { bad "could not install restic"; tail -5 /tmp/restic-install.log; exit 1; }
+# restic comes from GitHub, not the bucket, so a failure here is somebody
+# else's outage too.
+if ! as_user "$EXE" restic >/tmp/restic-install.log 2>&1; then
+  printf '\n\033[33m-- restic could not be downloaded\033[0m\n'
+  tail -5 /tmp/restic-install.log | sed 's/^/        /'
+
+  exit "$UNREACHABLE"
+fi
 
 RESTIC="${CONFIG_DIR}/bin/restic"
 

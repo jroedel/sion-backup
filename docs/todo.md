@@ -287,9 +287,18 @@ instead, so being wrong costs a few hundred megabytes rather than a phone bill.
   and deserves the same treatment the reap tag filter got.
 - Real boxes only, or the container matrix too? Keeping the 19 container cases
   hermetic is worth something; this belongs in the real-box gate.
-- Blocking or degrading? After the v0.3.0 Vultr failure: degrade when the
-  bucket is unreachable, because that is not evidence about the release --
-  but block when a restore fails, because that is.
+- ~~Blocking or degrading?~~ **Decided: both.** A failed restore or a failed
+  integrity check blocks the release; an unreachable bucket only warns. The
+  line is one question -- did this tell us anything about the release? The
+  harness answers it by probing the bucket FIRST, before anything ambiguous
+  happens, so `enroll` failing is never mistaken for Wasabi being down.
+
+  The probe is also why it refuses to degrade when it cannot probe. Degrading
+  is how this declines to block a release, so reaching it by accident -- a
+  missing tool, a typo -- would be a gate that never gates, and the output
+  would look exactly like an outage. That path is `exit 1`, not `exit 2`.
+  Found by running it: `curl` was missing from the image and every run
+  degraded silently.
 
 ## Gate coverage
 
