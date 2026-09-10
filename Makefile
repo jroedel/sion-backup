@@ -163,6 +163,14 @@ tag-major: ## Tag the next major release, v(X+1).0.0, and push it
 
 ##@ Housekeeping
 
+.PHONY: deploy-ready
+deploy-ready: ## Check the repo's secrets, variables and credentials before tagging
+	scripts/deploy-ready
+
+.PHONY: deploy-propagate
+deploy-propagate: ## Push this machine's credentials to the repo's secrets and variables
+	scripts/deploy-ready --propagate
+
 .PHONY: selfupdate-e2e
 selfupdate-e2e: ## Every way a release can be wrong, in containers (needs docker)
 	scripts/selfupdate-e2e/run
