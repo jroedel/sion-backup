@@ -175,16 +175,54 @@ The key is account-wide; Vultr has no per-resource scoping. Restrict it to your
 own address in its access control list for local use, and if blast radius
 matters, use a separate Vultr account with a small balance for CI.
 
-### Rehearse the gate before the first tag — NOT DONE
+### v0.3.0 is tagged, gated, and NOT published — NEEDS A DECISION
 
-The gate has never run inside the release workflow. Run it by hand against a
-real instance first, with the version of a release that does not exist yet:
+The tag exists on the remote. The gate never ran: `vultr-testbed up` refused at
+its own preflight because Vultr answered
+
+    {"error":"Unauthorized IP address","status":401}
+
+The key is valid; its IP access control list does not include the runner. It
+cannot: a GitHub-hosted runner's address changes every run and comes from
+ranges far too large to list. The same key is refused from the development box
+too, whose egress address is not stable either.
+
+So nothing reached the fleet, which is the design working —
+`/releases/latest` still answers `v0.2.0` to an unauthenticated client, which
+is exactly what a client machine asks. Nothing was bought: the preflight runs
+before the instance is created, so there is no leaked box, and this could not
+be confirmed the other way because checking also needs the key.
+
+Two ways forward, and the choice is about how much a full-account key in CI is
+worth guarding:
+
+1. **Clear the allowlist on a CI-only key**, held in a separate Vultr account
+   with a small balance. The gate then runs on a real instance, which is the
+   stronger evidence. The exposure is a key that works from anywhere, in this
+   repository's Actions secrets — not reachable from fork pull requests, but
+   account-wide within that account.
+2. **Keep the allowlist and let CI gate in a container.** Free, no new
+   credential exposure, and the upgrade it performs is real — a real
+   `install.sh`, a real restic fetch, a real systemd user manager, a real
+   swap. What it cannot speak to is a locked-down laptop, because it runs
+   privileged. Vultr then stays a by-hand tool, run from an allowlisted
+   machine.
+
+The workflow now degrades to (2) automatically rather than blocking, so a
+re-run publishes v0.3.0 either way. Option 1 is a change to make in the Vultr
+panel, not in this repository.
+
+### Rehearse the gate before the first tag — SUPERSEDED
+
+Overtaken by events: the first tag was cut before the rehearsal, and the gate
+blocked it, which is the outcome the rehearsal was meant to avoid discovering
+this way. Kept as a note that the rehearsal is still the cheaper order for the
+next credential-dependent thing added to the release path.
 
     make release GOOS=linux GOARCH=amd64
-    scripts/selfupdate-gate --candidate dist/sion-backup-linux-amd64 --version v0.3.0
+    scripts/selfupdate-gate --candidate dist/sion-backup-linux-amd64 --version v0.4.0
 
-That exercises the Vultr path, the key, and the full upgrade from the published
-release, and it publishes nothing. Tag only after it passes.
+Publishes nothing, and exercises the credential before a tag depends on it.
 
 ### The GitHub rate-limit ceiling — WATCH, DO NOT FIX YET
 
