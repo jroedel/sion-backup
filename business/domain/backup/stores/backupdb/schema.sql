@@ -9,6 +9,19 @@ CREATE TABLE IF NOT EXISTS run (
     node_id               TEXT    NOT NULL,
     repository            TEXT    NOT NULL,
 
+    -- The identity the fleet dashboard knows this run by: a UUIDv7 generated
+    -- before the run begins and sent on both the started and the finished
+    -- event. The local id above cannot do that job -- it is 0 when the start
+    -- is announced, and it repeats from 1 after a reimage, so two machines'
+    -- histories would collide on the server.
+    run_uuid              TEXT    NOT NULL DEFAULT '',
+
+    -- The first backup into a newly provisioned repository: the run that
+    -- uploads everything, takes hours or days, and that the server's cutover
+    -- guard waits on. Not "full vs incremental" -- restic has no such
+    -- distinction (docs/eumaeus-api.md §7).
+    seeding               INTEGER NOT NULL DEFAULT 0,
+
     -- RFC3339 with the offset, so a laptop that crosses a time zone does not
     -- reorder its own history.
     started_at            TEXT    NOT NULL,
@@ -38,6 +51,10 @@ CREATE TABLE IF NOT EXISTS run (
 
 -- The status page's query: the newest runs.
 CREATE INDEX IF NOT EXISTS run_started_at_idx ON run (started_at DESC);
+
+-- The seeding check: has anything ever been written to this repository from
+-- this machine? Asked once per run, before it starts.
+CREATE INDEX IF NOT EXISTS run_repository_idx ON run (repository);
 
 -- The reporter's query. Partial, so it indexes only the handful of rows that
 -- are actually pending rather than the entire history -- which on a machine

@@ -376,15 +376,32 @@ func (d *deps) backup(ctx context.Context, plan planbus.Plan) error {
 		}
 	}
 
+	// Both events one run produces carry the same identity and the same answer
+	// to "is this the run that fills a new bucket?", so both are settled here,
+	// before anything starts. Seeding is a question about the repository the
+	// server has just named, which is why it is asked after the reconciliation
+	// above rather than before it.
+	runUUID := newRunUUID()
+
+	seeding, err := d.backups.Seeding(ctx, plan.Repository)
+	if err != nil {
+		// Not fatal. A wrong seeding flag makes one dashboard row misleading;
+		// refusing to back up over it would be absurd.
+		d.log.Warn("could not tell whether this is the first run against this repository",
+			"repository", plan.Repository, "err", err)
+	}
+
 	req := backupbus.Request{
 		NodeID:     plan.NodeID,
+		RunUUID:    runUUID,
+		Seeding:    seeding,
 		Repository: set.Credentials.Repository(plan.Repository, plan.PackSizeMiB, plan.ReadConcurrency),
 		Options:    backupOptions(plan),
 	}
 
 	// The dashboard is told a run has started before it starts, so a machine
 	// that dies mid-backup leaves a start with no end rather than no trace.
-	_ = d.fleet.Report(ctx, startEvent(plan))
+	_ = d.fleet.Report(ctx, startEvent(plan, runUUID, seeding))
 
 	run, err := d.backups.Run(ctx, req, time.Now)
 	if err != nil {
