@@ -506,9 +506,18 @@ release workflow builds all five binaries and their `SHA256SUMS`, and every
 machine in the fleet updates itself to whatever comes out.
 
 Because of that last sentence, the tag has to come from a commit that stays
-reachable — so the targets refuse unless you are on `main`, in step with the
-remote, with a clean tree. `ALLOW_BRANCH=<name>` cuts one from somewhere else
-on purpose, which is a real thing to want and worth saying out loud.
+reachable — so being on `main` and in step with the remote is not a
+precondition you have to arrange. The script checks out `main`, fast-forwards
+it to `origin/main`, says both out loud, and tells you afterwards how to get
+back to the branch you were on.
+
+What it will not do for you is anything that needs a decision: a dirty tree,
+commits the remote has never seen, a history that has diverged, or a tag that
+already exists. The first of those is a refusal precisely because this moves
+branches, and it will not move one out from under uncommitted work.
+
+`ALLOW_BRANCH=<name>` tags somewhere other than `main` — a real thing to want,
+worth saying out loud, and the branch it goes to and updates.
 
 ## Contributing
 

@@ -17,15 +17,37 @@
 # have pointed into a branch somebody deleted a week later.
 #
 # So: main, in step with the remote, clean tree, and the tag must not exist.
-# Any of those failing is a refusal rather than a warning, because the thing
-# being guarded is a release that thirty machines install without being asked.
+#
+# # Getting there is this script's job, not yours
+#
+# Being on the wrong branch, or on a main that is behind the remote, used to
+# be two refusals. They are now two things this script does: it checks out
+# the branch it is going to tag and fast-forwards it to the remote, and says
+# both out loud as it goes. Wanting to release and being ready to release
+# were never different intentions, and a refusal that is always answered by
+# the same two commands is a refusal that only ever cost typing.
+#
+# What stays a refusal is everything that needs a decision:
+#
+#   a dirty tree      those changes are not in the release, and moving
+#                     branches underneath them is how work gets lost
+#   local commits     a fast-forward cannot reach them; the release is built
+#   the remote        from the remote, so they would not be in it
+#   lacks
+#   diverged history  neither side is a fast-forward of the other
+#   the tag exists    it may already have built and shipped
+#
+# The first of those is the one to read twice. This script moves branches, so
+# it will not move them over uncommitted work, and it checks before it
+# fetches so that the refusal comes back immediately.
 #
 # YES=1 skips the confirmation, and is needed wherever there is no terminal
 # to ask on -- a CI job, or a shell with no controlling tty. The checks above
 # still run; only the question is skipped.
 # ALLOW_BRANCH=<name> tags a branch on purpose — a release candidate cut from
 # somewhere other than main is a real thing to want, and this asks you to say
-# so out loud rather than letting it happen by accident.
+# so out loud rather than letting it happen by accident. It is the branch
+# this script will check out and fast-forward, in place of main.
 
 set -eu
 
@@ -41,23 +63,39 @@ esac
 
 want_branch="${ALLOW_BRANCH:-main}"
 
+# say_where_you_are reminds you of the branch you were on, if this script
+# moved you off it.
+#
+# Printed on both endings rather than only the successful one: answering "no"
+# to the confirmation still leaves you somewhere you did not ask to be, and
+# the one thing worse than being moved is being moved silently.
+say_where_you_are() {
+  if [ -n "${started_on:-}" ] && [ "$started_on" != "$want_branch" ]; then
+    echo "  You were on $started_on:  git checkout $started_on"
+  fi
+}
+
 # ---------------------------------------------------------------------------
-# Where are we
+# Get to the branch being tagged, and bring it up to date
 # ---------------------------------------------------------------------------
 
-branch="$(git rev-parse --abbrev-ref HEAD)"
+started_on="$(git rev-parse --abbrev-ref HEAD)"
 
-if [ "$branch" != "$want_branch" ]; then
-  echo "tag: on branch '$branch', not '$want_branch'." >&2
-  echo "     A release must come from a commit that stays reachable." >&2
-  echo "     Deliberate? ALLOW_BRANCH=$branch make tag-$part" >&2
-  exit 1
+# A detached HEAD has no branch name to return to, so remember the commit
+# instead: "git checkout HEAD" is a sentence that returns you nowhere.
+if [ "$started_on" = "HEAD" ]; then
+  started_on="$(git rev-parse --short HEAD)"
 fi
 
+# First, and before the fetch, because this is the one thing here that cannot
+# be resolved by doing it for you -- and because a refusal about your own
+# uncommitted work should not arrive after a wait on the network.
 if [ -n "$(git status --porcelain)" ]; then
   echo "tag: the working tree has changes in it." >&2
   echo "     Whatever they are, they will not be in the release, and the" >&2
   echo "     version stamped into the binaries would say -dirty." >&2
+  echo "     Commit or stash them; this script moves branches and will not" >&2
+  echo "     move them out from under uncommitted work." >&2
   exit 1
 fi
 
@@ -67,6 +105,23 @@ git fetch --quiet --tags origin
 
 upstream="origin/$want_branch"
 
+if [ "$started_on" != "$want_branch" ]; then
+  if git rev-parse --verify --quiet "refs/heads/$want_branch" >/dev/null; then
+    git checkout --quiet "$want_branch"
+  elif git rev-parse --verify --quiet "$upstream" >/dev/null; then
+    # No local branch, but the remote has one. Created from it rather than
+    # refused: this is the fresh clone case, and there is nothing to lose.
+    git checkout --quiet -b "$want_branch" --track "$upstream"
+  else
+    echo "tag: there is no branch '$want_branch', here or on origin." >&2
+    exit 1
+  fi
+
+  echo "  switched from $started_on to $want_branch"
+fi
+
+branch="$want_branch"
+
 if git rev-parse --verify --quiet "$upstream" >/dev/null; then
   local_head="$(git rev-parse HEAD)"
   remote_head="$(git rev-parse "$upstream")"
@@ -75,9 +130,22 @@ if git rev-parse --verify --quiet "$upstream" >/dev/null; then
     behind="$(git rev-list --count "HEAD..$upstream")"
     ahead="$(git rev-list --count "$upstream..HEAD")"
 
-    echo "tag: $branch is $ahead ahead and $behind behind $upstream." >&2
-    echo "     Push or pull first; the release is built from the remote." >&2
-    exit 1
+    # Ahead of the remote, or diverged from it. Neither is something to fix
+    # on somebody's behalf: the release is built from the remote, so commits
+    # that exist only here would not be in it, and quietly tagging without
+    # them would produce a release nobody could reproduce from origin.
+    if [ "$ahead" != "0" ]; then
+      echo "tag: $branch is $ahead ahead and $behind behind $upstream." >&2
+      echo "     Push first; the release is built from the remote, so a" >&2
+      echo "     commit that is only here would not be in it." >&2
+      exit 1
+    fi
+
+    # Behind and nothing else, which is a fast-forward and the ordinary case
+    # five minutes after a pull request is merged.
+    git merge --quiet --ff-only "$upstream"
+
+    echo "  fast-forwarded $branch $behind commit(s) to $upstream"
   fi
 fi
 
@@ -181,7 +249,11 @@ if [ "${YES:-}" != "1" ]; then
 
   case "$answer" in
     y|Y|yes|YES) ;;
-    *) echo "  Nothing was tagged."; exit 0 ;;
+    *)
+      echo "  Nothing was tagged."
+      say_where_you_are
+      exit 0
+      ;;
   esac
 fi
 
@@ -196,4 +268,5 @@ git push origin "refs/tags/$next"
 echo
 echo "  Tagged $next and pushed it."
 echo "  Watch the build:  gh run watch \$(gh run list --workflow Release --limit 1 --json databaseId -q '.[0].databaseId')"
+say_where_you_are
 echo
