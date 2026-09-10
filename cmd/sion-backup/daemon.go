@@ -57,6 +57,15 @@ func daemonCmd(args []string) error {
 	}
 	defer d.close()
 
+	// The binary the previous update replaced, if there was one: it can only
+	// be removed once it is no longer the running image, which on Windows
+	// means now rather than then.
+	if u := d.updater(); u != nil {
+		u.CleanupOld()
+	}
+
+	d.updated = make(chan struct{}, 1)
+
 	listen := d.cfg.Addr()
 	if *addr != "" {
 		listen = *addr
@@ -140,6 +149,15 @@ func daemonCmd(args []string) error {
 	select {
 	case err := <-errs:
 		return err
+
+	case <-d.updated:
+		// A newer binary is on the disk. Exiting is how it starts running:
+		// systemd restarts on any exit, and a Windows scheduled task restarts
+		// on a failing one, which is what updateExitCode is for.
+		d.log.Info("a newer version was installed; exiting so the service manager starts it")
+
+		return errUpdated
+
 	case <-ctx.Done():
 		d.log.Info("shutting down")
 	}
@@ -447,6 +465,15 @@ func (d *deps) backup(ctx context.Context, plan planbus.Plan) error {
 	// audited credential reads for no benefit.
 	if run.SnapshotID != "" {
 		d.measure(ctx, plan, set)
+	}
+
+	// Last, and only now that the backup is over: see selfUpdate on why this
+	// does not happen at the start of a run.
+	if d.selfUpdate(ctx) && d.updated != nil {
+		select {
+		case d.updated <- struct{}{}:
+		default:
+		}
 	}
 
 	return nil
