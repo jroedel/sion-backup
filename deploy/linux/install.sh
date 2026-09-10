@@ -9,6 +9,7 @@
 #     ./install.sh                 # look, report, install, stop before enrolling
 #     ./install.sh --yes           # do not ask
 #     ./install.sh --recon-only    # look and report, change nothing
+#     ./install.sh --legacy-dir /srv/backup   # the old install is somewhere odd
 #
 # WHAT IT DOES NOT DO
 #
@@ -30,6 +31,7 @@ ASSUME_YES=0
 RECON_ONLY=0
 DISABLE_LEGACY=0
 NO_SERVICE=0
+LEGACY_DIR=""
 
 # INSTALL_ID ties every report from this run of the installer together. It is
 # generated here rather than by the binary because the failures worth hearing
@@ -48,6 +50,7 @@ while [ $# -gt 0 ]; do
     --yes|-y)         ASSUME_YES=1; shift ;;
     --recon-only)     RECON_ONLY=1; shift ;;
     --disable-legacy) DISABLE_LEGACY=1; shift ;;
+    --legacy-dir)     LEGACY_DIR="$2"; shift 2 ;;
     --no-service)     NO_SERVICE=1; shift ;;
     -h|--help)        sed -n '2,25p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *)                echo "install.sh: unknown option $1" >&2; exit 2 ;;
@@ -110,18 +113,30 @@ note "$INSTALLED"
 
 STEP="recon"
 
+RECON_ARGS=""
+if [ -n "$LEGACY_DIR" ]; then
+  RECON_ARGS="--legacy-dir $LEGACY_DIR"
+fi
+
 say "Looking at this machine"
-"$INSTALLED" recon
+# shellcheck disable=SC2086  # RECON_ARGS is a flag pair or empty, by construction
+"$INSTALLED" recon $RECON_ARGS
+
+# Once, and reused. recon reaches the network and runs restic, and doing that
+# three times to answer three questions about one machine is the kind of
+# thing somebody notices on hotel wifi.
+# shellcheck disable=SC2086
+RECON_JSON="$("$INSTALLED" recon $RECON_ARGS --json 2>/dev/null || true)"
 
 # PRIOR_VERSION goes on any failure report, so a migration that breaks on one
 # vintage of the old scripts and not another is visible on the server.
 PRIOR_VERSION="$(
-  "$INSTALLED" recon --json 2>/dev/null |
+  printf '%s' "$RECON_JSON" |
     sed -n 's/.*"layout": "\([a-z]*\)".*/legacy-\1/p' | head -1
 )"
 
 LEGACY_FOUND=0
-if "$INSTALLED" recon --json 2>/dev/null | grep -q '"legacy"'; then
+if printf '%s' "$RECON_JSON" | grep -q '"legacy"'; then
   LEGACY_FOUND=1
 fi
 
