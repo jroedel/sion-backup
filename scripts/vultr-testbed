@@ -40,12 +40,13 @@ set -euo pipefail
 # environment wins: a stale local file must never silently outrank what the
 # workflow was given.
 #
-# Not under the program's own directory. sion-backup keeps its data in
-# ~/.local/share/sion-backup, and the one secret there is a machine token that
-# is revocable and worth almost nothing on its own. A Vultr API key is
-# account-wide and can spend money. Keeping them in different places is worth
-# the one line it costs.
-CREDENTIALS=${VULTR_CREDENTIALS:-$HOME/.config/sion-backup/vultr.env}
+# One file for every credential the release path needs, shared with
+# scripts/deploy-ready. Not under the program's own directory: sion-backup
+# keeps its data in ~/.local/share/sion-backup, and the one secret there is a
+# machine token that is revocable and worth almost nothing on its own. A Vultr
+# API key is account-wide and can spend money. Keeping them in different places
+# is worth the one line it costs.
+CREDENTIALS=${VULTR_CREDENTIALS:-${SION_DEPLOY_ENV:-$HOME/.config/sion-backup/sion-backup-deploy.env}}
 
 if [ -z "${VULTR_API_KEY:-}" ] && [ -f "$CREDENTIALS" ]; then
   # Refused rather than read if anyone else can see it. An API key in a
@@ -69,6 +70,7 @@ vultr-testbed: no API key.
   For running this by hand, put it in ${CREDENTIALS}:
 
       mkdir -p "$(dirname "$CREDENTIALS")"
+      chmod 700 "$(dirname "$CREDENTIALS")"
       umask 077
       cat > "${CREDENTIALS}" <<'ENV'
       VULTR_API_KEY=...
@@ -77,6 +79,9 @@ vultr-testbed: no API key.
       # VULTR_PLAN=vc2-1c-1gb
       # VULTR_OS=Debian 12 x64
       ENV
+
+  scripts/deploy-ready checks that file and everything else the release
+  path needs, and is the better place to start.
 
   For the release gate, it goes in the repository's secrets instead:
 

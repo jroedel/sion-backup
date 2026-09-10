@@ -61,6 +61,15 @@ done
 
 CONFIG_DIR="${SION_CONFIG_DIR:-$HOME/.config/sion-backup}"
 
+# One file for every credential the release path needs, rather than one per
+# service. Fewer files to get the mode wrong on, and one place to look when a
+# key is rotated -- which is the operation that actually goes wrong.
+#
+# It is not read by the program itself, only by the scripts in here. The
+# machine token, which sion-backup does read, lives in the data directory and
+# has nothing to do with this.
+DEPLOY_ENV="${SION_DEPLOY_ENV:-$CONFIG_DIR/sion-backup-deploy.env}"
+
 fail=0
 warn=0
 
@@ -195,31 +204,58 @@ done
 # interesting part of each and they have nothing in common.
 # ---------------------------------------------------------------------------
 
-# load_env sources a credentials file after checking nobody else can read it.
-# Prints nothing; returns 1 when there is no file.
-load_env() {
-  local file=$1
+section "Credentials file"
 
-  [ -f "$file" ] || return 1
+# HAVE_ENV distinguishes "no file" from "a file this refused to read", because
+# those send you to different places.
+HAVE_ENV=0
 
-  local mode
-  mode=$(stat -c '%a' "$file" 2>/dev/null || stat -f '%Lp' "$file" 2>/dev/null)
+if [ ! -f "$DEPLOY_ENV" ]; then
+  soft "no ${DEPLOY_ENV}"
+  note "nothing below can be tested from this machine without it"
+else
+  mode=$(stat -c '%a' "$DEPLOY_ENV" 2>/dev/null || stat -f '%Lp' "$DEPLOY_ENV" 2>/dev/null)
 
   case "$mode" in
-    600|400) ;;
-    *) bad "$(basename "$file") is mode ${mode}; chmod 600 it"; return 1 ;;
+    600|400)
+      ok "$(basename "$DEPLOY_ENV") is mode ${mode}"
+
+      # shellcheck source=/dev/null
+      . "$DEPLOY_ENV"
+      HAVE_ENV=1
+      ;;
+    *)
+      bad "$(basename "$DEPLOY_ENV") is mode ${mode}; chmod 600 it"
+      ;;
   esac
 
-  # shellcheck source=/dev/null
-  . "$file"
+  # The directory matters too, and is easier to miss. A 0600 file inside a
+  # group-writable directory cannot be READ by the group -- but it can be
+  # renamed and replaced, which substitutes a credential rather than stealing
+  # one. That is the worse of the two: the next release would be gated with
+  # somebody else's key and nothing would look wrong.
+  dirmode=$(stat -c '%a' "$CONFIG_DIR" 2>/dev/null || stat -f '%Lp' "$CONFIG_DIR" 2>/dev/null)
 
-  return 0
-}
+  case "$dirmode" in
+    700|500) ok "$(basename "$CONFIG_DIR")/ is mode ${dirmode}" ;;
+    *)
+      soft "$(basename "$CONFIG_DIR")/ is mode ${dirmode}: others may replace files in it"
+      note "the file itself is unreadable to them, but a credential that can be"
+      note "SWAPPED is worse than one that can be read -- fix: chmod 700 ${CONFIG_DIR}"
+      ;;
+  esac
+fi
+
+# Credentials that used to live one per service. Left behind after a move they
+# are a live key in a file nobody looks at any more.
+for stale in "${CONFIG_DIR}/vultr.env" "${CONFIG_DIR}/wasabi.env"; do
+  [ -f "$stale" ] && soft "$(basename "$stale") is still here; it was superseded by $(basename "$DEPLOY_ENV")"
+done
 
 # secret_age_ok warns when a local credential file is newer than the secret
 # made from it -- a rotation that was never pushed.
 secret_age_ok() {
-  local name=$1 file=$2
+  local name=$1 file=$DEPLOY_ENV
 
   local updated local_mtime secret_epoch
   updated=$(gh secret list --json name,updatedAt -q ".[] | select(.name==\"${name}\") | .updatedAt" 2>/dev/null)
@@ -232,7 +268,9 @@ secret_age_ok() {
 
   if [ "$local_mtime" -gt "$secret_epoch" ]; then
     soft "${name}: $(basename "$file") is newer than the secret"
-    note "a key rotated here and never pushed is the failure this catches"
+    note "a key rotated here and never pushed is the failure this catches."
+    note "Rewriting the file for any other reason trips it too -- it compares"
+    note "timestamps, not keys, because a secret cannot be read back."
     note "fix: scripts/deploy-ready --propagate"
 
     return 1
@@ -261,11 +299,7 @@ propagate() {
 
 section "Vultr (the release gate's real machine)"
 
-VULTR_FILE="${CONFIG_DIR}/vultr.env"
-
-if load_env "$VULTR_FILE" && [ -n "${VULTR_API_KEY:-}" ]; then
-  ok "$(basename "$VULTR_FILE") is present and 0600"
-
+if [ "$HAVE_ENV" -eq 1 ] && [ -n "${VULTR_API_KEY:-}" ]; then
   body=$(curl -s -o /tmp/dr-vultr.$$ -w '%{http_code}' \
     https://api.vultr.com/v2/account -H "Authorization: Bearer ${VULTR_API_KEY}" 2>/dev/null)
   detail=$(cat /tmp/dr-vultr.$$ 2>/dev/null)
@@ -294,18 +328,11 @@ if load_env "$VULTR_FILE" && [ -n "${VULTR_API_KEY:-}" ]; then
     *) bad "Vultr answered HTTP ${body}: ${detail}" ;;
   esac
 
-  secret_age_ok VULTR_API_KEY "$VULTR_FILE"
+  secret_age_ok VULTR_API_KEY
   propagate VULTR_API_KEY "$VULTR_API_KEY"
 else
   if printf '%s\n' "$referenced_secrets" | grep -qx VULTR_API_KEY; then
-    # Distinguished, because "there is no file" and "there is a file this
-    # refused to read" send you to different places.
-    if [ -f "$VULTR_FILE" ]; then
-      soft "${VULTR_FILE} was not usable, so the key was not tested"
-    else
-      soft "no ${VULTR_FILE}, so the key cannot be tested from here"
-    fi
-
+    soft "VULTR_API_KEY is not in $(basename "$DEPLOY_ENV"), so it was not tested"
     note "the gate falls back to a container when Vultr is unusable, so this"
     note "does not block a release -- it only makes the evidence weaker"
   fi
@@ -315,16 +342,12 @@ fi
 
 section "Wasabi (real backups in the gate)"
 
-WASABI_FILE="${CONFIG_DIR}/wasabi.env"
-
-if load_env "$WASABI_FILE" && [ -n "${WASABI_ACCESS_KEY_ID:-}" ]; then
-  ok "$(basename "$WASABI_FILE") is present and 0600"
-
+if [ "$HAVE_ENV" -eq 1 ] && [ -n "${WASABI_ACCESS_KEY_ID:-}" ]; then
   region="${WASABI_REGION:-}"
   bucket="${WASABI_BUCKET:-}"
 
   if [ -z "$region" ] || [ -z "$bucket" ]; then
-    bad "WASABI_REGION and WASABI_BUCKET must both be set in $(basename "$WASABI_FILE")"
+    bad "WASABI_REGION and WASABI_BUCKET must both be set in $(basename "$DEPLOY_ENV")"
   else
     # us-east-1 is the bare hostname; every other region is prefixed.
     if [ "$region" = us-east-1 ]; then
@@ -417,8 +440,8 @@ if load_env "$WASABI_FILE" && [ -n "${WASABI_ACCESS_KEY_ID:-}" ]; then
     fi
   fi
 
-  secret_age_ok WASABI_ACCESS_KEY_ID "$WASABI_FILE"
-  secret_age_ok WASABI_SECRET_ACCESS_KEY "$WASABI_FILE"
+  secret_age_ok WASABI_ACCESS_KEY_ID
+  secret_age_ok WASABI_SECRET_ACCESS_KEY
   propagate WASABI_ACCESS_KEY_ID "${WASABI_ACCESS_KEY_ID}"
   propagate WASABI_SECRET_ACCESS_KEY "${WASABI_SECRET_ACCESS_KEY}"
 
@@ -430,9 +453,9 @@ if load_env "$WASABI_FILE" && [ -n "${WASABI_ACCESS_KEY_ID:-}" ]; then
   fi
 else
   if printf '%s\n' "$referenced_secrets" | grep -qE '^WASABI_'; then
-    bad "a workflow needs Wasabi and there is no ${WASABI_FILE}"
+    bad "a workflow needs Wasabi and $(basename "$DEPLOY_ENV") has no WASABI_ keys"
   else
-    note "not configured yet, and nothing references it — see docs/todo.md"
+    note "not configured on this machine, and nothing references it yet"
   fi
 fi
 

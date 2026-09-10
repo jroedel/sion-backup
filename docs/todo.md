@@ -100,7 +100,7 @@ the deployment story, and the Windows one is entangled with the dedicated
 system account in `deploy/systemd/sion-backup.service`'s comment and the
 machine-scope paths that needs. Do not start here.
 
-## Real backups in the gate — SPEC AGREED, WAITING ON CREDENTIALS
+## Real backups in the gate — CREDENTIALS VERIFIED, NOT YET BUILT
 
 The gate proves a machine comes back after an upgrade. It does not prove the
 machine still backs up, which is the thing the program is for. Nothing in any
@@ -124,6 +124,9 @@ config.toml (`cmd/sion-backup/daemon.go:242`). The fleet's real Eumaeus is
 never involved.
 
 ### What Wasabi needs to look like
+
+Confirmed working: `sion-backup-gate` in `us-central-1`, list, put, get and
+delete all verified by a signed round trip from `scripts/deploy-ready`.
 
 One bucket, dedicated, not production and preferably not the production
 sub-account. Object lock OFF -- a default retention makes test repositories
@@ -152,6 +155,12 @@ Split deliberately, and `scripts/deploy-ready` depends on the split:
 | --- | --- |
 | Secrets | `WASABI_ACCESS_KEY_ID`, `WASABI_SECRET_ACCESS_KEY` |
 | Variables | `WASABI_BUCKET`, `WASABI_REGION` |
+
+Both live in `~/.config/sion-backup/sion-backup-deploy.env` on a machine that
+runs the gate by hand, and reach the repository through `make
+deploy-propagate`. Until a workflow references the two secrets,
+`scripts/deploy-ready` warns that they are set and unused -- which is the
+signal that this work is not finished, and clears itself when it is.
 
 A secret cannot be read back, so it can only be tested. A variable can, so the
 local value and the repository value are really compared -- and a gate writing
@@ -256,10 +265,27 @@ real bucket. The two differ only in the throttle and in who exits, but that
 
 ### Set the Vultr key — READY, NEEDS A PERSON
 
-    gh secret set VULTR_API_KEY          # the release gate
-    mkdir -p ~/.config/sion-backup       # running the gate by hand
+One file holds every credential the release path needs, and one command
+checks and pushes them:
+
+    mkdir -p ~/.config/sion-backup && chmod 700 ~/.config/sion-backup
     umask 077
-    printf 'VULTR_API_KEY=%s\n' "..." > ~/.config/sion-backup/vultr.env
+    cat > ~/.config/sion-backup/sion-backup-deploy.env <<'ENV'
+    VULTR_API_KEY=...
+    WASABI_ACCESS_KEY_ID=...
+    WASABI_SECRET_ACCESS_KEY=...
+    WASABI_BUCKET=sion-backup-gate
+    WASABI_REGION=us-central-1
+    ENV
+
+    make deploy-ready        # check it, and test every credential live
+    make deploy-propagate    # push secrets and variables to the repository
+
+The directory mode is not fussiness. A 0600 file inside a group-writable
+directory cannot be read by the group, but it can be renamed and replaced --
+which substitutes a credential rather than stealing one, and is the worse of
+the two, because the next release would be gated with somebody else's key and
+nothing would look wrong.
 
 Without the secret the gate still runs, in a privileged container on the
 runner, and says so with a warning. That is weaker evidence — a container that
