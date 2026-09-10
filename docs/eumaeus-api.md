@@ -577,6 +577,11 @@ a server that breaks one makes the client unsafe.
    S3 key rotation that leaves the password untouched. The client no longer
    depends on it to notice a rotation — it refetches anyway — but it is what
    makes the audit log answerable.
+7. **A token that is unknown, malformed, revoked or expired is `401`.** Not
+   `500`. §3.3 is not a style preference: `401` is the one status the client
+   treats as terminal, and anything else is retried forever. A revoked laptop
+   answered with `500` keeps calling every hour and its owner is told the
+   server is having trouble, which is the opposite of what happened.
 
 ## 11. Client status
 
@@ -592,6 +597,8 @@ Done, in this repository:
 | `401`/`403` surfaced as de-enrolment, not a network error | `credentialbus.Unauthorised` |
 | Weekly `restic stats` measurement, stored locally | `foundation/restic.Measure`, `planbus.Measurement` |
 | The rotation card, with both halves of the trade | `statusapp`, `planbus.ConsiderRotation` |
+| Every call under the versioned base path (§3.1) | `eumaeusapi.APIPrefix` |
+| The fleet's server as the built-in default, so enrolling needs only a code | `cmd/sion-backup.DefaultEumaeusURL` |
 
 Still to do:
 

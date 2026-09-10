@@ -6,18 +6,12 @@
 // that the credential escrow and the fleet reporter cannot drift into two
 // different opinions about how long to wait or how to present a token.
 //
-// # The server side does not exist yet
+// # The server side
 //
-// Eumaeus does not serve these endpoints today. The shape below is the
-// proposal, and it is deliberately small — two endpoints, both of which
-// Eumaeus's existing token model already covers, because a credential that
-// carries a scoped key is exactly what business/domain/credential in that
-// repository is for.
-//
-// Writing the client first is not putting the cart before the horse. It is how
-// the contract gets pinned down while the consequences are still cheap to
-// change, and `sion-backup doctor` reports a 404 from a server that has not
-// implemented it yet as clearly as it reports a wrong token.
+// Eumaeus serves these endpoints under APIPrefix; docs/eumaeus-api.md is the
+// contract and openapi.yaml is its machine-readable form. Not all six exist
+// yet on either side, and that is fine: an endpoint neither has implemented
+// answers 404, which `sion-backup doctor` reports as clearly as a wrong token.
 package eumaeusapi
 
 import (
@@ -50,6 +44,16 @@ var ErrUnauthorised = errors.New("eumaeusapi: the token was refused")
 // machine.
 var ErrConflict = errors.New("eumaeusapi: already claimed")
 
+// APIPrefix is the base path every endpoint hangs off.
+//
+//	/api/backup/v1
+//
+// Owned by the client rather than written into each caller's path, and not
+// left to the configured URL either: this binary speaks v1 and only v1, so the
+// version belongs next to the code that would have to change to speak v2. An
+// administrator configures a host, not an API version.
+const APIPrefix = "/api/backup/v1"
+
 // defaultTimeout bounds every call.
 //
 // Generous, because these run on a laptop on hotel wifi and a failure means
@@ -60,6 +64,11 @@ const defaultTimeout = 30 * time.Second
 // Config is what a client needs.
 type Config struct {
 	// BaseURL is the Eumaeus installation, e.g. "https://eumaeus.example.org".
+	//
+	// The host, without the API's own base path: APIPrefix is added to every
+	// request. A URL that already ends in it is accepted anyway, because
+	// openapi.yaml lists the full server URL and pasting that in is the
+	// obvious mistake to make.
 	BaseURL string
 
 	// Token is the machine token, sent as a bearer credential.
@@ -97,7 +106,9 @@ func New(cfg Config) (*Client, error) {
 		return nil, errors.New("eumaeusapi: no server URL configured")
 	}
 
-	base, err := url.Parse(strings.TrimSuffix(cfg.BaseURL, "/"))
+	trimmed := strings.TrimSuffix(strings.TrimSuffix(cfg.BaseURL, "/"), APIPrefix)
+
+	base, err := url.Parse(strings.TrimSuffix(trimmed, "/"))
 	if err != nil {
 		return nil, fmt.Errorf("eumaeusapi: %q is not a URL: %w", cfg.BaseURL, err)
 	}
@@ -147,6 +158,9 @@ const maxResponse = 1 << 20
 
 // Do sends a JSON request and decodes a JSON reply.
 //
+// path is relative to APIPrefix, so callers name the endpoint the
+// specification names — "/runs", not "/api/backup/v1/runs".
+//
 // body may be nil for a GET. out may be nil when the reply is not wanted.
 func (c *Client) Do(ctx context.Context, method, path string, body, out any) error {
 	var reader io.Reader
@@ -160,7 +174,7 @@ func (c *Client) Do(ctx context.Context, method, path string, body, out any) err
 		reader = bytes.NewReader(encoded)
 	}
 
-	req, err := http.NewRequestWithContext(ctx, method, c.base.String()+path, reader)
+	req, err := http.NewRequestWithContext(ctx, method, c.base.String()+APIPrefix+path, reader)
 	if err != nil {
 		return fmt.Errorf("eumaeusapi: building the request: %w", err)
 	}

@@ -21,7 +21,11 @@
 # and discarded when it ends. A machine that cannot reach Eumaeus cannot back
 # up -- which is a fair trade, because a machine that cannot reach Eumaeus
 # almost certainly cannot reach the bucket either.
-url = "https://eumaeus.example.org"
+#
+# It defaults to https://terraboskamp.org -- the installation this fleet
+# reports to -- so on an ordinary machine this line can be deleted. Set it only
+# to point somewhere else.
+url = "https://terraboskamp.org"
 
 # There is no token here. Enrollment is a login:
 #
@@ -152,10 +156,15 @@ one_file_system = true
 [eumaeus]
 # Where the credential escrow and the fleet dashboard live.
 #
-# Leave both empty and this machine still backs up, verifies and keeps its own
-# history -- it simply appears on no dashboard, and its repository password is
-# escrowed nowhere. The second half of that sentence is the reason not to.
-url = "https://eumaeus.example.org"
+# Optional, and defaults to https://terraboskamp.org: every machine running
+# this program reports to the same installation, so the only reason to set it
+# is a staging server or a test against localhost. The API version is not part
+# of it -- the client appends /api/backup/v1 itself.
+#
+# This machine cannot back up without reaching whatever this points at. Nothing
+# is cached: the S3 keys and the repository password are fetched at the start
+# of every run and discarded at the end.
+# url = "https://terraboskamp.org"
 
 # A Eumaeus token, minted read-write and scoped to the backup vault alone:
 #

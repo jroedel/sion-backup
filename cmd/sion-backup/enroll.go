@@ -17,7 +17,9 @@ import (
 	"github.com/jroedel/sion-backup/foundation/token"
 )
 
-const enrollUsage = `sion-backup enroll — make this machine ready to back up
+// enrollUsage is a var rather than a const so the default server appears in it
+// once, from the one place that defines it.
+var enrollUsage = fmt.Sprintf(`sion-backup enroll — make this machine ready to back up
 
 Usage:
   sion-backup enroll --code K4TP-9QX2
@@ -40,9 +42,9 @@ fetches them from Eumaeus, uses them, and discards them.
 
 Flags:
   --code    the enrollment code from Eumaeus (required)
-  --server  the Eumaeus URL, if it is not in config.toml
+  --server  a different Eumaeus URL (default %q)
   --force   replace the token on a machine that is already enrolled
-`
+`, DefaultEumaeusURL)
 
 func enrollCmd(args []string) error {
 	fs := flag.NewFlagSet("enroll", flag.ExitOnError)
@@ -78,15 +80,14 @@ func enrollCmd(args []string) error {
 			"valid until it is revoked in Eumaeus", d.paths.Token)
 	}
 
+	// --server, then the config file, then the fleet's own server. The last of
+	// those is why enrolling a fresh machine needs nothing but the code.
 	base := *server
 	if base == "" {
-		base = d.cfg.Eumaeus.URL
+		base = d.cfg.EumaeusURL()
 	}
 
-	if base == "" {
-		return fmt.Errorf("no Eumaeus server configured.\n\n"+
-			"Pass --server, or set [eumaeus] url in %s", d.paths.Config)
-	}
+	fmt.Printf("Enrolling against %s\n", base)
 
 	// Anonymous: the whole point of the claim is that there is no token yet.
 	anon, err := eumaeusapi.New(eumaeusapi.Config{

@@ -2,8 +2,8 @@
 //
 // # The endpoint
 //
-//	POST /api/backup/runs
-//	Authorization: Bearer <eumaeus token>
+//	POST /api/backup/v1/runs
+//	Authorization: Bearer <machine token>
 //	Content-Type: application/json
 //
 //	{ "node_id": "...", "run_id": 41, "phase": "finished", ... }
@@ -31,8 +31,8 @@ import (
 	"github.com/jroedel/sion-backup/foundation/eumaeusapi"
 )
 
-// path is where run events are posted.
-const path = "/api/backup/runs"
+// path is where run events are posted, relative to eumaeusapi.APIPrefix.
+const path = "/runs"
 
 // Reporter sends events to Eumaeus.
 type Reporter struct {

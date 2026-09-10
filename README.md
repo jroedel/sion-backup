@@ -167,7 +167,9 @@ To set up a machine:
 
 # 2. At the machine. This writes the one token it will keep, proves the bucket
 #    opens, and prints the owner's restore card.
-./sion-backup enroll --code K4TP-9QX2 --server https://eumaeus.example.org
+#    --server is only needed to point at something other than the fleet's own
+#    server, https://terraboskamp.org.
+./sion-backup enroll --code K4TP-9QX2
 
 # 3. Take the first backup in the foreground and watch it.
 ./sion-backup run
@@ -378,29 +380,28 @@ The contract is three documents, in the order to read them:
 | [`docs/eumaeus-api.md`](docs/eumaeus-api.md) | the endpoint specification, and the rules a correct server has to follow |
 | [`docs/openapi.yaml`](docs/openapi.yaml) | the same endpoints, machine-readable. `make api-check` validates it and all 29 examples in it |
 
-Five endpoints, none implemented in Eumaeus yet:
+Six endpoints. The installation at `https://terraboskamp.org` now answers
+under this base path; the client speaks the first, third and fourth of them:
 
 ```
-POST /api/backup/v1/enrollments/claim         code → machine token + credentials
-GET  /api/backup/v1/machines/me               state, and the heartbeat
-GET  /api/backup/v1/machines/me/credentials   the secrets, audited
-POST /api/backup/v1/runs                      a run event
-POST /api/backup/v1/machines/me/card-issued   the owner's card was printed
+POST /api/backup/v1/enrollments/claim           code → machine token + credentials
+GET  /api/backup/v1/machines/me                 state, and the heartbeat
+GET  /api/backup/v1/machines/me/credentials     the secrets, audited
+POST /api/backup/v1/runs                        a run event
+POST /api/backup/v1/machines/me/rotation-request  the owner asks for a fresh bucket
+POST /api/backup/v1/machines/me/card-issued     the owner's card was printed
 ```
 
-The client is not built against them either — enrollment here still takes a
-pre-minted token from a config file. §10 of the API spec lists what changes on
-this side.
+§11 of the API spec lists what is done on this side and what is not.
 
-One rule shapes all five: **the server owns the facts, the machine reports what
+One rule shapes all six: **the server owns the facts, the machine reports what
 it did.** Eumaeus provisions the bucket, generates the repository password,
-mints both S3 keys and decides when a machine is overdue. A machine holds a
-cached copy of its credentials so it can back up with no network to Eumaeus,
-and nothing else.
+mints both S3 keys and decides when a machine is overdue. The machine caches
+none of it: every run fetches its credentials and discards them.
 
-Writing the client's half first is deliberate. It pins the contract down while
-it is still prose, and `sion-backup doctor` reports a 404 from a server that
-has not implemented an endpoint as clearly as it reports a wrong token.
+Writing the client's half first was deliberate. It pinned the contract down
+while it was still prose, and `sion-backup doctor` reports a 404 from a server
+that has not implemented an endpoint as clearly as it reports a wrong token.
 
 ---
 
@@ -425,10 +426,11 @@ Named here rather than left to be discovered.
   but the hashes were copied from upstream's `SHA256SUMS` by hand. Verifying
   restic's GPG signature when bumping the pin is a manual step, documented in
   that file rather than automated.
-- **The whole Eumaeus side is unbuilt.** The client speaks five endpoints that
-  do not exist yet, so nothing can currently enrol. See
-  [`docs/eumaeus-api.md`](docs/eumaeus-api.md) §10 for what is done on this
-  side and what is not.
+- **The Eumaeus side is half-built.** The server at https://terraboskamp.org
+  answers under `/api/backup/v1`, but the client has only three of the six
+  endpoints in [`docs/eumaeus-api.md`](docs/eumaeus-api.md) — claim,
+  credentials and runs — and the run event it posts is still the pre-`run_uuid`
+  shape from the first draft. See §11 there for what is done and what is not.
 - **Bucket and IAM provisioning is not built.** Eumaeus is to hold a Wasabi key
   that creates buckets and mints two keys per bucket — a machine key that may
   delete only under `locks/*`, and a read-only restore key for the owner's

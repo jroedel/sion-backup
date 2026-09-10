@@ -13,13 +13,13 @@ info:
   version: 1.0.0
   summary: Enrollment, credentials and run reporting for the sion-backup fleet.
   description: |
-    Five endpoints, spoken by `sion-backup` on each work computer.
+    Six endpoints, spoken by `sion-backup` on each work computer.
 
     The shape follows one rule: **the server owns the facts, the machine
     reports what it did.** Eumaeus provisions the bucket, generates the
     repository password, mints the S3 keys and decides when a machine is
-    overdue. A machine holds a cached copy of its credentials so it can back up
-    with no network to Eumaeus, and nothing else.
+    overdue. The machine caches nothing: it fetches its credentials at the
+    start of every run and discards them at the end.
 
     See `model.md` for the domain model and `eumaeus-api.md` for the rules a
     correct implementation has to follow.

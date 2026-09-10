@@ -169,8 +169,8 @@ func doctorCmd(args []string) error {
 
 	c.check("eumaeus", func() (string, error) {
 		if !d.creds.Enrolled() {
-			return "", errors.New("not reachable: no server URL, or no machine token. " +
-				"Nothing can back up until this is fixed, because the credentials " +
+			return "", errors.New("this machine has no token: run \"sion-backup enroll\". " +
+				"Nothing can back up until it does, because the credentials " +
 				"live on the server and nowhere else")
 		}
 
@@ -185,7 +185,7 @@ func doctorCmd(args []string) error {
 			defer set.Wipe()
 
 			return fmt.Sprintf("%s answered; credentials v%d for %s",
-				d.cfg.Eumaeus.URL, set.Version, set.RepositoryURL), nil
+				d.cfg.EumaeusURL(), set.Version, set.RepositoryURL), nil
 
 		case errors.As(err, &revoked):
 			return "", errors.New("this machine has been de-enrolled; " +

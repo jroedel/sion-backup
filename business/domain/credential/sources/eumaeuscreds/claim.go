@@ -9,6 +9,7 @@ import (
 	"github.com/jroedel/sion-backup/foundation/eumaeusapi"
 )
 
+// claimPath is relative to eumaeusapi.APIPrefix.
 const claimPath = "/enrollments/claim"
 
 // ErrCodeUsed reports an enrollment code that has already been claimed.
