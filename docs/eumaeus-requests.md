@@ -229,9 +229,19 @@ keys, which have been in a plain-text script on a laptop for two years) and the
 existing restic password registered as the repository's password.
 
 Per machine we can hand over: the repository URL, the legacy node ID, the
-exclude list, and the existing password. Those last ones come out of band —
-they are sitting in the old scripts, and the client's recon tool reports *that*
-they are there without printing them.
+exclude list, and the existing password. `sion-backup recon` on the machine
+prints the first three and says which file the password is in without printing
+it, so the handover is one screen:
+
+```
+legacy install   FOUND (linux 1.1)
+  repository     s3:https://s3.us-central-1.wasabisys.com/<bucket>
+  node id        dell3-backup
+  excludes       11 entries in /home/user/Documents/backup-dell3/excludes.txt
+  credentials    present in the script — not shown here
+```
+
+The password itself comes out of band, from that file.
 
 One consequence worth knowing about, which is ours to handle either way: the
 `seeding` flag on run events is answered from the machine's local history,
