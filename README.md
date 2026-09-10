@@ -379,6 +379,7 @@ The contract is three documents, in the order to read them:
 | [`docs/model.md`](docs/model.md) | the fleet model — people, machines, repositories, the alerting state machine, and what survives Eumaeus itself being lost. **Read first, and argue with this one.** |
 | [`docs/eumaeus-api.md`](docs/eumaeus-api.md) | the endpoint specification, and the rules a correct server has to follow |
 | [`docs/openapi.yaml`](docs/openapi.yaml) | the same endpoints, machine-readable. `make api-check` validates it and all 29 examples in it |
+| [`docs/eumaeus-requests.md`](docs/eumaeus-requests.md) | what this client needs from the server, and the behaviours it now depends on — the document to hand to whoever works on Eumaeus |
 
 Six endpoints. The installation at `https://terraboskamp.org` now answers
 under this base path; the client speaks the first, third and fourth of them:
