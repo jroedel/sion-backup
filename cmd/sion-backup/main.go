@@ -59,6 +59,7 @@ Commands:
   status     Print the last few runs
   enroll     Fetch this machine's credentials from Eumaeus and store them
   doctor     Check everything a backup needs, and say what is wrong
+  recon      Report what is already on this machine, including the old scripts
   report     Report a failed install or a crash (for the installers)
   update     Replace this binary with the newest release
   paths      Print where this program keeps its files
@@ -116,6 +117,8 @@ func run() error {
 		return enrollCmd(args)
 	case "doctor":
 		return doctorCmd(args)
+	case "recon":
+		return reconCmd(args)
 	case "report":
 		return reportCmd(args)
 	case "update":

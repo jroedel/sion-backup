@@ -45,19 +45,141 @@ param(
   [string] $InstallDir = "$env:ProgramFiles\sion-backup",
   [string] $Binary     = ".\sion-backup-windows-amd64.exe",
   [string] $Pin        = ".\restic.pin",
-  [switch] $Elevated
+  [switch] $Elevated,
+
+  # Look at the machine and report; change nothing. Run this first on a
+  # computer that has been backing up with the old .bat for two years.
+  [switch] $ReconOnly,
+
+  # Where the old install is, if it is somewhere the notes never mentioned.
+  # These were installed by hand, so it happens.
+  [string] $LegacyDir,
+
+  # Disable the legacy scheduled task. LAST, after the new install has taken
+  # one verified backup -- two backup systems for one night is untidy; none
+  # is worse. Reversible: schtasks /Change /TN <name> /ENABLE.
+  [switch] $DisableLegacyTask,
+
+  # Do not stop to ask.
+  [switch] $Yes
 )
 
 $ErrorActionPreference = 'Stop'
+
+# Ties every report from this run of the installer together, including the
+# ones from before the binary was in place.
+$InstallId = [guid]::NewGuid().ToString()
+
+# What a failure is reported as. Set it before anything that can fail.
+$Script:Step = 'starting'
+
+# Empty rather than unset: an unset variable can be dropped from a native
+# command's arguments instead of passed as an empty one, which would silently
+# shift --detail into --prior-version.
+$Script:PriorVersion = ''
+
+# Report tells Eumaeus that this install did not finish.
+#
+# The failures worth hearing about are the ones nobody will type up: an
+# install that fell over at nine in the evening on somebody's laptop, which
+# will fall over the same way on the next machine unless it is seen. Sending
+# needs no token -- see docs/eumaeus-requests.md 5.1.
+function Report-Failure {
+  param([string] $Detail)
+
+  $exe = Join-Path $InstallDir 'sion-backup.exe'
+
+  if (-not (Test-Path $exe)) { return }
+
+  try {
+    & $exe report --kind install-failed --step "$Script:Step" `
+        --install-id "$InstallId" --prior-version "$Script:PriorVersion" `
+        --detail "$Detail" 2>&1 | Out-Null
+
+    Write-Host "Reported it (or queued the report): $exe doctor"
+  } catch {
+    # An installer that fails while reporting that it failed helps nobody.
+  }
+}
 
 if (-not ([Security.Principal.WindowsPrincipal] [Security.Principal.WindowsIdentity]::GetCurrent()
     ).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
   throw "Run this from an elevated PowerShell."
 }
 
+trap {
+  Write-Warning "install failed at step: $($Script:Step)"
+  Report-Failure -Detail "install.ps1 failed at $($Script:Step): $_"
+
+  break
+}
+
+$Script:Step = 'install-binary'
+
 New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
 
 Copy-Item -Force $Binary "$InstallDir\sion-backup.exe"
+
+# ---------------------------------------------------------------------------
+# What is already on this machine.
+#
+# Almost every machine in this fleet is already backing up with the old .bat
+# file, installed by hand from a PDF, with a bucket and a schedule and two
+# years of history. Installing over the top of that without looking gives it
+# two backup systems and two opinions about which bucket is current.
+# ---------------------------------------------------------------------------
+
+$Script:Step = 'recon'
+
+$reconArgs = @('recon')
+if ($LegacyDir) { $reconArgs += @('--legacy-dir', $LegacyDir) }
+
+& "$InstallDir\sion-backup.exe" @reconArgs
+
+$reconJson = & "$InstallDir\sion-backup.exe" @($reconArgs + '--json') | ConvertFrom-Json
+$legacy    = $reconJson.legacy
+
+$Script:PriorVersion = if ($legacy) { "legacy-$($legacy.layout)-$($legacy.version)" } else { '' }
+
+if ($ReconOnly) {
+  Write-Host ""
+  Write-Host "Nothing was changed (-ReconOnly)."
+
+  exit 0
+}
+
+if ($legacy -and -not $Yes) {
+  Write-Host ""
+  Write-Warning @"
+This machine is already backing up with the old scripts.
+
+Read the plan above. Nothing below touches the legacy install, its bucket or
+its credentials -- but decide the bucket question BEFORE enrolling, because
+enrolling is what fixes the answer.
+"@
+
+  if ((Read-Host "Continue? [y/N]") -notmatch '^[Yy]') {
+    Write-Host "Stopped. The binary is installed and nothing else was changed."
+
+    exit 0
+  }
+}
+
+if ($legacy -and $legacy.uses_fs_snapshot -and -not $Elevated) {
+  # Worth stopping for: the machine it is true of is a machine somebody
+  # already decided needed shadow copies.
+  Write-Warning @"
+The old install on this machine uses Volume Shadow Copy (--use-fs-snapshot)
+and you are installing WITHOUT -Elevated. That is a regression: every run
+would read open files from the live tree and be recorded as degraded.
+
+Re-run with -Elevated.
+"@
+
+  if (-not $Yes -and (Read-Host "Continue anyway? [y/N]") -notmatch '^[Yy]') {
+    exit 0
+  }
+}
 
 # ---------------------------------------------------------------------------
 # restic, downloaded from upstream and verified before it is ever run.
@@ -67,6 +189,8 @@ Copy-Item -Force $Binary "$InstallDir\sion-backup.exe"
 # version and hash come from restic.pin, which ships with the release and is
 # copied from a signed upstream SHA256SUMS.
 # ---------------------------------------------------------------------------
+
+$Script:Step = 'verify-restic-pin'
 
 if (-not (Test-Path $Pin)) {
   throw "Cannot find $Pin. It ships alongside the binary in the release."
@@ -134,6 +258,8 @@ Write-Host "Installed to $InstallDir (restic $resticVersion)"
 # DPAPI: see the note at the top of this file.
 $user = "$env:USERDOMAIN\$env:USERNAME"
 
+$Script:Step = 'register-task'
+
 $action = New-ScheduledTaskAction `
   -Execute "$InstallDir\sion-backup.exe" `
   -Argument "daemon" `
@@ -181,11 +307,39 @@ the one setting on Windows that is worth going back for:
 "@
 }
 
+# ---------------------------------------------------------------------------
+# The legacy schedule, if and only if asked.
+# ---------------------------------------------------------------------------
+
+if ($DisableLegacyTask) {
+  $Script:Step = 'disable-legacy'
+
+  if (-not $legacy) {
+    Write-Warning "-DisableLegacyTask was given but no legacy install was found."
+  } elseif (-not $legacy.schedule) {
+    Write-Warning "No scheduled task was found for $($legacy.script); disable it by hand."
+  } else {
+    # recon reports it as "scheduled task \Name".
+    $taskName = ($legacy.schedule -replace '^scheduled task\s+', '')
+
+    Write-Host "Disabling the legacy task $taskName"
+    schtasks /Change /TN "$taskName" /DISABLE | Out-Null
+
+    Write-Host "  Re-enable with: schtasks /Change /TN `"$taskName`" /ENABLE"
+  }
+}
+
+$Script:Step = 'done'
+
 Write-Host ""
 Write-Host "Next:"
-Write-Host "  1. Point it at Eumaeus. Copy config.example.toml to the data"
-Write-Host "     directory and set [eumaeus] url:"
+Write-Host "  1. Nothing to configure: the server is built in. To see where this"
+Write-Host "     machine keeps its files:"
 Write-Host "       $InstallDir\sion-backup.exe paths"
+if ($legacy) {
+Write-Host "     If this machine's existing bucket is being adopted, that has to"
+Write-Host "     be set up on the server FIRST - docs/eumaeus-requests.md 5.3."
+}
 Write-Host "  2. In Eumaeus, choose 'Enrol a computer', pick the owner and the"
 Write-Host "     bucket, and bring the code over. It lasts fifteen minutes:"
 Write-Host "       $InstallDir\sion-backup.exe enroll --code XXXX-XXXX"
@@ -195,3 +349,7 @@ Write-Host "       Start-ScheduledTask -TaskName sion-backup"
 Write-Host "  4. Check it:"
 Write-Host "       $InstallDir\sion-backup.exe doctor"
 Write-Host "       http://127.0.0.1:7391/"
+if ($legacy -and -not $DisableLegacyTask) {
+Write-Host "  5. ONLY after a verified backup, turn the old one off:"
+Write-Host "       .\install.ps1 -DisableLegacyTask"
+}

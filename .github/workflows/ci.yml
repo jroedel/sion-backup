@@ -89,6 +89,37 @@ jobs:
           go mod tidy
           git diff --exit-code go.mod go.sum
 
+  installers:
+    # The two installers are the only code in this repository that nobody can
+    # run before a deployment: install.ps1 needs Windows, and both of them do
+    # things to a machine that a test cannot undo. So at least parse them.
+    #
+    # A 300-line PowerShell script with a typo on line 200 fails halfway
+    # through installing on somebody's laptop, in the evening, in front of
+    # them. That is the failure this job exists to prevent.
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Parse the PowerShell installer
+        shell: pwsh
+        run: |
+          $errors = $null
+          [System.Management.Automation.Language.Parser]::ParseFile(
+            "deploy/windows/install.ps1", [ref]$null, [ref]$errors) | Out-Null
+
+          if ($errors) {
+            $errors | ForEach-Object { Write-Error $_.ToString() }
+            exit 1
+          }
+
+          Write-Host "install.ps1 parses"
+
+      - name: Parse the shell installer
+        shell: bash
+        run: bash -n deploy/linux/install.sh && echo "install.sh parses"
+
   api-spec:
     # The OpenAPI document and its examples. Separate from the Go jobs because
     # it needs Python and nothing else does, and because its failure means
