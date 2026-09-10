@@ -44,7 +44,6 @@
 param(
   [string] $InstallDir = "$env:ProgramFiles\sion-backup",
   [string] $Binary     = ".\sion-backup-windows-amd64.exe",
-  [string] $Pin        = ".\restic.pin",
   [switch] $Elevated,
 
   # Look at the machine and report; change nothing. Run this first on a
@@ -182,76 +181,26 @@ Re-run with -Elevated.
 }
 
 # ---------------------------------------------------------------------------
-# restic, downloaded from upstream and verified before it is ever run.
+# restic
 #
-# This binary reads every file on the machine and holds the credentials to the
-# off-site copy, so an unverified one is a compromise of both. The expected
-# version and hash come from restic.pin, which ships with the release and is
-# copied from a signed upstream SHA256SUMS.
+# Not here, deliberately, and this file used to do it.
+#
+# sion-backup installs its own restic: one pinned version, from upstream's
+# release, verified against a hash compiled into the binary. That happens when
+# the machine is enrolled, and it happens as the person being backed up --
+# which is the part that matters on Windows. This script writes to Program
+# Files, so it is running as an administrator, and an administrator may well
+# not be the signed-in user. Fetching restic from here would put it in the
+# wrong profile's %LOCALAPPDATA%, and the scheduled task -- which runs as the
+# user -- would not find it.
+#
+# So it is left to "sion-backup enroll", which the user runs next, and which
+# needs restic anyway to prove the bucket opens. "sion-backup restic" installs
+# it on its own if you want to see it happen first.
 # ---------------------------------------------------------------------------
 
-$Script:Step = 'verify-restic-pin'
-
-if (-not (Test-Path $Pin)) {
-  throw "Cannot find $Pin. It ships alongside the binary in the release."
-}
-
-$pinText = Get-Content $Pin -Raw
-
-if ($pinText -notmatch '(?m)^RESTIC_VERSION=(\S+)') {
-  throw "$Pin does not name a restic version."
-}
-$resticVersion = $Matches[1]
-
-if ($pinText -notmatch '(?m)^RESTIC_SHA256_windows_amd64=(\S+)') {
-  throw "$Pin has no hash for windows/amd64."
-}
-$want = $Matches[1].ToLower()
-
-$asset = "restic_${resticVersion}_windows_amd64.zip"
-$url   = "https://github.com/restic/restic/releases/download/v$resticVersion/$asset"
-$work  = Join-Path ([System.IO.Path]::GetTempPath()) ([System.Guid]::NewGuid().ToString())
-
-New-Item -ItemType Directory -Force -Path $work | Out-Null
-
-try {
-  Write-Host "Fetching  $asset"
-
-  # TLS 1.2 explicitly: Windows PowerShell 5.1 still defaults to older
-  # protocols that GitHub refuses, and the failure looks like a network fault.
-  [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
-  Invoke-WebRequest -Uri $url -OutFile "$work\$asset" -UseBasicParsing
-
-  $got = (Get-FileHash "$work\$asset" -Algorithm SHA256).Hash.ToLower()
-
-  if ($got -ne $want) {
-    throw @"
-REFUSING $asset - hash does not match the pin.
-  expected $want
-  got      $got
-
-Do not work around this. Either the pin is stale (bump it from a signed
-upstream SHA256SUMS) or the download was tampered with.
-"@
-  }
-
-  Write-Host "Verified  sha256 $got"
-
-  Expand-Archive -Path "$work\$asset" -DestinationPath $work -Force
-
-  $extracted = Get-ChildItem -Path $work -Filter *.exe -Recurse | Select-Object -First 1
-  if (-not $extracted) {
-    throw "Nothing executable was extracted from $asset."
-  }
-
-  Copy-Item -Force $extracted.FullName "$InstallDir\restic.exe"
-}
-finally {
-  # Whatever happened, leave nothing behind that a later step could run.
-  Remove-Item -Recurse -Force $work -ErrorAction SilentlyContinue
-}
-
-Write-Host "Installed to $InstallDir (restic $resticVersion)"
+Write-Host "Installed to $InstallDir"
+Write-Host "restic is installed by ""sion-backup enroll"", into the user's own profile."
 
 # The task runs as the signed-in user, because that is whose profile is being
 # backed up and whose %LOCALAPPDATA% holds the machine token. Not because of

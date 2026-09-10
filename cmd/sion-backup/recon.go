@@ -1,6 +1,7 @@
 package main
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"flag"
@@ -37,6 +38,11 @@ It never prints a credential. The legacy scripts carry the S3 keys and the
 repository password in plain text; this says which file they are in and
 leaves them there.
 
+Run it as root, or with sudo, when you can. The old installs commonly live
+in /home/restic, which an ordinary account cannot look inside — and a report
+that cannot see the backup already running here is worse than no report. It
+says so plainly when that happens rather than reporting "none found".
+
 Flags:
   --json         machine-readable, for the installers
   --legacy-dir   also look here for the old install (comma-separated). These
@@ -51,8 +57,14 @@ type Recon struct {
 	Restic   ResticInfo         `json:"restic"`
 	Existing ExistingInstall    `json:"sion_backup"`
 	Legacy   *legacybus.Install `json:"legacy,omitempty"`
-	Notes    []string           `json:"notes,omitempty"`
-	Plan     []string           `json:"plan,omitempty"`
+
+	// Blocked are directories this account could not look inside. Reported
+	// as a field of its own rather than only as prose, because an installer
+	// reading --json has to be able to refuse to treat this machine as new.
+	Blocked []string `json:"blocked,omitempty"`
+
+	Notes []string `json:"notes,omitempty"`
+	Plan  []string `json:"plan,omitempty"`
 }
 
 // MachineInfo is what this computer is.
@@ -76,11 +88,39 @@ type ServerInfo struct {
 	ClockSkew string `json:"clock_skew,omitempty"`
 }
 
-// ResticInfo is the binary that does the work.
+// ResticInfo is the binary that does the work: the one this machine will
+// use, and the one it happens to have.
+//
+// Those are two different questions now that the fleet installs its own
+// restic, and recon is the command that must not conflate them. A machine
+// with a snap-installed 0.14 on PATH has restic and does not have the fleet's
+// restic, and an installer that reads "found" and moves on is an installer
+// that discovers the difference later.
 type ResticInfo struct {
-	Path    string `json:"path,omitempty"`
+	// Pinned is the version this fleet runs, from the binary reading this.
+	Pinned string `json:"pinned"`
+
+	// Path is where the binary this machine will run is, or will be.
+	Path string `json:"path,omitempty"`
+
+	// Managed is false when the config file names a restic, in which case
+	// nothing here installs or upgrades it.
+	Managed bool `json:"managed"`
+
+	// Version is what is at Path today. Empty means nothing is there yet,
+	// which is the ordinary state of a machine before it enrolls.
 	Version string `json:"version,omitempty"`
+
+	// Problem is why the binary at Path could not be asked, when there is
+	// something there and it did not answer.
 	Problem string `json:"problem,omitempty"`
+
+	// OnPath is an unrelated restic found on PATH, and OnPathVersion what it
+	// reports. Recorded because it is what the old scripts used and what a
+	// person at the machine will see when they type "restic version" — and
+	// because it is not what backups will run.
+	OnPath        string `json:"on_path,omitempty"`
+	OnPathVersion string `json:"on_path_version,omitempty"`
 }
 
 // ExistingInstall is this program, if it is already here.
@@ -158,11 +198,12 @@ func gather(ctx context.Context, extraLegacyDirs ...string) Recon {
 
 	cfg, _, _ := LoadConfig(p.Config)
 	r.Server = reachable(ctx, cfg.EumaeusURL())
-	r.Restic = resticInfo(cfg.Server.Restic)
+	r.Restic = resticInfo(ctx, cfg.Server.Restic, p.Bin)
 
-	legacy, notes := legacyscan.Find(ctx, extraLegacyDirs...)
-	r.Legacy = legacy
-	r.Notes = append(r.Notes, notes...)
+	found := legacyscan.Find(ctx, extraLegacyDirs...)
+	r.Legacy = found.Install
+	r.Blocked = found.Blocked
+	r.Notes = append(r.Notes, found.Notes...)
 	r.Plan = plan(r)
 
 	return r
@@ -235,22 +276,71 @@ func reachable(ctx context.Context, url string) ServerInfo {
 	return info
 }
 
-// resticInfo finds restic and asks its version.
-func resticInfo(configured string) ResticInfo {
-	r, err := restic.New(configured)
-	if err != nil {
-		return ResticInfo{Problem: err.Error()}
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+// resticInfo reports the binary this machine will run, and separately
+// whatever restic is on PATH.
+//
+// It installs nothing. recon changes nothing on the machine, and a 20 MB
+// download is not a thing a report should do — it says what enrolling will
+// fetch, which is what the person reading it needs to know.
+func resticInfo(ctx context.Context, configured, binDir string) ResticInfo {
+	ctx, cancel := context.WithTimeout(ctx, resticProbeTimeout)
 	defer cancel()
 
-	v, err := r.Version(ctx)
+	out := ResticInfo{Pinned: restic.PinnedVersion}
+	out.OnPath, out.OnPathVersion = onPath(ctx)
+
+	r, err := restic.Resolve(configured, binDir)
 	if err != nil {
-		return ResticInfo{Path: r.Bin(), Problem: err.Error()}
+		out.Problem = err.Error()
+
+		return out
 	}
 
-	return ResticInfo{Path: r.Bin(), Version: v}
+	out.Path = r.Bin()
+	out.Managed = r.Managed()
+
+	switch v, err := r.InstalledVersion(ctx); {
+	case err == nil:
+		out.Version = v
+
+	case out.Managed && !fileExists(r.Bin()):
+		// Not a problem, and saying so in the Problem field would put a
+		// stat error in front of somebody for whom the answer is "nothing
+		// has installed it yet, and enrolling will".
+
+	default:
+		out.Problem = err.Error()
+	}
+
+	return out
+}
+
+// resticProbeTimeout bounds the two `restic version` execs recon does.
+const resticProbeTimeout = 30 * time.Second
+
+// onPath reports an unmanaged restic on PATH, and what it says it is.
+func onPath(ctx context.Context) (path, version string) {
+	r, err := restic.New("")
+	if err != nil {
+		return "", ""
+	}
+
+	v, err := r.InstalledVersion(ctx)
+	if err != nil {
+		// A binary on PATH that will not answer is worth naming anyway: it
+		// is what somebody at the machine will find when they look.
+		return r.Bin(), ""
+	}
+
+	return r.Bin(), v
+}
+
+// fileExists is the question "is there something there at all", asked
+// separately from "does it run".
+func fileExists(path string) bool {
+	_, err := os.Stat(path)
+
+	return err == nil
 }
 
 // plan turns what was found into what an upgrade would do.
@@ -261,6 +351,33 @@ func resticInfo(configured string) ResticInfo {
 // somebody's two years of history.
 func plan(r Recon) []string {
 	var out []string
+
+	// What the new install needs, before anything about the old one. It is
+	// the same sentence on every machine, which is the point of managing the
+	// version: nobody has to decide anything about restic.
+	if r.Restic.Managed && r.Restic.Version != r.Restic.Pinned {
+		out = append(out, fmt.Sprintf(
+			"Enrolling will download restic %s, verify it against the hash in this "+
+				"binary, and keep it in %s. Nothing else on this machine is touched, "+
+				"and no administrator is needed.", r.Restic.Pinned, r.Restic.Path))
+	}
+
+	if r.Legacy == nil && len(r.Blocked) > 0 {
+		// The one thing this report must never do is call a machine new when
+		// it was not allowed to look at the place the old install lives.
+		out = append(out, fmt.Sprintf(
+			"NOT PROVEN NEW: nothing was found, but this account could not read %s — "+
+				"and a home directory belonging to another account is exactly where "+
+				"these installs live. Re-run as %s before concluding anything.",
+			strings.Join(r.Blocked, ", "), elevated()))
+
+		out = append(out,
+			"If it really is new: provision a bucket in Eumaeus, issue a code, and "+
+				"run \"sion-backup enroll --code ...\". If it is not, adopting the old "+
+				"bucket is the decision that has to be made first, and enrolling fixes it.")
+
+		return out
+	}
 
 	if r.Legacy == nil {
 		out = append(out,
@@ -340,14 +457,52 @@ func (r Recon) print() {
 	}
 
 	fmt.Printf("\nrestic\n")
+	fmt.Printf("  fleet runs     %s\n", r.Restic.Pinned)
 
 	switch {
+	case r.Restic.Path == "":
+		fmt.Printf("  PROBLEM        %s\n", r.Restic.Problem)
+
+	case !r.Restic.Managed:
+		// The config file named one. Its version is the operator's business,
+		// and the report says so rather than grading it.
+		fmt.Printf("  configured     %s\n", r.Restic.Path)
+		fmt.Printf("  version        %s\n", cmp.Or(r.Restic.Version, "will not run: "+r.Restic.Problem))
+		fmt.Printf("  managed        no — named in the config file, so this machine keeps\n")
+		fmt.Printf("                 whatever version is at that path\n")
+
+	case r.Restic.Version == r.Restic.Pinned:
+		fmt.Printf("  here           %s at %s\n", r.Restic.Version, r.Restic.Path)
+
 	case r.Restic.Version != "":
-		fmt.Printf("  found          %s (%s)\n", r.Restic.Path, r.Restic.Version)
-	case r.Restic.Path != "":
-		fmt.Printf("  found          %s, but %s\n", r.Restic.Path, r.Restic.Problem)
+		fmt.Printf("  here           %s at %s\n", r.Restic.Version, r.Restic.Path)
+		fmt.Printf("  WRONG VERSION  the next backup replaces it with %s\n", r.Restic.Pinned)
+
+	case r.Restic.Problem != "":
+		fmt.Printf("  here           something at %s that will not run: %s\n",
+			r.Restic.Path, r.Restic.Problem)
+		fmt.Printf("                 the next backup replaces it\n")
+
 	default:
-		fmt.Printf("  not found      %s\n", r.Restic.Problem)
+		fmt.Printf("  here           not yet — enrolling downloads and verifies it into\n")
+		fmt.Printf("                 %s\n", r.Restic.Path)
+	}
+
+	// The restic somebody at this machine would find by typing "restic
+	// version", named because it is almost certainly not the one that will
+	// take the backups, and a report that omits it invites the argument.
+	if r.Restic.OnPath != "" && r.Restic.OnPath != r.Restic.Path {
+		also := r.Restic.OnPath
+		if r.Restic.OnPathVersion != "" {
+			also += " (" + r.Restic.OnPathVersion + ")"
+		}
+
+		used := "not used"
+		if !r.Restic.Managed {
+			used = "not the configured one"
+		}
+
+		fmt.Printf("  also on PATH   %s — %s\n", also, used)
 	}
 
 	fmt.Printf("\nsion-backup\n")
@@ -355,7 +510,11 @@ func (r Recon) print() {
 	fmt.Printf("  enrolled       %s\n", yesNo(r.Existing.Enrolled))
 
 	if r.Legacy == nil {
-		fmt.Printf("\nlegacy install   none found\n")
+		if len(r.Blocked) > 0 {
+			fmt.Printf("\nlegacy install   none found WHERE THIS ACCOUNT CAN LOOK\n")
+		} else {
+			fmt.Printf("\nlegacy install   none found\n")
+		}
 	} else {
 		l := r.Legacy
 
@@ -405,6 +564,17 @@ func (r Recon) print() {
 		}
 	}
 
+	if len(r.Blocked) > 0 {
+		fmt.Printf("\nCOULD NOT LOOK\n")
+
+		for _, dir := range r.Blocked {
+			fmt.Printf("  %s (permission denied)\n", dir)
+		}
+
+		fmt.Printf("  Re-run as %s. Until then \"none found\" above means\n", elevated())
+		fmt.Printf("  \"nothing found where this account can see\".\n")
+	}
+
 	if len(r.Notes) > 0 {
 		fmt.Printf("\nnotes\n")
 
@@ -420,6 +590,15 @@ func (r Recon) print() {
 	}
 
 	fmt.Println()
+}
+
+// elevated names what to re-run as, in this platform's words.
+func elevated() string {
+	if runtime.GOOS == "windows" {
+		return "Administrator"
+	}
+
+	return "root: sudo sion-backup recon"
 }
 
 // answer renders a yes/no with the reason beside it, which is the form a

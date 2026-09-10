@@ -146,7 +146,7 @@ You need Go 1.26.
 
 ```sh
 make build
-make restic                  # the pinned restic, verified against deploy/restic.pin
+./sion-backup restic         # download and verify the pinned restic
 ./sion-backup paths          # where it will keep things — nothing is in this tree
 ./sion-backup doctor         # what is missing
 ```
@@ -295,8 +295,29 @@ Eumaeus, no us. That promise only holds if their stock binary and ours are the
 same program. A fork would make these repositories the output of our build,
 and compatibility with the public restic something to hope for.
 
-So restic ships beside this binary, pinned and checksummed, and every run
-records which version wrote the snapshot.
+So restic is a subprocess, and this program installs the one it runs.
+
+Every machine in the fleet runs **exactly** the version pinned in
+`foundation/restic/pin.go` — currently 0.19.1. It is downloaded from restic's
+own release, checked against a SHA-256 compiled into this binary, run once to
+confirm it is what it claims, and kept in the per-user data directory. That
+last part is the load-bearing detail: a binary there can be replaced by the
+same account that takes the backup, so upgrading restic across thirty laptops
+needs no administrator, no package manager, and no second visit. The pin
+travels inside the release, so a machine that self-updates picks up a new
+restic on the same channel — there is no second rollout to run and no machine
+that quietly missed it.
+
+Nothing on `PATH` is used. A machine with a three-year-old snap-installed
+0.14 is a machine whose exit codes mean something different from everybody
+else's — `classify` in `foundation/restic` exists only because that fleet
+used to be real — and "which restic wrote this snapshot" should be a fact
+rather than a guess. `sion-backup recon` reports any other restic it finds
+and says plainly that it is not the one that will run.
+
+The escape hatch is `server.restic` in the config file: it names a binary to
+use as given and never to manage, for a platform the pin has no build for.
+`doctor` and `recon` both say when a machine is in that state.
 
 ### The status page has no login
 
@@ -362,7 +383,8 @@ business/            the rules. Knows nothing about HTTP.
 
 foundation/          technical leaves. Know nothing about backups.
   paths/               where everything lives, per platform
-  restic/              the subprocess, its JSON, and its exit codes
+  restic/              the subprocess, its JSON, its exit codes, and the
+                       pinned binary it installs and upgrades itself
   secrets/             DPAPI / Keychain / Secret Service / file
   sqldb/               one SQLite connection, held open
   eumaeusapi/          HTTP to the server
@@ -449,11 +471,20 @@ Named here rather than left to be discovered.
   `TestTheRunnerCannotDeleteBackupData` fails if they come back. See
   [`docs/model.md`](docs/model.md) §5.4 — the payoff is that no credential
   anywhere in the system can delete backup data.
-- **restic is pinned but not signature-checked.** `deploy/restic.pin` carries
-  the version and upstream hashes, and every installer verifies against it —
-  but the hashes were copied from upstream's `SHA256SUMS` by hand. Verifying
-  restic's GPG signature when bumping the pin is a manual step, documented in
-  that file rather than automated.
+- **restic is pinned but not signature-checked.** `foundation/restic/pin.go`
+  carries the version and upstream hashes and nothing is installed that does
+  not match them — but those hashes were copied from upstream's `SHA256SUMS`
+  by hand. Verifying restic's GPG signature when bumping the pin is a manual
+  step, documented in `deploy/restic.pin` rather than automated. The hash and
+  the binary also both come from GitHub, so it proves the download arrived
+  intact rather than that upstream was not compromised; what it does buy is
+  that a later substitution upstream is caught, because the hash was taken at
+  pin time and ships inside our binary.
+- **The pin is written down twice.** `foundation/restic/pin.go` and
+  `deploy/restic.pin` hold the same version and hashes, because one has to be
+  readable by this program and the other before there is a Go toolchain.
+  `TestPinMatchesDeployFile` fails on drift, which is a test standing in for a
+  single source of truth.
 - **Three of the six endpoints are unimplemented here.** The server at
   https://terraboskamp.org answers all six; this client speaks claim,
   credentials and runs. The hourly state poll, the rotation request and the

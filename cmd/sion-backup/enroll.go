@@ -87,6 +87,14 @@ func enrollCmd(args []string) error {
 		base = d.cfg.EumaeusURL()
 	}
 
+	// Before the code is spent, deliberately. An enrollment code is good for
+	// fifteen minutes and can be used once, so a machine that claimed one and
+	// then failed to download restic would have burned it — and step 2 below
+	// proves the bucket opens, which needs restic anyway.
+	if err := d.ensureRestic(ctx); err != nil {
+		return err
+	}
+
 	fmt.Printf("Enrolling against %s\n", base)
 
 	// Anonymous: the whole point of the claim is that there is no token yet.

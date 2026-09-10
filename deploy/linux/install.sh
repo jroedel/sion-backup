@@ -25,7 +25,6 @@
 set -euo pipefail
 
 BINARY="./sion-backup-linux-amd64"
-PIN="./restic.pin"
 PREFIX="${HOME}/.local/bin"
 ASSUME_YES=0
 RECON_ONLY=0
@@ -45,7 +44,6 @@ STEP="starting"
 while [ $# -gt 0 ]; do
   case "$1" in
     --binary)         BINARY="$2"; shift 2 ;;
-    --pin)            PIN="$2"; shift 2 ;;
     --prefix)         PREFIX="$2"; shift 2 ;;
     --yes|-y)         ASSUME_YES=1; shift ;;
     --recon-only)     RECON_ONLY=1; shift ;;
@@ -165,21 +163,18 @@ fi
 
 STEP="fetch-restic"
 
-if [ -x "./scripts/fetch-restic" ] && [ -f "$PIN" ]; then
-  say "Fetching the pinned restic"
-  ./scripts/fetch-restic linux "$(uname -m | sed 's/x86_64/amd64/; s/aarch64/arm64/')" "$PREFIX"
-else
-  say "restic"
-
-  if command -v restic >/dev/null 2>&1; then
-    note "using the one already on PATH: $(command -v restic) ($(restic version | head -1))"
-    note "the release ships restic.pin and scripts/fetch-restic to install the"
-    note "version this build was tested against; do that before relying on it"
-  else
-    warn "restic is not installed and scripts/fetch-restic is not here."
-    warn "Install it before the first backup: see deploy/restic.pin"
-  fi
-fi
+# The binary does this, on every platform, from a pin compiled into it. What
+# used to be here was a shell reimplementation of the same download, hash
+# check and extraction that install.ps1 also had a copy of -- three
+# implementations of one careful thing, and the one that ran depended on
+# whether ./scripts happened to be unpacked beside the release.
+#
+# Running it now rather than leaving it to enrolling is worth one step: this
+# runs as the person whose files are backed up, so the binary lands in their
+# own data directory, and a 20 MB download is better done while somebody is
+# standing here than at two in the morning.
+say "restic"
+"$INSTALLED" restic
 
 # ---------------------------------------------------------------------------
 # 3. The service

@@ -91,6 +91,20 @@ type Paths struct {
 	// before there was a database to write to. See business/domain/diag.
 	Diag string
 
+	// Bin holds the restic this machine runs.
+	//
+	// Inside the per-user data directory, deliberately, and this is the
+	// decision that keeps the fleet's restic manageable: a binary here can be
+	// replaced by the same account that takes the backup, so upgrading restic
+	// needs no administrator, no package manager and no second visit to the
+	// machine. See foundation/restic.EnsurePinned.
+	//
+	// The cost is that a file capability cannot live here — setcap needs root
+	// and is destroyed by every replacement — so the dedicated-account design
+	// sketched in deploy/systemd/sion-backup.service would move restic back to
+	// a root-owned path and re-apply the capability on each bump.
+	Bin string
+
 	// Log is the daemon's log file. The daemon has no terminal to write to,
 	// and "is it running properly" is the question this program exists to
 	// answer, so the log is a file rather than a stream nobody kept.
@@ -123,6 +137,7 @@ func Resolve() (Paths, error) {
 		DB:      cmp.Or(os.Getenv("SION_BACKUP_DB"), filepath.Join(abs, "sion-backup.db")),
 		Config:  cmp.Or(os.Getenv("SION_BACKUP_CONFIG"), filepath.Join(abs, "config.toml")),
 		Token:   filepath.Join(abs, "machine-token"),
+		Bin:     filepath.Join(abs, "bin"),
 		Verify:  filepath.Join(abs, "verify"),
 		Scratch: filepath.Join(abs, "scratch"),
 		Diag:    filepath.Join(abs, "diagnostics"),
@@ -177,7 +192,7 @@ func platformRoot() (string, error) {
 // holds and when it was last online, and the machine token sits beside it. On Windows the mode is largely ignored and the directory
 // inherits the profile's ACL, which is already owner-only.
 func (p Paths) EnsureDirs() error {
-	for _, dir := range []string{p.DataDir, p.Verify, p.Scratch, p.Diag} {
+	for _, dir := range []string{p.DataDir, p.Bin, p.Verify, p.Scratch, p.Diag} {
 		if err := os.MkdirAll(dir, 0o700); err != nil {
 			return fmt.Errorf("paths: creating %s: %w", dir, err)
 		}

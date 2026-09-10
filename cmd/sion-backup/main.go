@@ -60,6 +60,7 @@ Commands:
   enroll     Fetch this machine's credentials from Eumaeus and store them
   doctor     Check everything a backup needs, and say what is wrong
   recon      Report what is already on this machine, including the old scripts
+  restic     Install or check the pinned restic this fleet runs
   report     Report a failed install or a crash (for the installers)
   update     Replace this binary with the newest release
   paths      Print where this program keeps its files
@@ -119,6 +120,8 @@ func run() error {
 		return doctorCmd(args)
 	case "recon":
 		return reconCmd(args)
+	case "restic":
+		return resticCmd(args)
 	case "report":
 		return reportCmd(args)
 	case "update":
@@ -238,10 +241,17 @@ func wire(ctx context.Context, verbose bool) (*deps, error) {
 
 	d.plan = planbus.NewBusiness(plandb.NewStore(d.db))
 
-	// restic is resolved here even though only some commands need it, because
-	// "restic is not installed" is a thing to find out at startup rather than
-	// three hours into a maintenance window.
-	if d.restic, err = restic.New(cfg.Server.Restic); err != nil {
+	// Resolved, not installed. This says which binary this machine will run —
+	// the fleet's own copy in the data directory, or the one the config file
+	// names — and it cannot fail on a machine that has not downloaded restic
+	// yet, because deps.ensureRestic is what downloads it and every command
+	// that needs restic calls that first.
+	//
+	// It used to fail here when restic was missing, on the argument that a
+	// missing restic is better found at startup than three hours into a
+	// maintenance window. That argument is gone: the program now installs its
+	// own, so "missing" is a state it repairs rather than reports.
+	if d.restic, err = restic.Resolve(cfg.Server.Restic, p.Bin); err != nil {
 		d.close()
 
 		return nil, err
@@ -331,6 +341,7 @@ func pathsCmd() error {
 	fmt.Printf("database      %s\n", p.DB)
 	fmt.Printf("config        %s\n", p.Config)
 	fmt.Printf("machine token %s\n", p.Token)
+	fmt.Printf("restic        %s\n", p.Bin)
 	fmt.Printf("verify        %s\n", p.Verify)
 	fmt.Printf("scratch       %s\n", p.Scratch)
 	fmt.Printf("log           %s\n", p.Log)

@@ -203,10 +203,18 @@ one_file_system = true
 # bind anything else. Reach it from elsewhere over SSH, not by changing this.
 addr = "127.0.0.1:7391"
 
-# The restic binary, by absolute path.
+# The restic binary, by absolute path. LEAVE THIS UNSET on an ordinary machine.
 #
-# Shipped beside this one rather than taken from PATH: a PATH lookup for a
-# program about to be handed the credentials to the only off-site copy of
-# somebody's work is not a lookup worth doing. Empty falls back to PATH, which
-# is right on a developer's machine and wrong on a deployed one.
-restic = "/opt/sion-backup/restic"
+# By default this program installs and upgrades its own restic -- one pinned
+# version across the whole fleet, downloaded from restic's own release,
+# verified against a hash compiled into the binary, and kept in the data
+# directory where no administrator is needed to replace it. Nothing on PATH is
+# used: a machine with a three-year-old snap-installed restic is a machine
+# whose exit codes mean something different from everybody else's.
+#
+# Setting this overrides all of that. The binary here is used exactly as
+# given, its version is never checked or upgraded, and keeping it current
+# becomes yours -- which is the right trade for a platform the pin has no
+# build for, and the wrong one everywhere else. "sion-backup recon" and
+# "sion-backup doctor" both say plainly when a machine is in this state.
+# restic = "/opt/sion-backup/restic"

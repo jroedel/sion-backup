@@ -1,5 +1,14 @@
 # The restic build this fleet runs, and the hashes that prove it.
 #
+# THIS FILE HAS A TWIN: foundation/restic/pin.go. Change both, or CI fails.
+#
+# The Go copy is what actually installs restic on a machine — sion-backup
+# downloads and verifies its own, into the per-user data directory, needing no
+# administrator. This file is the same facts in a form that can be read before
+# there is a Go toolchain or a binary: by CI, by the Makefile, and by anybody
+# checking what a machine is supposed to be running. TestPinMatchesDeployFile
+# compares the two and fails on drift.
+#
 # restic is the program that actually reads every file on somebody's computer
 # and holds the credentials to their off-site copy. It is downloaded from the
 # internet during installation. Verifying it is therefore not box-ticking: an
@@ -28,9 +37,11 @@
 #
 # # Format
 #
-# Shell-sourceable, and simple enough for the PowerShell installer to parse
-# with a regex. Keep it that way: this file is read by three different things
-# and none of them should need a YAML parser.
+# Shell-sourceable, and simple enough to parse with a regex. Keep it that way:
+# this file is read by several different things and none of them should need a
+# YAML parser. The installers no longer read it at all — they let the binary
+# install restic, which is the one implementation of the download-and-verify
+# dance that used to exist three times.
 
 RESTIC_VERSION=0.19.1
 
