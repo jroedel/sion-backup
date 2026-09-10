@@ -14,6 +14,8 @@ package legacyscan
 import (
 	"bufio"
 	"context"
+	"errors"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -24,9 +26,39 @@ import (
 	"github.com/jroedel/sion-backup/business/domain/legacy/legacybus"
 )
 
-// Find returns the legacy install on this machine, or nil.
+// Result is what a scan found, and — as importantly — what it was not
+// allowed to look at.
+type Result struct {
+	// Install is the legacy backup on this machine, or nil.
+	Install *legacybus.Install
+
+	// Notes are sentences for the person reading the report.
+	Notes []string
+
+	// Blocked are directories that exist and could not be read from this
+	// account.
+	//
+	// This field is the whole reason Result is a struct. The scan runs as an
+	// ordinary user, and the commonest legacy layout puts the install in
+	// /home/restic — a directory that account cannot enter. os.Stat answers
+	// "permission denied", which is not "there is nothing here", and treating
+	// the two the same is how recon comes to print "this is a new machine as
+	// far as backups go" about a machine that has been backing up nightly for
+	// two years. The consequence of believing that is a second bucket, a full
+	// re-upload, and the old cron job still running beside the new one.
+	//
+	// So: not found and not allowed to look are different answers, and the
+	// caller must be able to say which one it got.
+	Blocked []string
+}
+
+// Find looks for the legacy install on this machine.
 //
-// The first one found wins. A machine with two is a machine somebody has
+// It returns a [Result] rather than an install and an error because "there is
+// nothing here" and "I was not allowed to look" are different answers and the
+// caller has to be able to tell them apart.
+//
+// The first install found wins. A machine with two is a machine somebody has
 // already been confused by, and the note says so.
 //
 // extra are directories to look in before the usual ones. They exist because
@@ -34,33 +66,68 @@ import (
 // people used it, and somebody will have put it under /srv or in a home
 // directory that no longer belongs to anybody. Whoever is standing at the
 // machine can say where to look.
-func Find(ctx context.Context, extra ...string) (*legacybus.Install, []string) {
-	var notes []string
+func Find(ctx context.Context, extra ...string) Result {
+	var out Result
 
+	// Every candidate is visited even after a find, because what could not be
+	// read is worth reporting whether or not something else turned up: an
+	// install found in one place does not mean the unreadable one elsewhere
+	// is not also running.
 	for _, dir := range append(extra, candidates()...) {
-		script, layout, ok := scriptIn(dir)
-		if !ok {
+		script, layout, blocked := lookIn(dir)
+
+		if blocked != "" {
+			out.Blocked = append(out.Blocked, blocked)
+		}
+
+		if script == "" || out.Install != nil {
 			continue
 		}
 
 		raw, err := os.ReadFile(script)
 		if err != nil {
-			notes = append(notes, "found "+script+" but could not read it: "+err.Error())
+			out.Notes = append(out.Notes, "found "+script+" but could not read it: "+err.Error())
 
 			continue
 		}
 
-		found := describe(ctx, dir, script, layout, string(raw))
+		out.Install = describe(ctx, dir, script, layout, string(raw))
 
 		if more := others(dir, extra); len(more) > 0 {
-			notes = append(notes,
+			out.Notes = append(out.Notes,
 				"there is more than one legacy install here: also "+strings.Join(more, ", "))
 		}
-
-		return found, notes
 	}
 
-	return nil, notes
+	out.Blocked = dedupe(out.Blocked)
+
+	// Deliberately not also appended to Notes: Blocked is structured, the
+	// caller renders it prominently, and a fact stated twice in one report
+	// reads like two facts.
+	return out
+}
+
+// dedupe removes repeats while keeping the order they were found in.
+//
+// One unreadable home directory blocks three candidate paths under it, and
+// three identical notes about /home/restic help nobody.
+func dedupe(in []string) []string {
+	if len(in) == 0 {
+		return nil
+	}
+
+	seen := make(map[string]bool, len(in))
+	out := make([]string, 0, len(in))
+
+	for _, s := range in {
+		if !seen[s] {
+			seen[s] = true
+
+			out = append(out, s)
+		}
+	}
+
+	return out
 }
 
 // describe fills in everything known about one install.
@@ -136,6 +203,11 @@ func candidates() []string {
 }
 
 // userDirs lists the immediate subdirectories of a home root.
+//
+// A root that cannot be read at all returns nothing rather than an error: the
+// per-directory stat in lookIn is what reports the blocked ones, and it does
+// it with the path a person can act on. A completely unreadable /home is
+// caught there too, because the candidate paths under it stat as denied.
 func userDirs(root string) []string {
 	entries, err := os.ReadDir(root)
 	if err != nil {
@@ -153,24 +225,71 @@ func userDirs(root string) []string {
 	return out
 }
 
-// scriptIn reports the backup script in a directory, if there is one.
-func scriptIn(dir string) (string, legacybus.Layout, bool) {
-	for _, c := range []struct {
-		name   string
-		layout legacybus.Layout
-	}{
-		{"backup.sh", legacybus.LayoutLinux},
-		{"backup.bat", legacybus.LayoutWindows},
-		{"nightly-whole-system.sh", legacybus.LayoutLinux},
-	} {
+// scriptNames are the backup scripts three vintages of the install notes
+// produced.
+var scriptNames = []struct {
+	name   string
+	layout legacybus.Layout
+}{
+	{"backup.sh", legacybus.LayoutLinux},
+	{"backup.bat", legacybus.LayoutWindows},
+	{"nightly-whole-system.sh", legacybus.LayoutLinux},
+}
+
+// lookIn reports the backup script in a directory, and separately the path
+// that stopped it from being able to tell.
+//
+// The blocked return is the point: a stat that fails with "permission denied"
+// is not a directory without a script in it. See Result.Blocked.
+func lookIn(dir string) (script string, layout legacybus.Layout, blocked string) {
+	for _, c := range scriptNames {
 		path := filepath.Join(dir, c.name)
 
-		if info, err := os.Stat(path); err == nil && !info.IsDir() {
-			return path, c.layout, true
+		info, err := os.Stat(path)
+
+		switch {
+		case err == nil && !info.IsDir():
+			return path, c.layout, ""
+
+		case errors.Is(err, fs.ErrPermission):
+			blocked = deepestVisible(path)
 		}
 	}
 
-	return "", "", false
+	return "", "", blocked
+}
+
+// scriptIn is lookIn for callers that only want the yes or no.
+func scriptIn(dir string) (string, legacybus.Layout, bool) {
+	script, layout, _ := lookIn(dir)
+
+	return script, layout, script != ""
+}
+
+// deepestVisible walks up from a path that could not be read to the last
+// ancestor that can be, which is the directory to name in the report.
+//
+// /home/restic/bin/backup.sh cannot be stat'ed from an ordinary account
+// because /home/restic is mode 0750 — but /home/restic itself is perfectly
+// visible, and it is the thing to tell somebody about. Naming the leaf would
+// be technically accurate and useless: three candidate paths under one home
+// directory would produce three reports of the same one fact.
+func deepestVisible(path string) string {
+	for dir := filepath.Dir(path); ; {
+		if _, err := os.Stat(dir); err == nil {
+			return dir
+		}
+
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			// Reached the root without finding anything readable, which
+			// should not happen; the original path is still the honest
+			// answer to "what could not be read".
+			return path
+		}
+
+		dir = parent
+	}
 }
 
 // others reports further legacy installs beyond the one already found.

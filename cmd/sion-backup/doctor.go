@@ -12,6 +12,7 @@ import (
 	"github.com/jroedel/sion-backup/business/domain/backup/backupbus"
 	"github.com/jroedel/sion-backup/business/domain/credential/credentialbus"
 	"github.com/jroedel/sion-backup/business/domain/plan/planbus"
+	"github.com/jroedel/sion-backup/foundation/restic"
 )
 
 // doctorCmd checks everything a backup needs and says what is wrong.
@@ -36,8 +37,10 @@ func doctorCmd(args []string) error {
 
 	d, err := wire(ctx, *verbose)
 	if err != nil {
-		// Wiring failing is itself the diagnosis, and the most common one: no
-		// restic on the machine.
+		// Wiring failing is itself the diagnosis. It no longer covers the
+		// commonest fault — a missing restic is a thing this program installs
+		// rather than reports — so what is left here is a data directory that
+		// cannot be written or a database that will not open.
 		fmt.Printf("FAIL  starting up: %v\n", err)
 		os.Exit(1)
 	}
@@ -57,13 +60,37 @@ func doctorCmd(args []string) error {
 		return d.paths.Config, nil
 	})
 
+	// One version across the fleet, or a named exception. Anything else is a
+	// machine whose snapshots were written by a restic nobody chose, which is
+	// how "it works here and not there" starts.
 	c.check("restic", func() (string, error) {
-		version, err := d.restic.Version(ctx)
-		if err != nil {
-			return "", err
+		version, err := d.restic.InstalledVersion(ctx)
+
+		switch {
+		case err != nil && d.restic.Managed():
+			return "", fmt.Errorf("no working restic at %s: %w\n"+
+				"      run \"sion-backup restic\" to install the pinned %s "+
+				"(the next backup would do it anyway)",
+				d.restic.Bin(), err, restic.PinnedVersion)
+
+		case err != nil:
+			return "", fmt.Errorf("the config file names %s and it does not run: %w",
+				d.restic.Bin(), err)
+
+		case !d.restic.Managed():
+			// Not a failure. Somebody named a path, which is allowed and is
+			// how a machine runs a build we do not ship; it is reported so
+			// that a version this fleet has never tested is never a surprise.
+			return version + " at " + d.restic.Bin() +
+				" (named in the config file, so its version is not managed here)", nil
+
+		case version != restic.PinnedVersion:
+			return "", fmt.Errorf("this machine has restic %s and the fleet runs %s; "+
+				"the next backup replaces it, or run \"sion-backup restic\" now",
+				version, restic.PinnedVersion)
 		}
 
-		return strings.TrimSpace(version) + " at " + d.restic.Bin(), nil
+		return version + " at " + d.restic.Bin(), nil
 	})
 
 	c.check("enrollment", func() (string, error) {

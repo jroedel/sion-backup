@@ -74,9 +74,14 @@ cover: ## Run the tests and open a coverage report
 	$(GO) tool cover -html=coverage.out
 
 .PHONY: restic
-restic: ## Download the pinned restic and verify it (make restic GOOS=windows)
+restic: ## Download the pinned restic into dist/, for the real-restic tests
+	@# For CI and a working copy. A deployed machine does not need this:
+	@# sion-backup installs its own restic from the pin compiled into it, and
+	@# "sion-backup restic" is the command for that.
+	@#
 	@# The version and its hashes live in deploy/restic.pin, copied from a
-	@# signed upstream SHA256SUMS. The script refuses anything that does not
+	@# signed upstream SHA256SUMS and kept in step with foundation/restic/pin.go
+	@# by TestPinMatchesDeployFile. The script refuses anything that does not
 	@# match and leaves nothing behind when it does.
 	./scripts/fetch-restic "$(GOOS)" "$(GOARCH)" $(DIST)
 

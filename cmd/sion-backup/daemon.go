@@ -391,6 +391,13 @@ func (d *deps) startRun(daemonCtx context.Context) func(context.Context) error {
 // once. They arrive over the network, live for the length of the run, and are
 // wiped on the way out — nothing reaches the disk.
 func (d *deps) backup(ctx context.Context, plan planbus.Plan) error {
+	// Before the credentials, and before anything is reported as started:
+	// this is the machine making sure it still has the program that does the
+	// work. Ordinarily it is one exec of `restic version` and nothing else.
+	if err := d.ensureRestic(ctx); err != nil {
+		return err
+	}
+
 	// Fetched now, used once, wiped on the way out. Nothing here is written to
 	// this machine's disk — see business/domain/credential.
 	set, err := d.creds.ForRun(ctx)

@@ -138,15 +138,19 @@ func (r Repository) Validate() error {
 // Runner invokes one restic binary.
 type Runner struct {
 	bin string
+
+	// managed marks the fleet's own copy — the one this program downloads,
+	// verifies and upgrades. See manage.go, and Resolve, which is how a
+	// Runner is built everywhere except recon.
+	managed bool
 }
 
-// New locates the restic binary.
+// New builds a Runner for a named binary, or for whatever PATH offers.
 //
-// The binary is shipped beside this one rather than taken from PATH, and the
-// installer passes its absolute path. A PATH lookup for a program about to be
-// handed the credentials to the only off-site copy of somebody's work is not a
-// lookup worth doing — but an empty bin falls back to PATH so that a developer
-// can use the restic they already have.
+// This is the low-level constructor and it is no longer how the program picks
+// its restic: [Resolve] is, and what it picks is the fleet's own managed copy.
+// What is left for New is recon, which reports on binaries it does not manage
+// — the snap-installed 0.14 that a machine turns out to have — and the tests.
 func New(bin string) (*Runner, error) {
 	if bin == "" {
 		bin = "restic"
@@ -216,17 +220,19 @@ const (
 // classify turns a generic exit 1 into a specific code where the message says
 // what actually happened.
 //
-// The distinct codes 10, 11 and 12 arrived in restic 0.17. Before that — and
-// this fleet has machines on 0.14 — every one of those failures is exit 1 with
-// a different sentence on stderr, and code that keys on the number alone reads
-// "there is no repository here" as "something went wrong". The consequence is
-// not cosmetic: Exists cannot tell an empty bucket from a broken one, so
-// enrollment refuses to initialise a repository that genuinely is not there.
+// The distinct codes 10, 11 and 12 arrived in restic 0.17. Before that every
+// one of those failures is exit 1 with a different sentence on stderr, and
+// code that keys on the number alone reads "there is no repository here" as
+// "something went wrong". The consequence is not cosmetic: Exists cannot tell
+// an empty bucket from a broken one, so enrollment refuses to initialise a
+// repository that genuinely is not there.
 //
-// Matching on message text is unpleasant. It is done here, once, in the one
-// place that has the exit status too — so a newer restic that reports the
-// proper code never reaches this function, and the matching quietly stops
-// mattering as the fleet is upgraded.
+// This is now a compatibility shim rather than the load-bearing thing it was.
+// The fleet used to be whatever restic each machine happened to have, 0.14
+// among them; it now runs [PinnedVersion] everywhere and installs it itself,
+// so the only binaries that can reach this branch are one named by hand in a
+// config file and whatever a legacy script is still calling. Kept because the
+// cost is a function nobody runs, and the failure it prevents is silent.
 func classify(code int, stderr string) int {
 	if code != ExitFailed {
 		return code

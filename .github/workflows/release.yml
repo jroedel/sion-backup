@@ -72,9 +72,11 @@ jobs:
           sha256sum --ignore-missing -c SHA256SUMS
           ```
 
-          Then fetch the restic build this release was tested against.
-          `restic.pin` carries the version and its upstream hashes; from a
-          clone, `scripts/fetch-restic` does the download and the check.
+          restic needs no separate step: this binary installs the version it
+          was tested against, verified against a hash compiled into it, into
+          the data directory. `sion-backup restic` does it now; enrolling does
+          it anyway. `restic.pin` ships alongside so the version and its
+          upstream hashes can be checked by hand.
 
           Enrol the machine with a code from Eumaeus:
 

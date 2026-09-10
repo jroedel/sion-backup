@@ -134,9 +134,12 @@ type ServerConfig struct {
 	// app/sdk/loopback.
 	Addr string `toml:"addr"`
 
-	// Restic is the absolute path to the restic binary. Empty falls back to
-	// PATH, which is right on a developer's machine and wrong on a deployed
-	// one — see restic.New.
+	// Restic is the absolute path to a restic binary, and is normally empty.
+	//
+	// Empty means the fleet's own copy: the pinned version, installed and
+	// upgraded by this program into the data directory. Set, it names a
+	// binary to use exactly as given and never to manage — the escape hatch
+	// for a platform the pin has no build for. See restic.Resolve.
 	Restic string `toml:"restic"`
 }
 
