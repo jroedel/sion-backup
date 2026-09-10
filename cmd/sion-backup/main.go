@@ -27,6 +27,7 @@ import (
 	"github.com/jroedel/sion-backup/business/domain/backup/stores/backupdb"
 	"github.com/jroedel/sion-backup/business/domain/credential/credentialbus"
 	"github.com/jroedel/sion-backup/business/domain/credential/sources/eumaeuscreds"
+	"github.com/jroedel/sion-backup/business/domain/diag/diagbus"
 	"github.com/jroedel/sion-backup/business/domain/fleet/fleetbus"
 	"github.com/jroedel/sion-backup/business/domain/fleet/sources/eumaeusfleet"
 	"github.com/jroedel/sion-backup/business/domain/plan/planbus"
@@ -58,6 +59,7 @@ Commands:
   status     Print the last few runs
   enroll     Fetch this machine's credentials from Eumaeus and store them
   doctor     Check everything a backup needs, and say what is wrong
+  report     Report a failed install or a crash (for the installers)
   paths      Print where this program keeps its files
   version    Print the build
 
@@ -67,6 +69,9 @@ The status page is at http://127.0.0.1:7391/ while the daemon is running.
 `
 
 func main() {
+	// Records the crash before letting it be one. See capturePanic.
+	defer capturePanic()
+
 	if err := run(); err != nil {
 		if errors.Is(err, errUsage) {
 			os.Exit(2)
@@ -100,6 +105,8 @@ func run() error {
 		return enrollCmd(args)
 	case "doctor":
 		return doctorCmd(args)
+	case "report":
+		return reportCmd(args)
 	case "paths":
 		return pathsCmd()
 	case "version":
@@ -135,6 +142,7 @@ type deps struct {
 	backups *backupbus.Runner
 	creds   *credentialbus.Business
 	fleet   *fleetbus.Business
+	diag    *diagbus.Business
 	restic  *restic.Runner
 }
 
@@ -175,7 +183,17 @@ func wire(ctx context.Context, verbose bool) (*deps, error) {
 
 	d := &deps{cfg: cfg, cfgFound: found, paths: p, log: log}
 
+	// Before the database, deliberately: if opening it is what fails, that is
+	// a report somebody wants.
+	d.diag = diagnostics(log)
+
 	if d.db, err = sqldb.Open(ctx, p.DB); err != nil {
+		_ = d.diag.Record(diagbus.Report{
+			Kind:   diagbus.KindInstallFailed,
+			Step:   "open-database",
+			Detail: err.Error(),
+		})
+
 		return nil, err
 	}
 

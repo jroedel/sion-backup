@@ -51,6 +51,7 @@ func TestNoDefaultPathInsideRepo(t *testing.T) {
 		"Token":   p.Token,
 		"Verify":  p.Verify,
 		"Scratch": p.Scratch,
+		"Diag":    p.Diag,
 		"Log":     p.Log,
 	} {
 		abs, err := filepath.Abs(got)
@@ -79,7 +80,7 @@ func TestEveryPathIsUnderTheDataDirectory(t *testing.T) {
 
 	for name, got := range map[string]string{
 		"DB": p.DB, "Config": p.Config, "Token": p.Token,
-		"Verify": p.Verify, "Scratch": p.Scratch, "Log": p.Log,
+		"Verify": p.Verify, "Scratch": p.Scratch, "Diag": p.Diag, "Log": p.Log,
 	} {
 		if rel, err := filepath.Rel(p.DataDir, got); err != nil || strings.HasPrefix(rel, "..") {
 			t.Errorf("%s is outside the data directory: %s", name, got)
@@ -102,7 +103,7 @@ func TestScratchIsNotSharedWithAnythingElse(t *testing.T) {
 
 	for name, other := range map[string]string{
 		"DataDir": p.DataDir, "DB": p.DB, "Config": p.Config,
-		"Token": p.Token, "Verify": p.Verify, "Log": p.Log,
+		"Token": p.Token, "Verify": p.Verify, "Diag": p.Diag, "Log": p.Log,
 	} {
 		if p.Scratch == other {
 			t.Errorf("Scratch is the same path as %s (%s); ClearScratch would delete it", name, other)
@@ -135,7 +136,7 @@ func TestEnsureDirsIsOwnerOnly(t *testing.T) {
 		t.Fatalf("EnsureDirs: %v", err)
 	}
 
-	for _, d := range []string{p.DataDir, p.Verify, p.Scratch} {
+	for _, d := range []string{p.DataDir, p.Verify, p.Scratch, p.Diag} {
 		info, err := os.Stat(d)
 		if err != nil {
 			t.Fatalf("stat %s: %v", d, err)

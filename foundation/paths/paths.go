@@ -83,6 +83,14 @@ type Paths struct {
 	// verification file into the next snapshot, forever.
 	Scratch string
 
+	// Diag holds diagnostic reports waiting to be sent: install failures,
+	// panics, and failed self-updates.
+	//
+	// A directory of files rather than a table in the database, because the
+	// reports most worth having are the ones from an install that fell over
+	// before there was a database to write to. See business/domain/diag.
+	Diag string
+
 	// Log is the daemon's log file. The daemon has no terminal to write to,
 	// and "is it running properly" is the question this program exists to
 	// answer, so the log is a file rather than a stream nobody kept.
@@ -117,6 +125,7 @@ func Resolve() (Paths, error) {
 		Token:   filepath.Join(abs, "machine-token"),
 		Verify:  filepath.Join(abs, "verify"),
 		Scratch: filepath.Join(abs, "scratch"),
+		Diag:    filepath.Join(abs, "diagnostics"),
 		Log:     cmp.Or(os.Getenv("SION_BACKUP_LOG"), filepath.Join(abs, "sion-backup.log")),
 	}, nil
 }
@@ -168,7 +177,7 @@ func platformRoot() (string, error) {
 // holds and when it was last online, and the machine token sits beside it. On Windows the mode is largely ignored and the directory
 // inherits the profile's ACL, which is already owner-only.
 func (p Paths) EnsureDirs() error {
-	for _, dir := range []string{p.DataDir, p.Verify, p.Scratch} {
+	for _, dir := range []string{p.DataDir, p.Verify, p.Scratch, p.Diag} {
 		if err := os.MkdirAll(dir, 0o700); err != nil {
 			return fmt.Errorf("paths: creating %s: %w", dir, err)
 		}
