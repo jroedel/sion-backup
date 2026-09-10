@@ -38,6 +38,13 @@ var ErrNotFound = errors.New("eumaeusapi: not found")
 // de-enrolled and should say so rather than showing a network error forever.
 var ErrUnauthorised = errors.New("eumaeusapi: the token was refused")
 
+// ErrBadRequest is a 400: the server could not parse what was sent, and says
+// so about a request that will never become well-formed. Distinguished because
+// it is the other failure retrying cannot fix — but unlike ErrUnauthorised it
+// is this program's fault, and the caller's job is to stop resending and make
+// enough noise that somebody fixes the client.
+var ErrBadRequest = errors.New("eumaeusapi: the request was rejected as malformed")
+
 // ErrConflict is a 409: the request collided with existing state. The only
 // place it means anything specific is an enrollment code that has already been
 // claimed, where re-issuing a token would turn a replayed code into a second
@@ -201,6 +208,14 @@ func (c *Client) Do(ctx context.Context, method, path string, body, out any) err
 	switch {
 	case resp.StatusCode == http.StatusNotFound:
 		return ErrNotFound
+
+	case resp.StatusCode == http.StatusBadRequest:
+		// The body is kept: it names the field that was wrong, and that
+		// sentence is the whole value of the status to whoever reads the log.
+		detail, _ := io.ReadAll(limited)
+
+		return fmt.Errorf("%w: %s %s: %s", ErrBadRequest,
+			method, path, strings.TrimSpace(string(detail)))
 
 	case resp.StatusCode == http.StatusUnauthorized, resp.StatusCode == http.StatusForbidden:
 		return ErrUnauthorised

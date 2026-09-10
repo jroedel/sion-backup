@@ -364,3 +364,82 @@ func TestOutcomeGood(t *testing.T) {
 		}
 	}
 }
+
+// TestTheRunUUIDSurvivesTheDatabase is what makes a run reported days later —
+// a laptop that backed up on a plane — report the identity it announced when
+// it started, rather than a fresh one the dashboard cannot pair with anything.
+func TestTheRunUUIDSurvivesTheDatabase(t *testing.T) {
+	b, store, _ := harness(t, fakeRestic(t, 0, "good"))
+	ctx := context.Background()
+
+	req := request()
+	req.RunUUID = "0192f3a1-7c4e-7b21-9f10-3c2d5e8a41b7"
+	req.Seeding = true
+
+	run, err := b.Run(ctx, req, time.Now)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	if run.RunUUID != req.RunUUID || !run.Seeding {
+		t.Errorf("Run returned uuid %q seeding %v", run.RunUUID, run.Seeding)
+	}
+
+	pending, err := store.Unreported(ctx, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if len(pending) != 1 {
+		t.Fatalf("%d runs are waiting to be reported, want 1", len(pending))
+	}
+
+	if pending[0].RunUUID != req.RunUUID {
+		t.Errorf("the stored run reports as %q, want %q", pending[0].RunUUID, req.RunUUID)
+	}
+
+	if !pending[0].Seeding {
+		t.Error("the seeding flag did not survive the database")
+	}
+}
+
+// TestSeedingIsTrueOnlyUntilSomethingIsWritten. The server's cutover guard
+// waits on the seeding run, so a machine that claimed to be seeding every
+// night would keep a rotation open forever.
+func TestSeedingIsTrueUntilTheRepositoryHasASnapshot(t *testing.T) {
+	b, _, _ := harness(t, fakeRestic(t, 0, "good"))
+	ctx := context.Background()
+
+	req := request()
+
+	seeding, err := b.Seeding(ctx, req.Repository.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if !seeding {
+		t.Error("the first run against a new repository is not reported as seeding")
+	}
+
+	if _, err := b.Run(ctx, req, time.Now); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	if seeding, err = b.Seeding(ctx, req.Repository.URL); err != nil {
+		t.Fatal(err)
+	}
+
+	if seeding {
+		t.Error("a repository that has been written to is still reported as needing seeding")
+	}
+
+	// A rotation gives the machine a different bucket, and that one does need
+	// seeding — which is the case the flag exists for.
+	if seeding, err = b.Seeding(ctx, "s3:https://s3.example.invalid/rotated"); err != nil {
+		t.Fatal(err)
+	}
+
+	if !seeding {
+		t.Error("a freshly rotated repository is not reported as seeding")
+	}
+}

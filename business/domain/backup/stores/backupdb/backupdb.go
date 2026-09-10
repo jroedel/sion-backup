@@ -18,12 +18,56 @@ import (
 var schemaSQL string
 
 // Migrate brings the schema up to date.
+//
+// schema.sql creates what is missing; the additions below carry a database
+// that already has a run table forward, because CREATE TABLE IF NOT EXISTS
+// does nothing to one that exists. Each is a column with a default, applied
+// only when absent, which is all this schema has needed so far — the day one
+// of them needs backfilling or a table rewrite is the day this earns a
+// numbered migration table instead.
 func Migrate(ctx context.Context, db *sqldb.DB) error {
 	if _, err := db.ExecContext(ctx, schemaSQL); err != nil {
 		return fmt.Errorf("backupdb: applying the schema: %w", err)
 	}
 
+	added := []struct{ column, ddl string }{
+		{"run_uuid", `ALTER TABLE run ADD COLUMN run_uuid TEXT NOT NULL DEFAULT ''`},
+		{"seeding", `ALTER TABLE run ADD COLUMN seeding INTEGER NOT NULL DEFAULT 0`},
+	}
+
+	for _, a := range added {
+		has, err := hasColumn(ctx, db, "run", a.column)
+		if err != nil {
+			return err
+		}
+
+		if has {
+			continue
+		}
+
+		if _, err := db.ExecContext(ctx, a.ddl); err != nil {
+			return fmt.Errorf("backupdb: adding run.%s: %w", a.column, err)
+		}
+	}
+
 	return nil
+}
+
+func hasColumn(ctx context.Context, db *sqldb.DB, table, column string) (bool, error) {
+	rows, err := db.QueryContext(ctx, `SELECT 1 FROM pragma_table_info(?) WHERE name = ?`,
+		table, column)
+	if err != nil {
+		return false, fmt.Errorf("backupdb: looking for %s.%s: %w", table, column, err)
+	}
+	defer rows.Close()
+
+	found := rows.Next()
+
+	if err := rows.Err(); err != nil {
+		return false, fmt.Errorf("backupdb: looking for %s.%s: %w", table, column, err)
+	}
+
+	return found, nil
 }
 
 // Store is the SQLite implementation of backupbus.Storer.
@@ -45,11 +89,12 @@ func NewStore(db *sqldb.DB) *Store {
 // night" and "it was killed halfway through" are very different problems.
 func (s *Store) Create(ctx context.Context, r backupbus.Run) (int64, error) {
 	const q = `
-		INSERT INTO run (node_id, repository, started_at, outcome, message)
-		VALUES (?, ?, ?, ?, ?)`
+		INSERT INTO run (node_id, repository, run_uuid, seeding, started_at, outcome, message)
+		VALUES (?, ?, ?, ?, ?, ?, ?)`
 
 	res, err := s.db.ExecContext(ctx, q,
-		r.NodeID, r.Repository, r.StartedAt.Format(time.RFC3339), string(r.Outcome), r.Message)
+		r.NodeID, r.Repository, r.RunUUID, r.Seeding,
+		r.StartedAt.Format(time.RFC3339), string(r.Outcome), r.Message)
 	if err != nil {
 		return 0, fmt.Errorf("backupdb: opening a run row: %w", err)
 	}
@@ -98,8 +143,8 @@ func (s *Store) Finish(ctx context.Context, r backupbus.Run) error {
 }
 
 const columns = `
-	id, node_id, repository, started_at, finished_at, outcome, message,
-	snapshot_id, files_new, files_changed, total_files_processed,
+	id, node_id, repository, run_uuid, seeding, started_at, finished_at, outcome,
+	message, snapshot_id, files_new, files_changed, total_files_processed,
 	total_bytes_processed, data_added, unreadable_files, verified,
 	vss_fell_back, reported_at`
 
@@ -157,6 +202,34 @@ func (s *Store) Unreported(ctx context.Context, limit int) ([]backupbus.Run, err
 	return scanRuns(rows)
 }
 
+// SeenRepository reports whether a snapshot has ever been written to this
+// repository from this machine.
+//
+// It is how a run learns whether it is the seeding one. Asked of the local
+// history rather than of the repository itself because the answer is needed
+// before the run starts, and asking restic would mean a round trip to the
+// bucket to answer a question that is only ever used for reporting.
+//
+// A snapshot ID rather than a successful outcome, deliberately: a run that
+// wrote a snapshot and failed verification still filled the repository, and
+// the next one is not seeding it.
+func (s *Store) SeenRepository(ctx context.Context, repository string) (bool, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT 1 FROM run WHERE repository = ? AND snapshot_id <> '' LIMIT 1`, repository)
+	if err != nil {
+		return false, fmt.Errorf("backupdb: looking for earlier runs against %s: %w", repository, err)
+	}
+	defer rows.Close()
+
+	seen := rows.Next()
+
+	if err := rows.Err(); err != nil {
+		return false, fmt.Errorf("backupdb: looking for earlier runs against %s: %w", repository, err)
+	}
+
+	return seen, nil
+}
+
 // MarkReported records that the fleet dashboard has been told.
 func (s *Store) MarkReported(ctx context.Context, id int64, at time.Time) error {
 	if _, err := s.db.ExecContext(ctx,
@@ -201,7 +274,8 @@ func scanRuns(rows *sql.Rows) ([]backupbus.Run, error) {
 		)
 
 		if err := rows.Scan(
-			&r.ID, &r.NodeID, &r.Repository, &started, &finished, &outcome, &r.Message,
+			&r.ID, &r.NodeID, &r.Repository, &r.RunUUID, &r.Seeding,
+			&started, &finished, &outcome, &r.Message,
 			&r.SnapshotID, &r.FilesNew, &r.FilesChanged, &r.TotalFilesProcessed,
 			&r.TotalBytesProcessed, &r.DataAdded, &unreadable, &r.Verified,
 			&r.VSSFellBack, &reported,
