@@ -491,6 +491,24 @@ Named here rather than left to be discovered.
   password out of Eumaeus. That is the right place for a rare, high-stakes,
   supervised operation to start; a button would be worse.
 
+## Releasing
+
+```sh
+make tag-revision      # vX.Y.(Z+1)
+make tag-minor         # vX.(Y+1).0
+make tag-major         # v(X+1).0.0
+```
+
+Each reads the highest existing tag, increments the part named, shows what it
+is about to do, and pushes an annotated tag. The push is what publishes: the
+release workflow builds all five binaries and their `SHA256SUMS`, and every
+machine in the fleet updates itself to whatever comes out.
+
+Because of that last sentence, the tag has to come from a commit that stays
+reachable — so the targets refuse unless you are on `main`, in step with the
+remote, with a clean tree. `ALLOW_BRANCH=<name>` cuts one from somewhere else
+on purpose, which is a real thing to want and worth saying out loud.
+
 ## Contributing
 
 `make check` runs what CI runs: format, vet, tests, and a type-check for all

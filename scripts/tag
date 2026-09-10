@@ -1,0 +1,158 @@
+#!/bin/sh
+# Cut the next release tag, and refuse to cut it in the wrong place.
+#
+#   scripts/tag major | minor | revision
+#
+# Reads the highest vX.Y.Z tag in the repository, increments the part asked
+# for, and pushes an annotated tag. Pushing the tag is what publishes: the
+# release workflow builds all five binaries and their SHA256SUMS from it, and
+# every machine in the fleet updates itself to whatever that produces.
+#
+# # Why this is a script and not three lines of Makefile
+#
+# Because of the checks, and the checks exist because of a specific mistake:
+# a tag was cut from a feature branch that happened to be checked out, and
+# the release started building from a commit that was not on main. Nothing
+# stopped it. Nothing would have noticed either, except that the tag would
+# have pointed into a branch somebody deleted a week later.
+#
+# So: main, in step with the remote, clean tree, and the tag must not exist.
+# Any of those failing is a refusal rather than a warning, because the thing
+# being guarded is a release that thirty machines install without being asked.
+#
+# YES=1 skips the confirmation, for whoever is doing this from a script.
+# ALLOW_BRANCH=<name> tags a branch on purpose — a release candidate cut from
+# somewhere other than main is a real thing to want, and this asks you to say
+# so out loud rather than letting it happen by accident.
+
+set -eu
+
+part="${1:-}"
+
+case "$part" in
+  major|minor|revision) ;;
+  *)
+    echo "usage: scripts/tag major|minor|revision" >&2
+    exit 2
+    ;;
+esac
+
+want_branch="${ALLOW_BRANCH:-main}"
+
+# ---------------------------------------------------------------------------
+# Where are we
+# ---------------------------------------------------------------------------
+
+branch="$(git rev-parse --abbrev-ref HEAD)"
+
+if [ "$branch" != "$want_branch" ]; then
+  echo "tag: on branch '$branch', not '$want_branch'." >&2
+  echo "     A release must come from a commit that stays reachable." >&2
+  echo "     Deliberate? ALLOW_BRANCH=$branch make tag-$part" >&2
+  exit 1
+fi
+
+if [ -n "$(git status --porcelain)" ]; then
+  echo "tag: the working tree has changes in it." >&2
+  echo "     Whatever they are, they will not be in the release, and the" >&2
+  echo "     version stamped into the binaries would say -dirty." >&2
+  exit 1
+fi
+
+# Fetched rather than assumed: a local main that is three commits behind
+# would tag the wrong commit and nothing later would say so.
+git fetch --quiet --tags origin
+
+upstream="origin/$want_branch"
+
+if git rev-parse --verify --quiet "$upstream" >/dev/null; then
+  local_head="$(git rev-parse HEAD)"
+  remote_head="$(git rev-parse "$upstream")"
+
+  if [ "$local_head" != "$remote_head" ]; then
+    behind="$(git rev-list --count "HEAD..$upstream")"
+    ahead="$(git rev-list --count "$upstream..HEAD")"
+
+    echo "tag: $branch is $ahead ahead and $behind behind $upstream." >&2
+    echo "     Push or pull first; the release is built from the remote." >&2
+    exit 1
+  fi
+fi
+
+# ---------------------------------------------------------------------------
+# What the next version is
+# ---------------------------------------------------------------------------
+
+# The highest tag by version order, not by date: a fix tagged on an old
+# branch last week must not make v0.9.1 look like the newest release.
+latest="$(git tag --list 'v[0-9]*.[0-9]*.[0-9]*' --sort=-v:refname | head -1)"
+
+if [ -z "$latest" ]; then
+  major=0
+  minor=0
+  revision=0
+else
+  version="${latest#v}"
+  major="${version%%.*}"
+  rest="${version#*.}"
+  minor="${rest%%.*}"
+  revision="${rest#*.}"
+
+  # A tag like v1.2.3-rc1 is not one this increments from.
+  case "$major$minor$revision" in
+    *[!0-9]*)
+      echo "tag: the latest tag '$latest' is not a plain vX.Y.Z." >&2
+      exit 1
+      ;;
+  esac
+fi
+
+case "$part" in
+  major)    major=$((major + 1)); minor=0; revision=0 ;;
+  minor)    minor=$((minor + 1)); revision=0 ;;
+  revision) revision=$((revision + 1)) ;;
+esac
+
+next="v${major}.${minor}.${revision}"
+
+if git rev-parse --verify --quiet "refs/tags/$next" >/dev/null; then
+  echo "tag: $next already exists." >&2
+  exit 1
+fi
+
+# ---------------------------------------------------------------------------
+# Say what is about to happen, then do it
+# ---------------------------------------------------------------------------
+
+echo
+echo "  from     ${latest:-no tags yet}"
+echo "  next     $next"
+echo "  commit   $(git log --oneline -1)"
+echo "  branch   $branch"
+echo
+echo "  Pushing this tag builds the release and every machine in the fleet"
+echo "  updates itself to it."
+echo
+
+if [ "${YES:-}" != "1" ]; then
+  printf "  Tag and push %s? [y/N] " "$next"
+  read -r answer </dev/tty
+
+  case "$answer" in
+    y|Y|yes|YES) ;;
+    *) echo "  Nothing was tagged."; exit 0 ;;
+  esac
+fi
+
+# Annotated, so the tag carries who cut it and when. The release workflow
+# reads the version back out with git describe.
+git tag -a "$next" -m "sion-backup $next"
+
+# Only this tag, rather than --tags: pushing every local tag is how somebody
+# else's half-finished experiment ends up triggering a release.
+git push origin "refs/tags/$next"
+
+echo
+echo "  Tagged $next and pushed it."
+echo "  Watch the build:  gh run watch \$(gh run list --workflow Release --limit 1 --json databaseId -q '.[0].databaseId')"
+echo
