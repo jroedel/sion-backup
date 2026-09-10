@@ -2,6 +2,7 @@ package eumaeusapi_test
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -83,5 +84,33 @@ func TestPlainHTTPIsRefused(t *testing.T) {
 
 	if err == nil || !strings.Contains(err.Error(), "https") {
 		t.Errorf("got %v, want a refusal mentioning https", err)
+	}
+}
+
+// TestABadRequestIsDistinguished. A 400 is the one failure that is this
+// program's own fault, and the caller has to be able to tell it from a server
+// having a bad day — one is dropped, the other is retried.
+func TestABadRequestIsDistinguished(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+		w.Write([]byte(`{"error":"that enrollment code has expired","field":"code"}`))
+	}))
+	defer srv.Close()
+
+	client, err := eumaeusapi.New(eumaeusapi.Config{BaseURL: srv.URL})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	err = client.Do(context.Background(), http.MethodPost, "/runs", struct{}{}, nil)
+
+	if !errors.Is(err, eumaeusapi.ErrBadRequest) {
+		t.Fatalf("got %v, want ErrBadRequest", err)
+	}
+
+	// The server's sentence is kept: it names the field, and that is the whole
+	// value of a 400 to whoever reads the log.
+	if !strings.Contains(err.Error(), "that enrollment code has expired") {
+		t.Errorf("the explanation was lost: %v", err)
 	}
 }

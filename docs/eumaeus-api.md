@@ -599,18 +599,18 @@ Done, in this repository:
 | The rotation card, with both halves of the trade | `statusapp`, `planbus.ConsiderRotation` |
 | Every call under the versioned base path (§3.1) | `eumaeusapi.APIPrefix` |
 | The fleet's server as the built-in default, so enrolling needs only a code | `cmd/sion-backup.DefaultEumaeusURL` |
+| `run_uuid` on both phases, stored so a late report keeps its identity | `backupbus.Run`, `backupdb`, `cmd/.../events.go` |
+| `seeding` and `repository_url` on run events | `backupbus.Runner.Seeding`, `fleetbus.Event` |
+| A rejected event dropped rather than resent forever | `fleetbus.ErrRejected`, `fleetbus.Flush` |
 
 Still to do:
 
 | Change | Where | Size |
 |---|---|---|
-| `run_uuid` on both phases | `backupbus.Run`, `fleetbus.Event` | small |
-| `seeding` and `repository_url` on run events | `backupbus`, `cmd/.../events.go` | small |
 | The "ask for a fresh bucket" button, posting §8 | `statusapp` | small |
 | Take `fresh_bucket_available` and the price from §5 rather than config | `statusapp`, daemon | small |
 | Hourly poll of §5, for `paused_until` and retirement | new, in the daemon | medium |
 | `POST /machines/me/card-issued` after printing | `cmd/sion-backup/enroll.go` | trivial |
-| Mark a run reported on `400` | `fleetbus.Flush` | trivial |
 | Show "backups available since" from `repository.created_at` | `statusapp` | trivial |
 
 ## 12. Still open
