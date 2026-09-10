@@ -208,6 +208,26 @@ func doctorCmd(args []string) error {
 			waiting, d.paths.Diag), nil
 	})
 
+	c.check("repository check", func() (string, error) {
+		if planErr != nil || plan.Repository == "" {
+			return "", errSkipCheck
+		}
+
+		i, err := d.plan.Integrity(ctx, plan.Repository)
+		if err != nil {
+			return "", err
+		}
+
+		// A damaged repository is the one failure here that means the backups
+		// already taken may not come back, so it is a failure rather than a
+		// line of detail.
+		if !i.CheckedAt.IsZero() && !i.OK && i.SkippedReason == "" {
+			return "", fmt.Errorf("%s", i.Describe(time.Now()))
+		}
+
+		return i.Describe(time.Now()), nil
+	})
+
 	c.check("self-update", func() (string, error) {
 		u := supervisor(d.log)
 		if u == nil {

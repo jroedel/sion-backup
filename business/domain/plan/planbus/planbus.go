@@ -102,6 +102,9 @@ type Storer interface {
 	MarkSeeded(ctx context.Context) error
 	GetMeasurement(ctx context.Context) (Measurement, error)
 	PutMeasurement(ctx context.Context, m Measurement) error
+
+	GetIntegrity(ctx context.Context) (Integrity, error)
+	PutIntegrity(ctx context.Context, i Integrity) error
 }
 
 // Business is the plan domain.
@@ -209,4 +212,28 @@ func (b *Business) Seed(ctx context.Context, p Plan, now time.Time) (bool, error
 	}
 
 	return true, nil
+}
+
+// Integrity returns the last repository check.
+//
+// A result for a different repository is discarded rather than returned: a
+// machine moved to a new bucket has verified nothing about the one it is now
+// writing to, and a stale "sound, three days ago" on the status page would be
+// a lie about the wrong thing.
+func (b *Business) Integrity(ctx context.Context, repositoryURL string) (Integrity, error) {
+	i, err := b.store.GetIntegrity(ctx)
+	if err != nil {
+		return Integrity{}, err
+	}
+
+	if i.RepositoryURL != repositoryURL {
+		return Integrity{}, nil
+	}
+
+	return i, nil
+}
+
+// RecordIntegrity stores the result of a check, or of a check not taken.
+func (b *Business) RecordIntegrity(ctx context.Context, i Integrity) error {
+	return b.store.PutIntegrity(ctx, i)
 }
