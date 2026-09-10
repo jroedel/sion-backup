@@ -457,7 +457,8 @@ that has not implemented an endpoint as clearly as it reports a wrong token.
 
 ## Known gaps
 
-Named here rather than left to be discovered.
+Named here rather than left to be discovered. These are decisions. Work that is
+intended and not yet done is in [`docs/todo.md`](docs/todo.md).
 
 - **Self-update can neither roll back nor be stopped.** `swap` keeps the
   previous binary as `.old`, but nothing ever restores it, and `CleanupOld`
