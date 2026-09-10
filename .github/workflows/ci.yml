@@ -120,6 +120,29 @@ jobs:
         shell: bash
         run: bash -n deploy/linux/install.sh && echo "install.sh parses"
 
+  selfupdate:
+    # Self-update is the one feature that can break every machine at once, and
+    # the only one whose failure mode is "the fleet stops being reachable by
+    # the thing that would fix it". So its end-to-end behaviour is checked on
+    # every push, not only before a release.
+    #
+    # The binary here is the release binary, unmodified. What is faked is the
+    # internet: a container answers as api.github.com, under a certificate the
+    # test machine's trust store accepts, and offers a release that is broken
+    # in one specific way per case. Nothing in the program knows.
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Every way a release can be wrong
+        run: scripts/selfupdate-e2e/run
+
   api-spec:
     # The OpenAPI document and its examples. Separate from the Go jobs because
     # it needs Python and nothing else does, and because its failure means

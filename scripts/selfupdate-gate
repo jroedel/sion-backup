@@ -1,0 +1,241 @@
+#!/usr/bin/env bash
+#
+# selfupdate-gate — refuse to publish a release that would brick an upgrade.
+#
+# Takes the binary that is about to be published, puts the PREVIOUSLY published
+# release on a machine that has never seen either, upgrades it the way the
+# fleet will, and checks that the machine comes back.
+#
+#     scripts/selfupdate-gate --candidate dist/sion-backup-linux-amd64 --version v1.4.0
+#     scripts/selfupdate-gate --host root@1.2.3.4 --candidate ... --version ...
+#     scripts/selfupdate-gate --docker --candidate ... --version ...
+#     scripts/selfupdate-gate ... --keep        # leave the machine up to poke at
+#
+# THREE PLACES IT CAN RUN
+#
+#   default    a Vultr instance, bought for this and destroyed after
+#   --host     a machine you already have
+#   --docker   a privileged container with a real systemd, on this machine
+#
+# --docker is for writing the gate and for a developer with no Vultr key. It is
+# weaker evidence and the reason is the privilege: a container that can do
+# anything proves little about a laptop that cannot. Use it to iterate; let the
+# release workflow use a real instance.
+#
+# WHERE THIS GOES IN THE RELEASE
+#
+# Not before the tag: the tag push is what triggers the release workflow, so
+# there is no earlier moment CI can act on. It goes before PUBLICATION, which
+# is the moment that actually matters — foundation/selfupdate reads
+# /releases/latest, and GitHub excludes drafts from it. So:
+#
+#     tag -> build -> create the release as a DRAFT -> this gate -> un-draft
+#
+# A candidate that fails the gate stays a draft forever. No machine in the
+# fleet can see it, because there is nothing for /releases/latest to return.
+# See .github/workflows/release.yml.
+#
+# WHAT IT COSTS
+#
+# One hour of Vultr's smallest plan per release, and about four minutes of
+# wall clock. Releases are deliberate acts, not pushes to main.
+
+set -euo pipefail
+
+cd "$(dirname "$0")/.."
+
+CANDIDATE=""
+VERSION=""
+HOST=""
+DOCKER=0
+KEEP=0
+REPO="${GATE_REPO:-jroedel/sion-backup}"
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --candidate) CANDIDATE="$2"; shift 2 ;;
+    --version)   VERSION="$2"; shift 2 ;;
+    --host)      HOST="$2"; shift 2 ;;
+    --docker)    DOCKER=1; shift ;;
+    --repo)      REPO="$2"; shift 2 ;;
+    --keep)      KEEP=1; shift ;;
+    -h|--help)   sed -n '2,30p' "$0" | sed 's/^#\{0,1\} \{0,1\}//'; exit 0 ;;
+    *)           echo "selfupdate-gate: unknown option $1" >&2; exit 2 ;;
+  esac
+done
+
+[ -n "$CANDIDATE" ] || { echo "selfupdate-gate: --candidate is required" >&2; exit 2; }
+[ -n "$VERSION" ]   || { echo "selfupdate-gate: --version is required" >&2; exit 2; }
+[ -f "$CANDIDATE" ] || { echo "selfupdate-gate: no such file: $CANDIDATE" >&2; exit 2; }
+
+say() { printf '\n\033[1m==> %s\033[0m\n' "$*"; }
+
+WORK="$(mktemp -d)"
+STAGE="$WORK/gate"
+mkdir -p "$STAGE/release/deploy/systemd"
+
+# ---------------------------------------------------------------------------
+# The baseline: whatever the fleet is running right now.
+#
+# Fetched from the real GitHub, unauthenticated, because that is exactly what a
+# client machine has. A repository with no published release answers 404 here,
+# which is not a failure — it is the state this one is in until the first
+# release, and the gate degrades to testing a fresh install.
+# ---------------------------------------------------------------------------
+
+say "Finding the release the fleet is on"
+
+BASELINE_VERSION=""
+
+latest="$(curl -fsS -H 'Accept: application/vnd.github+json' \
+  "https://api.github.com/repos/${REPO}/releases/latest" 2>/dev/null || true)"
+
+if [ -n "$latest" ]; then
+  BASELINE_VERSION="$(printf '%s' "$latest" | jq -r '.tag_name // empty')"
+  url="$(printf '%s' "$latest" |
+    jq -r '.assets[]? | select(.name == "sion-backup-linux-amd64") | .browser_download_url' | head -1)"
+
+  if [ -n "$url" ]; then
+    echo "    baseline ${BASELINE_VERSION}"
+    curl -fsSL -o "$STAGE/baseline" "$url"
+    chmod 0755 "$STAGE/baseline"
+  else
+    echo "    ${BASELINE_VERSION} has no linux/amd64 asset; gating a fresh install only"
+    BASELINE_VERSION=""
+  fi
+else
+  echo "    ${REPO} has published no releases yet; gating a fresh install only"
+fi
+
+if [ -n "$BASELINE_VERSION" ] && [ "$BASELINE_VERSION" = "$VERSION" ]; then
+  echo "selfupdate-gate: ${VERSION} is already the published release — nothing to gate" >&2
+  exit 2
+fi
+
+# ---------------------------------------------------------------------------
+# Everything the box needs, in one directory.
+# ---------------------------------------------------------------------------
+
+say "Staging"
+
+cp "$CANDIDATE" "$STAGE/candidate"
+chmod 0755 "$STAGE/candidate"
+
+CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
+  go build -trimpath -ldflags '-s -w' -o "$STAGE/releaseserver" ./scripts/selfupdate-e2e/releaseserver
+
+# A release tree as the tarball unpacks: install.sh looks for the binary and
+# deploy/systemd beside it, and testing the documented procedure means giving
+# it what the documented procedure has.
+cp deploy/linux/install.sh "$STAGE/release/install.sh"
+cp deploy/systemd/sion-backup.service "$STAGE/release/deploy/systemd/"
+chmod 0755 "$STAGE/release/install.sh"
+
+cp scripts/selfupdate-gate.remote "$STAGE/remote"
+chmod 0755 "$STAGE/remote"
+
+# ---------------------------------------------------------------------------
+# A machine.
+# ---------------------------------------------------------------------------
+
+if [ "$DOCKER" -eq 1 ]; then
+  say "Starting a container with a real systemd"
+
+  BOX=sion-selfupdate-gate
+
+  docker rm -f "$BOX" >/dev/null 2>&1 || true
+  docker build -q -t "${BOX}-image" \
+    -f scripts/selfupdate-e2e/Dockerfile.systemd scripts/selfupdate-e2e >/dev/null
+
+  # Privileged, with the host's cgroup namespace: systemd as PID 1 needs to
+  # write cgroups, and a user manager needs its own slice under them.
+  docker run -d --name "$BOX" \
+    --privileged --cgroupns=host \
+    -v /sys/fs/cgroup:/sys/fs/cgroup:rw \
+    --tmpfs /run --tmpfs /run/lock \
+    "${BOX}-image" >/dev/null
+
+  # is-system-running, not "the container is up": systemd reports degraded in a
+  # container (there are units that cannot start in one) and that is fine, but
+  # "initializing" means logind is not up yet and enable-linger would fail.
+  for _ in $(seq 1 60); do
+    state="$(docker exec "$BOX" systemctl is-system-running 2>/dev/null || true)"
+
+    case "$state" in running|degraded) break ;; esac
+
+    sleep 1
+  done
+
+  case "${state:-}" in
+    running|degraded) echo "    systemd is ${state}" ;;
+    *) echo "selfupdate-gate: systemd never came up in the container (${state:-none})" >&2; exit 1 ;;
+  esac
+
+  remote_ssh() { docker exec -e CANDIDATE_VERSION -e BASELINE_VERSION "$BOX" "$@"; }
+  remote_scp() { docker exec "$BOX" rm -rf "$2"; docker cp "$1" "${BOX}:$2"; }
+
+  cleanup() {
+    if [ "$KEEP" -eq 1 ]; then
+      printf '\n\033[1m==> kept: docker exec -it %s bash (remove with docker rm -f %s)\033[0m\n' "$BOX" "$BOX"
+    else
+      docker rm -f "$BOX" >/dev/null 2>&1 || true
+    fi
+
+    rm -rf "$WORK"
+  }
+elif [ -n "$HOST" ]; then
+  say "Using ${HOST}"
+
+  remote_ssh() { ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+                     -o LogLevel=ERROR "$HOST" "$@"; }
+  remote_scp() { scp -q -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+                     -o LogLevel=ERROR -r "$1" "${HOST}:$2"; }
+  cleanup()    { rm -rf "$WORK"; }
+else
+  say "Buying a machine"
+
+  # Before creating one, not only after destroying it: the run that leaked a
+  # box is by definition not the run that can clean up after itself.
+  scripts/vultr-testbed reap --older-than 20 || true
+
+  ip="$(scripts/vultr-testbed up)"
+
+  remote_ssh() { scripts/vultr-testbed ssh -- "$@"; }
+  remote_scp() { scripts/vultr-testbed scp "$1"; }
+
+  cleanup() {
+    if [ "$KEEP" -eq 1 ]; then
+      printf '\n\033[1m==> kept: %s (destroy with scripts/vultr-testbed down)\033[0m\n' "$ip"
+    else
+      scripts/vultr-testbed down || true
+    fi
+
+    rm -rf "$WORK"
+  }
+fi
+
+trap cleanup EXIT
+
+say "Pushing the gate"
+
+remote_scp "$STAGE" /root/gate >/dev/null
+
+say "Running it"
+
+status=0
+
+export CANDIDATE_VERSION="$VERSION"
+export BASELINE_VERSION="$BASELINE_VERSION"
+
+remote_ssh env \
+  CANDIDATE_VERSION="$VERSION" \
+  BASELINE_VERSION="$BASELINE_VERSION" \
+  /root/gate/remote || status=$?
+
+if [ "$status" -eq 0 ]; then
+  printf '\n\033[32m==> gate passed: %s may be published\033[0m\n' "$VERSION"
+else
+  printf '\n\033[31m==> GATE FAILED: do not publish %s\033[0m\n' "$VERSION"
+fi
+
+exit "$status"

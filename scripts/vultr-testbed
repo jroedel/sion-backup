@@ -1,0 +1,269 @@
+#!/usr/bin/env bash
+#
+# vultr-testbed — a real machine, for as long as one question takes to answer.
+#
+# The self-update gate needs a machine with a real systemd, a real user
+# manager, real lingering and a real network, and it needs it for about four
+# minutes before a release is published. Buying one, answering the question and
+# destroying it is cheaper than keeping one, and a machine that is created
+# fresh each time cannot drift into passing for reasons nobody chose.
+#
+#     export VULTR_API_KEY=...
+#     scripts/vultr-testbed up                  # prints the IP
+#     scripts/vultr-testbed ssh -- systemctl --version
+#     scripts/vultr-testbed down
+#     scripts/vultr-testbed reap                # anything this leaked, ever
+#
+# COST AND LEAKS
+#
+# Vultr bills by the hour with a one-hour minimum, so a four-minute box costs
+# an hour of the smallest plan. What is not cheap is a box that is never
+# destroyed, and the way that happens is a CI run cancelled between `up` and
+# `down`. Three guards, because one is not enough:
+#
+#   1. `down` runs from a trap, so an ordinary failure still cleans up.
+#   2. Every instance carries a tag, and `reap` destroys every instance with
+#      that tag older than --older-than minutes. Run it at the START of a
+#      workflow as well as the end: the run that leaked is by definition not
+#      the run that can clean up after itself.
+#   3. The instance's own user-data installs a shutdown timer, so a box whose
+#      driver died still powers itself off. Powered off is not destroyed and
+#      still bills, but it is visible in the panel as obviously wrong.
+#
+# The SSH key is generated per run, uploaded, and deleted with the box. Nothing
+# long-lived is left in the account.
+
+set -euo pipefail
+
+: "${VULTR_API_KEY:?vultr-testbed: VULTR_API_KEY is not set}"
+
+API=https://api.vultr.com/v2
+
+# TAG is how reap finds what a dead run left behind. Do not change it without
+# reaping first, or the old tag becomes invisible.
+TAG=${VULTR_TESTBED_TAG:-sion-selfupdate-gate}
+
+REGION=${VULTR_REGION:-ewr}
+PLAN=${VULTR_PLAN:-vc2-1c-1gb}
+OS_NAME=${VULTR_OS:-Debian 12 x64}
+
+# STATE holds the instance id, its IP and the key, so `ssh` and `down` need no
+# arguments. Per-checkout rather than per-user: two workflows on one runner
+# would otherwise destroy each other's box.
+STATE=${VULTR_TESTBED_STATE:-.vultr-testbed}
+
+# SELF_DESTRUCT_MINUTES is guard 3. Long enough that a slow gate is not cut
+# off mid-assertion, short enough that a leak is an hour of the smallest plan.
+SELF_DESTRUCT_MINUTES=${VULTR_SELF_DESTRUCT_MINUTES:-45}
+
+say() { printf 'vultr-testbed: %s\n' "$*" >&2; }
+die() { say "$*"; exit 1; }
+
+api() {
+  local method=$1 path=$2
+  shift 2
+
+  curl -fsS -X "$method" "${API}${path}" \
+    -H "Authorization: Bearer ${VULTR_API_KEY}" \
+    -H "Content-Type: application/json" \
+    "$@"
+}
+
+# ---------------------------------------------------------------------------
+
+os_id() {
+  api GET /os?per_page=500 |
+    jq -r --arg name "$OS_NAME" '.os[] | select(.name == $name) | .id' | head -1
+}
+
+up() {
+  [ -f "$STATE/id" ] && die "a box is already up (${STATE}/id); run down first"
+
+  mkdir -p "$STATE"
+  chmod 0700 "$STATE"
+
+  local os
+  os=$(os_id)
+  [ -n "$os" ] || die "no OS called \"${OS_NAME}\"; see ${API}/os"
+
+  say "generating a key for this run only"
+  ssh-keygen -q -t ed25519 -N '' -C "$TAG" -f "$STATE/key"
+
+  local keyid
+  keyid=$(api POST /ssh-keys --data "$(jq -n \
+    --arg name "${TAG}-$(date +%s)-$$" \
+    --arg key "$(cat "$STATE/key.pub")" \
+    '{name: $name, ssh_key: $key}')" | jq -r '.ssh_key.id')
+
+  [ -n "$keyid" ] && [ "$keyid" != null ] || die "could not upload the key"
+  printf '%s' "$keyid" >"$STATE/keyid"
+
+  # Guard 3. `shutdown` rather than anything cleverer: it needs no network, no
+  # credentials and no agent, and a box that has powered itself off is both
+  # harmless and conspicuous.
+  local userdata
+  userdata=$(printf '#!/bin/sh\nshutdown -h +%s "sion-backup testbed self-destruct"\n' \
+    "$SELF_DESTRUCT_MINUTES" | base64 -w0)
+
+  say "creating a ${PLAN} in ${REGION} running ${OS_NAME}"
+
+  local created id
+  created=$(api POST /instances --data "$(jq -n \
+    --arg region "$REGION" --arg plan "$PLAN" --argjson os "$os" \
+    --arg tag "$TAG" --arg key "$keyid" --arg userdata "$userdata" \
+    '{region: $region, plan: $plan, os_id: $os,
+      label: $tag, tags: [$tag], hostname: $tag,
+      sshkey_id: [$key], user_data: $userdata,
+      backups: "disabled", enable_ipv6: false}')")
+
+  id=$(printf '%s' "$created" | jq -r '.instance.id')
+  [ -n "$id" ] && [ "$id" != null ] || die "no instance id came back: $created"
+
+  # Written before the wait, so an interrupted wait is still cleanable.
+  printf '%s' "$id" >"$STATE/id"
+  say "instance ${id}; waiting for it"
+
+  local ip status server
+  for _ in $(seq 1 120); do
+    local got
+    got=$(api GET "/instances/${id}") || { sleep 5; continue; }
+
+    ip=$(printf '%s' "$got" | jq -r '.instance.main_ip')
+    status=$(printf '%s' "$got" | jq -r '.instance.status')
+    server=$(printf '%s' "$got" | jq -r '.instance.server_status')
+
+    if [ "$status" = active ] && [ "$server" = ok ] && [ "$ip" != 0.0.0.0 ]; then
+      break
+    fi
+
+    sleep 5
+  done
+
+  [ "${status:-}" = active ] || die "the instance never became active (status: ${status:-none})"
+
+  printf '%s' "$ip" >"$STATE/ip"
+  say "up at ${ip}; waiting for sshd"
+
+  # Vultr reports server_status ok before sshd is answering, so this waits on
+  # the thing that is actually needed rather than on the API's opinion.
+  for _ in $(seq 1 60); do
+    if ssh_to true 2>/dev/null; then
+      say "ready"
+      printf '%s\n' "$ip"
+
+      return 0
+    fi
+
+    sleep 5
+  done
+
+  die "sshd never answered at ${ip}"
+}
+
+ssh_to() {
+  local ip
+  ip=$(cat "$STATE/ip")
+
+  # No host key checking and no known_hosts: the box was created thirty seconds
+  # ago by this script and will be destroyed by it. There is no earlier
+  # identity to compare against, and writing one would only poison the next
+  # run's file with a recycled address.
+  ssh -i "$STATE/key" \
+    -o StrictHostKeyChecking=no \
+    -o UserKnownHostsFile=/dev/null \
+    -o LogLevel=ERROR \
+    -o ConnectTimeout=10 \
+    "root@${ip}" "$@"
+}
+
+scp_to() {
+  local ip
+  ip=$(cat "$STATE/ip")
+
+  # -r because what gets pushed is the gate's staging directory, not a file.
+  scp -r -i "$STATE/key" \
+    -o StrictHostKeyChecking=no \
+    -o UserKnownHostsFile=/dev/null \
+    -o LogLevel=ERROR \
+    "$@" "root@${ip}:"
+}
+
+down() {
+  [ -d "$STATE" ] || { say "nothing to destroy"; return 0; }
+
+  if [ -f "$STATE/id" ]; then
+    local id
+    id=$(cat "$STATE/id")
+
+    say "destroying instance ${id}"
+    api DELETE "/instances/${id}" >/dev/null 2>&1 || say "could not destroy ${id}; reap will get it"
+  fi
+
+  if [ -f "$STATE/keyid" ]; then
+    api DELETE "/ssh-keys/$(cat "$STATE/keyid")" >/dev/null 2>&1 || true
+  fi
+
+  rm -rf "$STATE"
+}
+
+# reap destroys every tagged instance older than --older-than minutes.
+#
+# The point of the age is that a workflow running this at its start must not
+# destroy the box a concurrent workflow just created. Twenty minutes is longer
+# than the gate takes and shorter than an hour of billing.
+reap() {
+  local older_than=${1:-20}
+  local now
+  now=$(date -u +%s)
+
+  local found=0
+
+  while read -r id created label; do
+    [ -n "$id" ] || continue
+
+    local age
+    age=$(( (now - $(date -u -d "$created" +%s)) / 60 ))
+
+    if [ "$age" -lt "$older_than" ]; then
+      say "leaving ${id} (${label}), ${age}m old"
+
+      continue
+    fi
+
+    say "reaping ${id} (${label}), ${age}m old"
+    api DELETE "/instances/${id}" >/dev/null || say "could not destroy ${id}"
+    found=$((found + 1))
+  done < <(
+    api GET "/instances?tag=${TAG}&per_page=500" |
+      jq -r '.instances[]? | "\(.id) \(.date_created) \(.label)"'
+  )
+
+  # The keys outlive the boxes when a run dies between uploading one and
+  # creating the instance, and an account full of them is its own mess.
+  while read -r id name; do
+    [ -n "$id" ] || continue
+
+    say "reaping key ${name}"
+    api DELETE "/ssh-keys/${id}" >/dev/null || true
+  done < <(
+    api GET "/ssh-keys?per_page=500" |
+      jq -r --arg tag "$TAG" '.ssh_keys[]? | select(.name | startswith($tag)) | "\(.id) \(.name)"'
+  )
+
+  say "reaped ${found} instance(s)"
+}
+
+usage() {
+  sed -n '2,40p' "$0" | sed 's/^#\{0,1\} \{0,1\}//'
+}
+
+case "${1:-}" in
+  up)    up ;;
+  down)  down ;;
+  ip)    cat "$STATE/ip" ;;
+  ssh)   shift; [ "${1:-}" = -- ] && shift; ssh_to "$@" ;;
+  scp)   shift; scp_to "$@" ;;
+  reap)  shift; [ "${1:-}" = --older-than ] && { reap "$2"; } || reap "${1:-20}" ;;
+  ""|-h|--help) usage ;;
+  *)     die "unknown command $1" ;;
+esac

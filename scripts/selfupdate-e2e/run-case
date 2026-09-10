@@ -1,0 +1,197 @@
+#!/bin/bash
+#
+# run-case — one machine, one environment, one release, one assertion.
+#
+# Runs inside the container. Everything it needs arrives as environment
+# variables from ../run, so a case is a line in the driver rather than a file
+# here, and adding one as telemetry arrives is a one-line change.
+#
+#   INSTALL_DIR      where the binary is installed
+#   INSTALL_OWNER    who owns it and the directory (root or sion)
+#   DIR_MODE         mode on the install directory
+#   RUN_AS           who runs the update (root or sion)
+#   CURRENT_VERSION  what is installed to begin with
+#   NEXT_VERSION     what the release server is offering
+#   EXPECT           updated | refused | not-writable | nothing-to-do | bricked
+#   MAX_STARTS       supervise's restart limit, for EXPECT=bricked
+#   PREINSTALLED     the binary is already in place and must not be touched,
+#                    which is how the read-only-mount case is set up: the
+#                    directory cannot be written to, including by the harness
+#
+# Mounted read-only at /in: ca.pem, and `current` — the binary to install.
+
+set -uo pipefail
+
+: "${INSTALL_DIR:=/home/sion/.local/bin}"
+: "${INSTALL_OWNER:=sion}"
+: "${DIR_MODE:=0755}"
+: "${RUN_AS:=sion}"
+: "${CURRENT_VERSION:?}"
+: "${NEXT_VERSION:?}"
+: "${EXPECT:?}"
+: "${MAX_STARTS:=3}"
+
+EXE="${INSTALL_DIR}/sion-backup"
+
+fail=0
+
+note()  { printf '      %s\n' "$*"; }
+bad()   { printf '      \033[31mFAIL\033[0m %s\n' "$*"; fail=1; }
+good()  { printf '      \033[32mok\033[0m   %s\n' "$*"; }
+
+# ---------------------------------------------------------------------------
+# Trust the harness CA, so the binary's own HTTPS reaches the fake GitHub.
+#
+# The trust store, not SSL_CERT_FILE: an environment variable would prove the
+# binary honours an environment variable, and what wants proving is that a real
+# TLS verification against the system roots succeeds.
+# ---------------------------------------------------------------------------
+
+cp /in/ca.pem /usr/local/share/ca-certificates/sion-harness.crt
+update-ca-certificates >/dev/null 2>&1
+
+# ---------------------------------------------------------------------------
+# Build the environment under test.
+# ---------------------------------------------------------------------------
+
+if [ -z "${PREINSTALLED:-}" ]; then
+  # Created as the owner rather than created as root and handed over, so that
+  # every parent directory belongs to them too. An install directory owned by
+  # the user underneath a ~/.local owned by root is not a shape any installer
+  # produces, and a harness that produces it tests the harness.
+  if [ "$INSTALL_OWNER" = root ]; then
+    mkdir -p "$INSTALL_DIR"
+  else
+    runuser -u "$INSTALL_OWNER" -- mkdir -p "$INSTALL_DIR"
+  fi
+
+  install -m 0755 -o "$INSTALL_OWNER" /in/current "$EXE"
+  chmod "$DIR_MODE" "$INSTALL_DIR"
+fi
+
+# The one secret and the database live under HOME, and HOME differs by who
+# runs. Resolved here so an assertion can look at what was left behind.
+if [ "$RUN_AS" = root ]; then HOME_DIR=/root; else HOME_DIR="/home/${RUN_AS}"; fi
+
+as_target() {
+  if [ "$RUN_AS" = root ]; then
+    env HOME="$HOME_DIR" "$@"
+  else
+    runuser -u "$RUN_AS" -- env HOME="$HOME_DIR" "$@"
+  fi
+}
+
+installed_version() { as_target "$1" version 2>&1 | head -1; }
+
+note "installed $(installed_version "$EXE")"
+note "install dir $(stat -c '%A %U' "$INSTALL_DIR") ; run as ${RUN_AS}"
+
+# ---------------------------------------------------------------------------
+# The bricked case does not use `update` at all: the point is what the service
+# manager does after a bad build is already on the disk, which only the daemon
+# path reaches.
+# ---------------------------------------------------------------------------
+
+if [ "$EXPECT" = bricked ]; then
+  as_target "$EXE" update >/tmp/update.log 2>&1
+  note "update said: $(tail -1 /tmp/update.log)"
+
+  as_target /harness/supervise "$EXE" "$MAX_STARTS" /tmp/supervise.log
+  sed 's/^/      | /' /tmp/supervise.log
+
+  starts=$(grep -c '^start [0-9]*:' /tmp/supervise.log)
+
+  if [ "$starts" -ge "$MAX_STARTS" ]; then
+    good "the service manager restarted it ${starts} times and it never came up"
+  else
+    bad "expected a restart loop, saw ${starts} starts"
+  fi
+
+  if [ -f "${EXE}.old" ]; then
+    good "the previous binary is still on the disk at ${EXE}.old"
+    note "and nothing ever restores it: that is the finding, not a pass"
+  else
+    bad "no ${EXE}.old — there is nothing left to roll back to"
+  fi
+
+  exit "$fail"
+fi
+
+# ---------------------------------------------------------------------------
+# Everything else: run the update and read what happened.
+# ---------------------------------------------------------------------------
+
+as_target "$EXE" update >/tmp/update.log 2>&1
+status=$?
+
+sed 's/^/      | /' /tmp/update.log
+
+now="$(installed_version "$EXE")"
+
+case "$EXPECT" in
+  updated)
+    [ "$status" -eq 0 ] && good "exit 0" || bad "exit ${status}, wanted 0"
+
+    if [[ "$now" == *"$NEXT_VERSION"* ]]; then
+      good "the binary on the disk is now ${NEXT_VERSION}"
+    else
+      bad "the binary reports ${now}, wanted ${NEXT_VERSION}"
+    fi
+
+    if [ -f "${EXE}.old" ] && [[ "$(installed_version "${EXE}.old")" == *"$CURRENT_VERSION"* ]]; then
+      good "${CURRENT_VERSION} was kept beside it as .old"
+    else
+      bad "no usable ${EXE}.old was kept"
+    fi
+    ;;
+
+  refused)
+    [ "$status" -ne 0 ] && good "exit ${status}" || bad "exit 0 — a bad release was accepted"
+
+    if [[ "$now" == *"$CURRENT_VERSION"* ]]; then
+      good "still running ${CURRENT_VERSION}: nothing was replaced"
+    else
+      bad "the binary reports ${now} — the machine was changed by a release it refused"
+    fi
+
+    [ -f "${EXE}.old" ] && bad "an .old was left by an update that did not happen" \
+                        || good "no .old: the swap never started"
+    ;;
+
+  not-writable)
+    [ "$status" -ne 0 ] && good "exit ${status}" || bad "exit 0 — wanted a refusal"
+
+    if grep -qi 'not writable by this process' /tmp/update.log; then
+      good "said so in the words ErrNotWritable carries"
+    else
+      bad "did not name the reason as unwritable; a person reading this cannot act on it"
+    fi
+
+    [[ "$now" == *"$CURRENT_VERSION"* ]] && good "still ${CURRENT_VERSION}" \
+                                         || bad "the binary changed anyway: ${now}"
+    ;;
+
+  nothing-to-do)
+    [ "$status" -eq 0 ] && good "exit 0: nothing to do is not an error" || bad "exit ${status}"
+
+    [[ "$now" == *"$CURRENT_VERSION"* ]] && good "still ${CURRENT_VERSION}" \
+                                         || bad "replaced itself with something: ${now}"
+    ;;
+
+  *)
+    bad "unknown EXPECT=${EXPECT}"
+    ;;
+esac
+
+# ---------------------------------------------------------------------------
+# Debris, on every case. A .new or .probe left in an install directory is a
+# file somebody finds a year later on a client's laptop and cannot explain.
+# ---------------------------------------------------------------------------
+
+for leftover in "${EXE}.new" "${EXE}.probe"; do
+  [ -e "$leftover" ] && bad "left ${leftover} behind"
+done
+
+[ ! -e "${EXE}.new" ] && [ ! -e "${EXE}.probe" ] && good "no staging debris left in ${INSTALL_DIR}"
+
+exit "$fail"

@@ -1,0 +1,24 @@
+# A machine with a real systemd, for scripts/selfupdate-gate --docker.
+#
+# Not a substitute for a real box, and the reason is the --privileged this
+# needs: a container that can do everything is not evidence about a laptop that
+# cannot. What it IS good for is running the gate a hundred times while writing
+# it, and for a developer who has no Vultr key. The release workflow uses a
+# real instance.
+#
+# libpam-systemd is the package that is easy to miss. Without it the per-user
+# systemd instance starts with no XDG_RUNTIME_DIR and exits immediately, so
+# `systemctl --user enable` fails and install.sh stops at install-service —
+# with logind having created /run/user/UID anyway, which is why a harness that
+# checks for the directory reports a healthy machine.
+FROM debian:stable-slim
+
+RUN apt-get update -qq \
+ && apt-get install -y -qq --no-install-recommends \
+      systemd systemd-sysv dbus dbus-user-session libpam-systemd \
+      ca-certificates curl bzip2 procps \
+ && rm -rf /var/lib/apt/lists/*
+
+STOPSIGNAL SIGRTMIN+3
+
+CMD ["/lib/systemd/systemd"]
