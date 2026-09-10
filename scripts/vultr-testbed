@@ -35,7 +35,63 @@
 
 set -euo pipefail
 
-: "${VULTR_API_KEY:?vultr-testbed: VULTR_API_KEY is not set}"
+# CREDENTIALS is for running this by hand. In CI the key arrives as a repo
+# secret in the environment and this file does not exist, which is why the
+# environment wins: a stale local file must never silently outrank what the
+# workflow was given.
+#
+# Not under the program's own directory. sion-backup keeps its data in
+# ~/.local/share/sion-backup, and the one secret there is a machine token that
+# is revocable and worth almost nothing on its own. A Vultr API key is
+# account-wide and can spend money. Keeping them in different places is worth
+# the one line it costs.
+CREDENTIALS=${VULTR_CREDENTIALS:-$HOME/.config/sion-backup/vultr.env}
+
+if [ -z "${VULTR_API_KEY:-}" ] && [ -f "$CREDENTIALS" ]; then
+  # Refused rather than read if anyone else can see it. An API key in a
+  # world-readable file on a shared machine is the kind of thing that is
+  # noticed once the bill arrives.
+  mode=$(stat -c '%a' "$CREDENTIALS" 2>/dev/null || stat -f '%Lp' "$CREDENTIALS")
+
+  case "$mode" in
+    600|400) ;;
+    *) echo "vultr-testbed: ${CREDENTIALS} is mode ${mode}; chmod 600 it" >&2; exit 1 ;;
+  esac
+
+  # shellcheck source=/dev/null
+  . "$CREDENTIALS"
+fi
+
+if [ -z "${VULTR_API_KEY:-}" ]; then
+  cat >&2 <<HELP
+vultr-testbed: no API key.
+
+  For running this by hand, put it in ${CREDENTIALS}:
+
+      mkdir -p "$(dirname "$CREDENTIALS")"
+      umask 077
+      cat > "${CREDENTIALS}" <<'ENV'
+      VULTR_API_KEY=...
+      # Optional, all with sensible defaults:
+      # VULTR_REGION=ewr
+      # VULTR_PLAN=vc2-1c-1gb
+      # VULTR_OS=Debian 12 x64
+      ENV
+
+  For the release gate, it goes in the repository's secrets instead:
+
+      gh secret set VULTR_API_KEY
+
+  Vultr keys are account-wide — they can create and destroy anything in the
+  account, and there is no per-resource scoping to narrow them to test boxes.
+  Two things worth doing: restrict the key to your own address under the
+  API access control list for local use (the release gate cannot, because
+  hosted runner addresses are not fixed), and if blast radius matters, use a
+  separate Vultr account with a small balance for CI and nothing else.
+HELP
+
+  exit 1
+fi
 
 API=https://api.vultr.com/v2
 
@@ -78,6 +134,14 @@ os_id() {
 
 up() {
   [ -f "$STATE/id" ] && die "a box is already up (${STATE}/id); run down first"
+
+  # The key, before anything that depends on it. Without this a rejected key
+  # surfaces as whatever the first lookup could not find — a wrong key read as
+  # "no OS called Debian 12 x64", which sends you to the wrong problem.
+  if ! api GET /account >/dev/null 2>&1; then
+    die "Vultr rejected the API key (or the API is unreachable). Check the key,\
+ and if it has an access control list, that this address is on it."
+  fi
 
   mkdir -p "$STATE"
   chmod 0700 "$STATE"
