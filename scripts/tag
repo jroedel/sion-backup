@@ -20,7 +20,9 @@
 # Any of those failing is a refusal rather than a warning, because the thing
 # being guarded is a release that thirty machines install without being asked.
 #
-# YES=1 skips the confirmation, for whoever is doing this from a script.
+# YES=1 skips the confirmation, and is needed wherever there is no terminal
+# to ask on -- a CI job, or a shell with no controlling tty. The checks above
+# still run; only the question is skipped.
 # ALLOW_BRANCH=<name> tags a branch on purpose — a release candidate cut from
 # somewhere other than main is a real thing to want, and this asks you to say
 # so out loud rather than letting it happen by accident.
@@ -136,7 +138,46 @@ echo
 
 if [ "${YES:-}" != "1" ]; then
   printf "  Tag and push %s? [y/N] " "$next"
-  read -r answer </dev/tty
+
+  # Standard input first, then /dev/tty, then a refusal.
+  #
+  # This order matters more than it looks, and so does the shape.
+  #
+  # A read that reaches end of file returns non-zero, and under set -e that
+  # ends the script -- silently, in the middle of a release, in a way that
+  # reads as success. So every read here is a condition rather than a
+  # statement.
+  #
+  # The /dev/tty probe is a subshell for a sharper reason: exec is a special
+  # builtin, and a redirection that fails on one terminates a non-interactive
+  # shell outright, status 2, no message. Which is precisely what happened
+  # the first time this was written -- in a shell with no controlling
+  # terminal the device node exists and opening it fails with ENXIO, and the
+  # script died at the prompt looking like it had done its job. A subshell
+  # can die on its own.
+  #
+  # The four cases:
+  #
+  #   a terminal          read blocks and waits for the answer
+  #   an answer piped in  read takes it
+  #   stdin redirected    end of file, so ask the terminal instead
+  #   no terminal at all  refuse, and say YES=1
+  #
+  # The last one is a refusal rather than a default because a release that
+  # goes out because the question could not be asked is exactly what these
+  # checks exist to prevent.
+  answer=""
+
+  if read -r answer; then
+    :
+  elif (exec 3</dev/tty) 2>/dev/null && read -r answer </dev/tty; then
+    :
+  else
+    echo
+    echo "tag: nothing to ask on -- no terminal here." >&2
+    echo "     Re-run with YES=1 if $next is what you meant." >&2
+    exit 1
+  fi
 
   case "$answer" in
     y|Y|yes|YES) ;;
