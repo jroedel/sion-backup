@@ -127,9 +127,21 @@ api() {
 
 # ---------------------------------------------------------------------------
 
+# os_id resolves an image name to its id.
+#
+# Prefix, not exact: Vultr calls it "Debian 12 x64 (bookworm)", and an exact
+# match on "Debian 12 x64" finds nothing -- which is how the first real run of
+# this failed. Matching the codename too would break on the next release for
+# the same reason, so the prefix is what is pinned and the codename is allowed
+# to drift.
 os_id() {
   api GET /os?per_page=500 |
-    jq -r --arg name "$OS_NAME" '.os[] | select(.name == $name) | .id' | head -1
+    jq -r --arg name "$OS_NAME" '.os[] | select(.name | startswith($name)) | .id' | head -1
+}
+
+# os_names lists what is on offer, for when the pin no longer matches.
+os_names() {
+  api GET /os?per_page=500 | jq -r '.os[] | "  \(.id)  \(.name)"'
 }
 
 up() {
@@ -148,7 +160,13 @@ up() {
 
   local os
   os=$(os_id)
-  [ -n "$os" ] || die "no OS called \"${OS_NAME}\"; see ${API}/os"
+
+  if [ -z "$os" ]; then
+    say "no image whose name starts with \"${OS_NAME}\". On offer:"
+    os_names >&2
+
+    die "set VULTR_OS to one of those (a name prefix is enough)"
+  fi
 
   say "generating a key for this run only"
   ssh-keygen -q -t ed25519 -N '' -C "$TAG" -f "$STATE/key"
@@ -259,6 +277,17 @@ down() {
     local id
     id=$(cat "$STATE/id")
 
+    # The id came from an instance this script created, so this should always
+    # pass. Checked because "should always" is doing a lot of work in an
+    # account that also holds the fleet's Eumaeus server, and the cost of being
+    # wrong is not symmetric with the cost of one extra request.
+    if tags=$(api GET "/instances/${id}" 2>/dev/null | jq -r '.instance.tags | join(",")'); then
+      case ",${tags}," in
+        *",${TAG},"*) ;;
+        *) die "instance ${id} is not tagged ${TAG} (tags: ${tags:-none}). Refusing to destroy it." ;;
+      esac
+    fi
+
     say "destroying instance ${id}"
     api DELETE "/instances/${id}" >/dev/null 2>&1 || say "could not destroy ${id}; reap will get it"
   fi
@@ -308,8 +337,19 @@ reap() {
     api DELETE "/instances/${id}" >/dev/null || say "could not destroy ${id}"
     found=$((found + 1))
   done < <(
+    # Filtered again HERE, on the tags each instance actually reports, and not
+    # only by the tag= query above.
+    #
+    # This is a destructive call in an account that holds real servers -- the
+    # fleet's own Eumaeus among them. If Vultr ever stopped honouring that
+    # query parameter, or renamed it, the request would succeed and return
+    # EVERY instance, and this loop would delete them. A filter whose failure
+    # mode is "destroy production" does not get to be the only filter.
     printf '%s' "$listing" |
-      jq -r '.instances[]? | "\(.id) \(.date_created) \(.label)"'
+      jq -r --arg tag "$TAG" '
+        .instances[]?
+        | select(.tags | index($tag))
+        | "\(.id) \(.date_created) \(.label)"'
   )
 
   # The keys outlive the boxes when a run dies between uploading one and

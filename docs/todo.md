@@ -175,6 +175,32 @@ The key is account-wide; Vultr has no per-resource scoping. Restrict it to your
 own address in its access control list for local use, and if blast radius
 matters, use a separate Vultr account with a small balance for CI.
 
+### Vultr: things learned by actually using it — DONE
+
+Two, both found by the first real run rather than by reading.
+
+**The image name is a prefix, not a name.** Vultr calls it `Debian 12 x64
+(bookworm)`, so an exact match on `Debian 12 x64` resolves to nothing and the
+run dies before buying anything. Matched on prefix now, with the whole
+catalogue printed when the pin stops matching -- because the next Debian will
+break it again for the same reason, and the fix should be obvious from the
+error.
+
+**`reap` trusted a server-side filter for a destructive call.** It asked Vultr
+for `?tag=sion-selfupdate-gate` and deleted everything that came back. The
+account also holds `eumaeus`, the fleet's own server, untagged. Had Vultr ever
+stopped honouring that query parameter or renamed it, the request would have
+succeeded, returned every instance, and reap would have destroyed production.
+
+Now filtered a second time on the client, on the tags each instance actually
+reports, and `down` checks the tag before deleting even though it works from an
+id it created itself. Verified by handing the client-side filter the
+*unfiltered* listing and confirming it acts on nothing.
+
+The general rule, worth remembering the next time something in here deletes
+anything: a filter whose failure mode is "destroy production" does not get to
+be the only filter.
+
 ### v0.3.0 is tagged, gated, and NOT published — NEEDS A DECISION
 
 The tag exists on the remote. The gate never ran: `vultr-testbed up` refused at
@@ -193,24 +219,20 @@ is exactly what a client machine asks. Nothing was bought: the preflight runs
 before the instance is created, so there is no leaked box, and this could not
 be confirmed the other way because checking also needs the key.
 
-Two ways forward, and the choice is about how much a full-account key in CI is
-worth guarding:
+RESOLVED by rotating the key and removing the IP filtering, which is option 1
+below. The key is in this repository's Actions secrets. Note what that means:
+it is account-wide, works from anywhere, and the account holds the fleet's own
+Eumaeus server. Fork pull requests cannot reach it, and the client-side tag
+check above is what stands between a bug in this harness and that server. A
+separate Vultr account for CI, funded with a small balance, is still the
+tidier arrangement and is worth doing if the harness grows.
 
-1. **Clear the allowlist on a CI-only key**, held in a separate Vultr account
-   with a small balance. The gate then runs on a real instance, which is the
-   stronger evidence. The exposure is a key that works from anywhere, in this
-   repository's Actions secrets — not reachable from fork pull requests, but
-   account-wide within that account.
-2. **Keep the allowlist and let CI gate in a container.** Free, no new
-   credential exposure, and the upgrade it performs is real — a real
-   `install.sh`, a real restic fetch, a real systemd user manager, a real
-   swap. What it cannot speak to is a locked-down laptop, because it runs
-   privileged. Vultr then stays a by-hand tool, run from an allowlisted
-   machine.
-
-The workflow now degrades to (2) automatically rather than blocking, so a
-re-run publishes v0.3.0 either way. Option 1 is a change to make in the Vultr
-panel, not in this repository.
+What remains is to get v0.3.0 published. Actions re-runs use the workflow file
+from the TRIGGERING commit, and the tag points at one that predates the fixes
+to the publish path -- so re-running the failed run would still take the broken
+path. The tag has to move to a commit that has them. It was never published and
+no machine ever saw it, so moving it costs nothing, and a dead tag that never
+produced a release is worse to explain later.
 
 ### Rehearse the gate before the first tag — SUPERSEDED
 
