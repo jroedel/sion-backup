@@ -109,65 +109,49 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          # Idempotent, because re-running this job is a normal event: the gate
-          # below can fail for reasons that have nothing to do with the release
-          # -- an expired API key, a cloud provider having a bad afternoon --
-          # and the fix for those is to re-run, not to re-tag. A plain
-          # `gh release create` fails on the second attempt and takes the whole
-          # job with it before the gate ever gets another chance.
-          #
-          # A DRAFT CANNOT BE LOOKED UP BY TAG. GitHub does not attach the tag
-          # to a release until it is published, so a draft for v0.3.0 lives at
+          # A DRAFT RELEASE HAS NO TAG. GitHub attaches the tag only when a
+          # release is published, so a draft for v0.3.0 lives at
           # /releases/tag/untagged-<hash> and `gh release view v0.3.0` reports
-          # that it does not exist. Found by matching tag_name across the
-          # listing instead, which is the only thing that works.
+          # that it does not exist. Everything below addresses releases by id
+          # and matches on tag_name, because nothing else works.
           #
-          # Try-then-recover rather than check-then-create, so that whatever
-          # the listing does or does not show, the outcome is the same: exactly
-          # one draft carrying this tag name and these assets.
-          assets="dist/sion-backup-* dist/SHA256SUMS dist/restic.pin"
+          # Find first, rather than create and recover. GitHub permits SEVERAL
+          # drafts carrying the same tag_name, so a create-first approach makes
+          # a second draft every time this job re-runs -- and re-running is the
+          # normal response to a gate that failed for reasons outside the
+          # release. The publish step would then have two to choose between,
+          # and no way to tell which one the gate examined.
+          find_release() {
+            gh api "repos/$GITHUB_REPOSITORY/releases?per_page=100" \
+              --jq ".[] | select(.tag_name == \"$GITHUB_REF_NAME\") | \"\(.id) \(.draft)\""
+          }
 
-          # shellcheck disable=SC2086  # a glob list, deliberately split
-          if gh release create "$GITHUB_REF_NAME" \
-               --draft \
-               --title "$GITHUB_REF_NAME" \
-               --generate-notes \
-               --notes-file "$RUNNER_TEMP/notes.md" \
-               $assets
-          then
-            exit 0
-          fi
+          while read -r id draft; do
+            [ -n "$id" ] || continue
 
-          echo "::notice::could not create the release; looking for an existing one."
-
-          existing=$(gh api "repos/$GITHUB_REPOSITORY/releases?per_page=100" \
-            --jq ".[] | select(.tag_name == \"$GITHUB_REF_NAME\") | \"\(.id) \(.draft)\"" | head -1)
-
-          if [ -z "$existing" ]; then
-            echo "::error::$GITHUB_REF_NAME could not be created and does not exist."
-
-            exit 1
-          fi
-
-          id=${existing%% *}
-          draft=${existing##* }
-
-          if [ "$draft" = false ]; then
-            echo "::notice::$GITHUB_REF_NAME is already published; nothing to do."
-
-            exit 0
-          fi
-
-          echo "::notice::refreshing the assets on the existing draft (id $id)."
-
-          # By id, because by tag would not find it.
-          # shellcheck disable=SC2086
-          gh release upload "$(gh api "repos/$GITHUB_REPOSITORY/releases/$id" --jq .tag_name)" \
-            $assets --clobber || {
-              echo "::error::could not refresh the draft's assets."
+            if [ "$draft" = false ]; then
+              echo "::error::$GITHUB_REF_NAME is already published. Refusing to"
+              echo "::error::rebuild a release the fleet may already be running."
 
               exit 1
-            }
+            fi
+
+            # An unpublished leftover from a previous attempt. No machine has
+            # ever been able to see it, so removing it costs nothing and having
+            # exactly one draft is worth a great deal to the step that
+            # publishes.
+            echo "::notice::removing a stale draft for $GITHUB_REF_NAME (id $id)"
+            gh api --method DELETE "repos/$GITHUB_REPOSITORY/releases/$id"
+          done < <(find_release)
+
+          gh release create "$GITHUB_REF_NAME" \
+            --draft \
+            --title "$GITHUB_REF_NAME" \
+            --generate-notes \
+            --notes-file "$RUNNER_TEMP/notes.md" \
+            dist/sion-backup-* dist/SHA256SUMS dist/restic.pin
+
+          echo "::notice::drafted $GITHUB_REF_NAME; invisible to the fleet until the gate passes."
 
       # Every way a release can be broken, against the binary that is about to
       # ship: a wrong hash, a truncated download, a rate-limited API, a build
