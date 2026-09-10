@@ -37,6 +37,22 @@ url = "https://terraboskamp.org"
 # to the data directory, and prints the owner's restore card. Revoking that
 # token in Eumaeus cuts the machine off immediately.
 
+# Is this machine on a connection somebody pays for by the byte?
+#
+# Unset means ask the operating system, which only Linux can answer -- on
+# Windows and macOS the answer is always "cannot tell", so this is where a
+# person writes down what the machine cannot find out. See
+# foundation/netcost.
+#
+# It gates ONE thing: the weekly check that reads part of the repository back
+# to prove it is still there and still decrypts. Backups run whatever this
+# says. A backup that did not happen is the failure this program exists to
+# prevent, and no connection is expensive enough to be worth choosing that
+# one instead.
+#
+# Set it true on a machine that lives on a mobile hotspot.
+# metered = false
+
 [server] -- are read on EVERY start.
 # They are facts about how the machine was installed and are yours to change.
 #

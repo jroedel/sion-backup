@@ -4,6 +4,8 @@
 #
 #     scripts/backup-e2e/run                  # every shape, in parallel
 #     scripts/backup-e2e/run --shapes 2       # fewer
+#     scripts/backup-e2e/run --corpus-mb 256  # enough data for the cost figures
+#     scripts/backup-e2e/run --full-read      # and what re-reading everything costs
 #     scripts/backup-e2e/run --keep           # leave the repositories behind
 #     scripts/backup-e2e/run --reap-only      # just delete old test repositories
 #
@@ -40,6 +42,8 @@ cd "$(dirname "$0")/../.."
 
 IMAGE=sion-backup-e2e
 SHAPES=3
+CORPUS_MB=${CORPUS_MB:-4}
+MEASURE_FULL_READ=${MEASURE_FULL_READ:-0}
 KEEP=0
 REAP_ONLY=0
 REAP_DAYS=${REAP_DAYS:-7}
@@ -47,6 +51,8 @@ REAP_DAYS=${REAP_DAYS:-7}
 while [ $# -gt 0 ]; do
   case "$1" in
     --shapes)    SHAPES="$2"; shift 2 ;;
+    --corpus-mb) CORPUS_MB="$2"; shift 2 ;;
+    --full-read) MEASURE_FULL_READ=1; shift ;;
     --keep)      KEEP=1; shift ;;
     --reap-only) REAP_ONLY=1; shift ;;
     -h|--help)   sed -n '2,40p' "$0" | sed 's/^#\{0,1\} \{0,1\}//'; exit 0 ;;
@@ -180,7 +186,7 @@ cat > "$WORK/ctx/Dockerfile" <<'DOCKER'
 FROM debian:stable-slim
 
 RUN apt-get update -qq \
- && apt-get install -y -qq --no-install-recommends ca-certificates jq procps \
+ && apt-get install -y -qq --no-install-recommends ca-certificates jq procps iproute2 \
  && rm -rf /var/lib/apt/lists/*
 
 COPY sion-backup /usr/local/bin/sion-backup
@@ -214,6 +220,8 @@ for i in $(seq 1 "$SHAPES"); do
     -e "SECRET=${WASABI_SECRET_ACCESS_KEY}" \
     -e "NODE_ID=gate-${RUN_ID}-${i}" \
     -e "SHAPE=${shape}" \
+    -e "CORPUS_MB=${CORPUS_MB}" \
+    -e "MEASURE_FULL_READ=${MEASURE_FULL_READ}" \
     "$IMAGE" >"$WORK/${shape}.log" 2>&1 &
 
   pids+=("$!")

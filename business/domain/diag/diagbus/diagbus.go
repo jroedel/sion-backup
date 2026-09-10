@@ -76,6 +76,18 @@ const (
 	// One of these is a reason to look; two from different machines is a
 	// reason to un-publish the release before the rest of the fleet takes it.
 	KindUpdateRolledBack Kind = "update-rolled-back"
+
+	// KindRepositoryDamaged is a repository that failed its own integrity
+	// check.
+	//
+	// The gravest report this program sends, and the only one that is about
+	// backups already taken rather than a backup that did not happen. Every
+	// other kind means somebody's files are not being protected from now on;
+	// this one means the copies already made may not come back. It is also the
+	// only failure nobody else can see: a damaged pack reads as a healthy
+	// repository to the snapshot list, the index and the dashboard, right up
+	// until somebody needs the file inside it.
+	KindRepositoryDamaged Kind = "repository-damaged"
 )
 
 // maxDetail bounds the free text.

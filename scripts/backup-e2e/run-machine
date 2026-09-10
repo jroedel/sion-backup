@@ -47,6 +47,56 @@ note() { printf '        %s\n' "$*"; }
 
 as_user() { runuser -u "$USER_NAME" -- env HOME="$HOME_DIR" "$@"; }
 
+# ---------------------------------------------------------------------------
+# Measuring what each operation costs.
+#
+# From the interface counters rather than from restic, because restic does not
+# report bytes moved for anything but a backup, and the question being answered
+# -- can a laptop on somebody's phone afford this -- is about bytes on the wire
+# including TLS, HTTP overhead and retries.
+#
+# A container has one interface and one job, so the counters are clean in a way
+# they never are on a real machine.
+# ---------------------------------------------------------------------------
+
+IFACE=$(ip route show default 2>/dev/null | awk '{print $5; exit}')
+IFACE=${IFACE:-eth0}
+
+MEASUREMENTS=/tmp/measurements.tsv
+printf 'phase\tseconds\trx_bytes\ttx_bytes\n' > "$MEASUREMENTS"
+
+counter() { cat "/sys/class/net/${IFACE}/statistics/$1_bytes" 2>/dev/null || echo 0; }
+
+# measure runs a command and records what it cost. It returns the command's own
+# status, so a measured step can still be asserted on.
+measure() {
+  local phase=$1
+  shift
+
+  local rx0 tx0 t0 rx1 tx1 t1 status
+  rx0=$(counter rx); tx0=$(counter tx); t0=$(date +%s.%N)
+
+  "$@"
+  status=$?
+
+  rx1=$(counter rx); tx1=$(counter tx); t1=$(date +%s.%N)
+
+  printf '%s\t%s\t%s\t%s\n' \
+    "$phase" \
+    "$(awk -v a="$t0" -v b="$t1" 'BEGIN{printf "%.1f", b-a}')" \
+    "$((rx1 - rx0))" \
+    "$((tx1 - tx0))" >> "$MEASUREMENTS"
+
+  return "$status"
+}
+
+human() { awk -v b="$1" 'BEGIN{
+  split("B KiB MiB GiB", u, " ")
+  i = 1
+  while (b >= 1024 && i < 4) { b /= 1024; i++ }
+  printf "%.1f %s", b, u[i]
+}'; }
+
 id "$USER_NAME" >/dev/null 2>&1 || useradd --create-home --shell /bin/bash "$USER_NAME"
 
 # ---------------------------------------------------------------------------
@@ -67,8 +117,19 @@ for i in $(seq 1 200); do
 done
 
 # Random, so restic cannot compress it away and the byte counts mean something.
-head -c 2097152 /dev/urandom > "$DATA/big/blob-a.bin"
-head -c 2097152 /dev/urandom > "$DATA/big/blob-b.bin"
+#
+# CORPUS_MB exists because the bandwidth figures are the point of this at
+# larger sizes. At 4 MB `restic check --read-data-subset` selects no pack files
+# at all and reports the same cost as a plain check, which is a measurement of
+# nothing. A few hundred megabytes is enough for the ratios to mean something;
+# the default stays small because most runs are testing behaviour, not cost.
+: "${CORPUS_MB:=4}"
+
+half=$(( CORPUS_MB / 2 ))
+[ "$half" -lt 1 ] && half=1
+
+dd if=/dev/urandom of="$DATA/big/blob-a.bin" bs=1M count="$half" status=none
+dd if=/dev/urandom of="$DATA/big/blob-b.bin" bs=1M count="$half" status=none
 
 printf 'version one\n' > "$DATA/changes.txt"
 printf 'this file is deleted before the second run\n' > "$DATA/deleted.txt"
@@ -183,7 +244,7 @@ restic_do() {
     "$RESTIC" "$@"
 }
 
-if restic_do init >/tmp/init.log 2>&1; then
+if measure init restic_do init >/tmp/init.log 2>&1; then
   ok "repository created at ${REPO_URL}"
 else
   bad "restic init failed"
@@ -207,7 +268,7 @@ fi
 
 say "First backup"
 
-if as_user "$EXE" run >/tmp/run1.log 2>&1; then
+if measure backup-1 as_user "$EXE" run >/tmp/run1.log 2>&1; then
   ok "run 1 finished"
 else
   bad "run 1 failed"
@@ -255,7 +316,7 @@ ok "changed one file, deleted one, added one, made one unreadable"
 
 say "Second backup"
 
-as_user "$EXE" run >/tmp/run2.log 2>&1
+measure backup-2 as_user "$EXE" run >/tmp/run2.log 2>&1
 run2_status=$?
 
 snaps=$(restic_do snapshots --json 2>/dev/null | jq 'length' 2>/dev/null || echo 0)
@@ -301,7 +362,7 @@ rm -rf "$RESTORED"
 mkdir -p "$RESTORED"
 chown "$USER_NAME" "$RESTORED"
 
-if restic_do restore latest --target "$RESTORED" --include "$DATA/canary.bin" >/tmp/restore.log 2>&1; then
+if measure restore restic_do restore latest --target "$RESTORED" --include "$DATA/canary.bin" >/tmp/restore.log 2>&1; then
   ok "restore completed"
 else
   bad "restore failed"
@@ -335,16 +396,39 @@ fi
 
 say "Repository integrity"
 
-if restic_do check >/tmp/check.log 2>&1; then
+if measure check restic_do check >/tmp/check.log 2>&1; then
   ok "restic check passes"
 else
   bad "restic check FAILED — the repository is not sound"
   tail -10 /tmp/check.log
 fi
 
+# The same check with pack data actually read back, which is the only form that
+# catches a pack that is present, correctly named and corrupt.
+#
+# Two sizes, because they answer different questions. 1/52 is what a fleet
+# would do weekly to cover the whole repository in a year without ever moving
+# much at once. 100% is the ceiling -- it downloads the entire repository, and
+# knowing what that costs is what decides that nobody should schedule it.
+if measure check-read-1of52 restic_do check --read-data-subset=1/52 >/tmp/checkdata.log 2>&1; then
+  ok "check --read-data-subset=1/52 passes (a week's slice)"
+else
+  bad "reading back a week's slice of pack data failed"
+  tail -10 /tmp/checkdata.log
+fi
+
+if [ "${MEASURE_FULL_READ:-0}" = 1 ]; then
+  if measure check-read-all restic_do check --read-data >/tmp/checkall.log 2>&1; then
+    ok "check --read-data passes (every byte re-read)"
+  else
+    bad "reading back every byte failed"
+    tail -10 /tmp/checkall.log
+  fi
+fi
+
 # stats, which the program calls weekly through Measure to drive the rotation
 # suggestion on the status page.
-if size=$(restic_do stats --json --mode raw-data 2>/dev/null | jq -r '.total_size'); then
+if size=$(measure stats restic_do stats --json --mode raw-data 2>/dev/null | jq -r '.total_size'); then
   ok "stats reports ${size} bytes of raw data"
 else
   bad "stats failed"
@@ -380,6 +464,70 @@ if [ "$creds" -ge 2 ]; then
 else
   bad "credentials fetched ${creds} times; two runs should fetch twice"
 fi
+
+# ---------------------------------------------------------------------------
+# 10. What each operation cost.
+#
+# The numbers that decide whether a weekly check is affordable, and whether it
+# is affordable on a phone.
+# ---------------------------------------------------------------------------
+
+say "Bandwidth"
+
+REPO_BYTES=$(restic_do stats --json --mode raw-data 2>/dev/null | jq -r '.total_size' 2>/dev/null || echo 0)
+
+printf '        %-20s %8s %12s %12s %10s\n' phase seconds down up "of repo"
+
+while IFS=$'\t' read -r phase secs rx tx; do
+  [ "$phase" = phase ] && continue
+
+  share=""
+  if [ "${REPO_BYTES:-0}" -gt 0 ] 2>/dev/null; then
+    share=$(awk -v r="$rx" -v t="$REPO_BYTES" 'BEGIN{printf "%.1f%%", (r*100)/t}')
+  fi
+
+  printf '        %-20s %8s %12s %12s %10s\n' \
+    "$phase" "$secs" "$(human "$rx")" "$(human "$tx")" "$share"
+done < "$MEASUREMENTS"
+
+printf '\n        repository holds %s of raw data\n' "$(human "${REPO_BYTES:-0}")"
+
+# Written where the driver can collect it across machines.
+cp "$MEASUREMENTS" /tmp/out-measurements.tsv 2>/dev/null || true
+printf 'repo_bytes\t%s\n' "${REPO_BYTES:-0}" >> /tmp/out-measurements.tsv
+
+# ---------------------------------------------------------------------------
+# 11. The weekly repository check, which the program now does for itself.
+#
+# A machine that has never checked is due, so the first run triggers one. The
+# harness's own `restic check` above proves restic works; this proves the
+# MACHINE schedules it, sizes the slice from the measurement, and records the
+# result where doctor and the status page can read it.
+# ---------------------------------------------------------------------------
+
+say "The program's own repository check"
+
+if grep -qh 'checking the repository' /tmp/run1.log /tmp/run2.log 2>/dev/null; then
+  slice=$(grep -h 'reading_back' /tmp/run1.log /tmp/run2.log | head -1 | grep -oE 'reading_back=[^ ]+')
+  ok "the machine checked its own repository (${slice:-size not logged})"
+else
+  bad "the machine never checked its repository"
+  note "a weekly check that never runs is the gap this was built to close"
+fi
+
+if grep -qh 'the repository is sound' /tmp/run1.log /tmp/run2.log 2>/dev/null; then
+  ok "and found it sound"
+else
+  bad "the check did not report the repository sound"
+  grep -h 'repositor' /tmp/run1.log /tmp/run2.log | tail -3 | sed 's/^/        /'
+fi
+
+# Due once, then not again for a week. A machine that re-checked after every
+# backup would spend every evening downloading its own backups.
+checks=$(cat /tmp/run1.log /tmp/run2.log 2>/dev/null | grep -c 'checking the repository')
+
+[ "${checks:-0}" = 1 ] && ok "checked once across two runs, not twice" \
+                       || bad "ran ${checks} check(s) across two runs, wanted 1"
 
 say "Doctor"
 as_user "$EXE" doctor 2>&1 | sed 's/^/        /'

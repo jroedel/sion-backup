@@ -16,8 +16,11 @@ import (
 	"github.com/jroedel/sion-backup/app/sdk/loopback"
 	"github.com/jroedel/sion-backup/business/domain/backup/backupbus"
 	"github.com/jroedel/sion-backup/business/domain/credential/credentialbus"
+	"github.com/jroedel/sion-backup/business/domain/diag/diagbus"
 	"github.com/jroedel/sion-backup/business/domain/fleet/fleetbus"
 	"github.com/jroedel/sion-backup/business/domain/plan/planbus"
+	"github.com/jroedel/sion-backup/foundation/netcost"
+	"github.com/jroedel/sion-backup/foundation/restic"
 	"github.com/jroedel/sion-backup/foundation/selfupdate"
 	"github.com/jroedel/sion-backup/foundation/web"
 )
@@ -507,6 +510,7 @@ func (d *deps) backup(ctx context.Context, plan planbus.Plan) error {
 	// audited credential reads for no benefit.
 	if run.SnapshotID != "" {
 		d.measure(ctx, plan, set)
+		d.checkRepository(ctx, plan, set)
 	}
 
 	// Last, and only now that the backup is over: see selfUpdate on why this
@@ -575,3 +579,101 @@ func hostname() string {
 
 // osName identifies the platform in fleet events.
 func osName() string { return runtime.GOOS + "/" + runtime.GOARCH }
+
+// checkRepository reads part of the repository back to prove it is still
+// sound, weekly, and never over a connection somebody is paying for.
+//
+// # Why this is here and not its own job
+//
+// It reuses the credentials the run already holds. Fetching a second set just
+// to verify would double the audited credential reads on the server for no
+// benefit, and would need a machine to be enrolled and online twice rather
+// than once.
+//
+// # Why it can be skipped, and what that costs
+//
+// A metered connection means a phone, and reading back a slice of somebody's
+// backups over their phone is a bill they did not agree to. A skip is recorded
+// rather than passed over in silence, because a machine that has skipped every
+// week for two months looks identical to a healthy one unless somebody wrote
+// down why.
+//
+// Failures are recorded and swallowed, like the measurement. A backup that
+// succeeded must not be reported as anything else because a verification did
+// not finish -- but a repository that is actually damaged is reported, because
+// that is the one thing here nobody else will notice.
+func (d *deps) checkRepository(ctx context.Context, plan planbus.Plan, set credentialbus.Set) {
+	now := time.Now()
+
+	last, err := d.plan.Integrity(ctx, plan.Repository)
+	if err != nil {
+		d.log.Warn("could not read the last repository check", "err", err)
+
+		return
+	}
+
+	if !last.Due(plan.Repository, now) {
+		return
+	}
+
+	record := func(i planbus.Integrity) {
+		i.RepositoryURL = plan.Repository
+		i.CheckedAt = now
+
+		if err := d.plan.RecordIntegrity(ctx, i); err != nil {
+			d.log.Warn("could not record the repository check", "err", err)
+		}
+	}
+
+	// The config file first, because on Windows and macOS the machine cannot
+	// find this out and a person may have written it down. Then the operating
+	// system, where Unknown is not metered: see foundation/netcost. Two thirds
+	// of this fleet cannot tell, and reading Unknown as metered would mean no
+	// Windows or Mac ever verified anything.
+	metered, configured := d.cfg.Tuning.MeteredOverride()
+
+	if !configured {
+		metered = netcost.Of(ctx).Metered()
+	}
+
+	if metered {
+		d.log.Info("skipping the repository check on a metered connection",
+			"said_by", map[bool]string{true: "config.toml", false: "the operating system"}[configured])
+
+		record(planbus.Integrity{SkippedReason: "metered connection"})
+
+		return
+	}
+
+	// Sized from the last measurement, which the call above this one has just
+	// refreshed if it was stale. An unmeasured repository gets the floor,
+	// which is the right answer for one nobody has counted yet.
+	m, _ := d.plan.Measurement(ctx, plan.Repository, now)
+	subset := planbus.CheckSubset(m.Now)
+
+	d.log.Info("checking the repository", "reading_back", subset)
+
+	repo := set.Credentials.Repository(plan.Repository, plan.PackSizeMiB, plan.ReadConcurrency)
+
+	if err := d.restic.Check(ctx, repo, restic.ReadDataSubset(subset)); err != nil {
+		d.log.Error("the repository did not pass its check", "err", err)
+
+		record(planbus.Integrity{Subset: subset, Detail: err.Error()})
+
+		// Reported, and this is the only check in the program whose failure
+		// means the backups already taken may not be worth anything. Every
+		// other report says a backup did not happen; this one says the ones
+		// that did may not come back.
+		_ = d.diag.Record(diagbus.Report{
+			Kind:   diagbus.KindRepositoryDamaged,
+			Step:   "repository-check",
+			Detail: err.Error(),
+		})
+
+		return
+	}
+
+	record(planbus.Integrity{Subset: subset, OK: true})
+
+	d.log.Info("the repository is sound", "read_back", subset)
+}

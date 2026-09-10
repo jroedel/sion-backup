@@ -81,6 +81,31 @@ type TuningConfig struct {
 	UseFSSnapshot    *bool `toml:"use_fs_snapshot"`
 	AllowVSSFallback *bool `toml:"allow_vss_fallback"`
 	OneFileSystem    *bool `toml:"one_file_system"`
+
+	// Metered says this machine is on a connection somebody pays for by the
+	// byte, when the machine cannot work that out itself.
+	//
+	// A pointer for the usual reason, and the "unset" case is the common one:
+	// unset means ask the operating system, which only Linux answers. On
+	// Windows and macOS the answer is always "cannot tell" — see
+	// foundation/netcost — so this is how somebody says what the machine
+	// does not know.
+	//
+	// It gates the weekly repository check and nothing else. Backups run
+	// whatever this says: a backup that did not happen is the failure this
+	// program exists to prevent, and no connection is expensive enough to be
+	// worth choosing that one instead.
+	Metered *bool `toml:"metered"`
+}
+
+// MeteredOverride reports what the config says about the connection, and
+// whether it says anything at all.
+func (t TuningConfig) MeteredOverride() (metered, set bool) {
+	if t.Metered == nil {
+		return false, false
+	}
+
+	return *t.Metered, true
 }
 
 // DefaultEumaeusURL is the installation this fleet belongs to.

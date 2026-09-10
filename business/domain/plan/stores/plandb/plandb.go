@@ -28,6 +28,10 @@ const (
 	// exactly one, it is read and written whole, and nothing ever queries
 	// inside it. A table would be four columns and a migration for no gain.
 	measurementKey = "repository_measurement"
+
+	// integrityKey holds the last repository check. Same reasoning as the
+	// measurement: one row, read and written whole, nothing queries inside it.
+	integrityKey = "repository_integrity"
 )
 
 // Migrate brings the schema up to date.
@@ -228,6 +232,49 @@ func (s *Store) PutMeasurement(ctx context.Context, m planbus.Measurement) error
 		 ON CONFLICT (key) DO UPDATE SET value = excluded.value`,
 		measurementKey, string(raw)); err != nil {
 		return fmt.Errorf("plandb: writing the measurement: %w", err)
+	}
+
+	return nil
+}
+
+// GetIntegrity returns the last repository check, or a zero Integrity.
+func (s *Store) GetIntegrity(ctx context.Context) (planbus.Integrity, error) {
+	var raw string
+
+	err := s.db.QueryRowContext(ctx,
+		`SELECT value FROM plan_meta WHERE key = ?`, integrityKey).Scan(&raw)
+
+	switch {
+	case errors.Is(err, sql.ErrNoRows):
+		return planbus.Integrity{}, nil
+	case err != nil:
+		return planbus.Integrity{}, fmt.Errorf("plandb: reading the integrity check: %w", err)
+	}
+
+	var i planbus.Integrity
+
+	if err := json.Unmarshal([]byte(raw), &i); err != nil {
+		// A machine whose stored result cannot be decoded has, as far as
+		// anybody can tell, never checked. Which is the safe reading: it makes
+		// the next check due rather than skipping one forever.
+		return planbus.Integrity{}, nil
+	}
+
+	return i, nil
+}
+
+// PutIntegrity replaces the stored result.
+func (s *Store) PutIntegrity(ctx context.Context, i planbus.Integrity) error {
+	raw, err := json.Marshal(i)
+	if err != nil {
+		return fmt.Errorf("plandb: encoding the integrity check: %w", err)
+	}
+
+	if _, err := s.db.ExecContext(ctx,
+		`INSERT INTO plan_meta (key, value) VALUES (?, ?)
+		 ON CONFLICT (key) DO UPDATE SET value = excluded.value`,
+		integrityKey, string(raw)); err != nil {
+		return fmt.Errorf("plandb: writing the integrity check: %w", err)
 	}
 
 	return nil

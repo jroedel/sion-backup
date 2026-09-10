@@ -218,18 +218,68 @@ sentences and only one gets somebody to look.
 
 Both are covered by tests written from restic 0.19.1's actual output.
 
-### Still worth doing
+### The weekly repository check — DONE, and the numbers behind it
 
-`restic check` is never called by any command. `foundation/restic` defines it
-and nothing invokes it, so no machine in the fleet has ever verified its
-repository's structure -- and it is the only thing that catches a pack file
-that is present, correctly named and wrong. The harness calls it; the program
-does not. It is expensive over the network on a large repository, which is
-presumably why, but "never, anywhere, on any machine" is a different decision
-from "not nightly" and should be made deliberately.
+`restic check` used to be defined and never called, so no machine had ever
+verified that what is in the bucket is still what was put there. It runs
+weekly now, after a backup, sized from the last measurement, skipped on a
+metered connection and recorded either way.
 
-`restic.Init` is likewise uncalled, and that one is correct: Eumaeus
-provisions the repository. The harness stands in for it.
+Measured against a real 257 MiB repository, at 3.0 MiB/s:
+
+| operation | time | downloaded | of repository |
+| --- | --- | --- | --- |
+| `check` (metadata only) | 4.9s | 96 KiB | 0.04% |
+| `check --read-data-subset=1/52` | 5.0s | 96 KiB | 0.04% |
+| `check --read-data` | 89.8s | 270.7 MiB | 105% |
+| one backup of 257 MiB | 234s | 5.7 MiB down, 265 MiB up | — |
+
+Three things follow, and the second is the one worth remembering.
+
+**A full read-data check is not affordable.** It moves the whole repository.
+At the rate above, the two-hour budget buys about 21 GB, and client machines
+are bigger than that. Nothing schedules it; `--full-read` in the harness exists
+to keep the number honest.
+
+**The fraction form silently checks nothing.** `--read-data-subset=1/52`
+downloaded exactly as much as a plain check, twice, at two different corpus
+sizes -- because it selects whole pack files and a fiftieth of sixteen packs is
+none. A verification that verifies nothing and reports success is worse than no
+verification, because somebody believes it. That is why `planbus.CheckSubset`
+emits a SIZE (`64M`, `393M`) and not a fraction, clamped between 64 MiB and
+1 GiB: the floor stops a small repository being skipped, the ceiling stops a
+500 GB one costing an evening.
+
+**Metadata-only is nearly free at any size** -- 0.04% here -- so it happens on
+every check and only the slice varies.
+
+`restic.Init` remains uncalled, and that one is correct: Eumaeus provisions the
+repository. The harness stands in for it.
+
+### Metered connections — HALF DONE
+
+`foundation/netcost` answers "is somebody paying for these bytes". On Linux it
+asks NetworkManager about the interface carrying the default route, which is a
+real answer. On Windows and macOS it returns Unknown, and that is a gap rather
+than a design:
+
+- **Windows**: `NetworkInformation.GetInternetConnectionProfile().GetConnectionCost()`,
+  whose `NetworkCostType` distinguishes unrestricted, fixed and variable.
+  Reaching WinRT from a program that uses no cgo means hand-rolled COM
+  activation. Doable; not done.
+- **macOS**: `NWPathMonitor.currentPath.isExpensive`, plus `isConstrained` for
+  Low Data Mode. Objective-C.
+
+Until then `[tuning] metered` in config.toml is how a person says what the
+machine cannot work out. Note what this gates and what it does not: the weekly
+check only. Backups run on any connection, because a backup that did not happen
+is the failure this program exists to prevent and no link is expensive enough
+to be worth choosing that one instead.
+
+Unknown is deliberately NOT read as metered. Two thirds of the fleet cannot
+tell, and the cautious reading would mean no Windows or Mac ever verified a
+repository -- trading a certain harm for a possible one. The slice is bounded
+instead, so being wrong costs a few hundred megabytes rather than a phone bill.
 
 ### Open questions
 
