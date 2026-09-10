@@ -273,14 +273,32 @@ if as_user journalctl --user -u sion-backup -n 200 --no-pager 2>/dev/null |
   good "the journal shows ${CANDIDATE_VERSION} running"
 fi
 
-# CleanupOld runs at startup, so by now the previous binary should be gone. It
-# is also the only rollback copy that existed, which is worth seeing stated in
-# the gate's own output.
-if [ -e "${EXE}.old" ]; then
-  bad "${EXE}.old survived a restart; CleanupOld did not run"
+# Whether this upgrade was protected by probation, which depends on the
+# BASELINE and not on the candidate.
+#
+# The probation file is written by the binary that performs the swap — the old
+# one. So an upgrade FROM a release that predates probation is not itself
+# watched: the candidate starts, finds nothing on probation, and removes the
+# previous binary as the old code always did. Protection begins with the
+# release after the first one that has it.
+#
+# Said out loud rather than asserted one way, because both answers are correct
+# and which one you get is a fact about the fleet's current version.
+if [ -e "${EXE}.probation" ]; then
+  good "the upgrade is on probation: ${BASELINE_VERSION} watched it in"
+  note "$(tr -d '\n ' <"${EXE}.probation")"
+
+  if [ -e "${EXE}.old" ]; then
+    good "and ${BASELINE_VERSION} is still on the disk as the way back"
+  else
+    bad "probation is on but there is no ${EXE}.old to go back to"
+  fi
+elif [ -e "${EXE}.old" ]; then
+  bad "${EXE}.old survived a restart and nothing is watching it"
 else
   good "the previous binary was cleaned up on the first start"
-  note "note: that copy was also the only way back. There is no rollback."
+  note "this upgrade was NOT protected: ${BASELINE_VERSION} predates probation,"
+  note "so it wrote no probation file. Upgrades from ${CANDIDATE_VERSION} on are."
 fi
 
 say "Doctor"

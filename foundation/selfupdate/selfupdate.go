@@ -99,6 +99,14 @@ const downloadTimeout = 10 * time.Minute
 
 // Config is what an updater needs.
 type Config struct {
+	// Source is where releases come from. It may be nil, and that is the
+	// configuration the daemon uses for its first job at startup: deciding
+	// what to do about the update it is already running. That decision needs
+	// nothing from the network, and it has to be made before the config file
+	// has been read — so requiring a source here would mean the machine could
+	// not roll back a version whose owner had since switched updates off.
+	//
+	// [Updater.Apply] is what needs one, and says so if it is missing.
 	Source Source
 
 	// Current is this build's version, as stamped at link time.
@@ -122,10 +130,6 @@ type Updater struct {
 
 // New validates the configuration and resolves this binary's own path.
 func New(cfg Config) (*Updater, error) {
-	if cfg.Source == nil {
-		return nil, errors.New("selfupdate: no source configured")
-	}
-
 	exe := cfg.Executable
 
 	if exe == "" {
@@ -168,6 +172,10 @@ func New(cfg Config) (*Updater, error) {
 // when there was nothing to do — which is the ordinary answer and not an
 // error. The caller decides what to do next; nothing here restarts anything.
 func (u *Updater) Apply(ctx context.Context) (Release, bool, error) {
+	if u.source == nil {
+		return Release{}, false, errors.New("selfupdate: no source configured")
+	}
+
 	latest, err := u.source.Latest(ctx, runtime.GOOS, runtime.GOARCH)
 	if err != nil {
 		return Release{}, false, err
@@ -181,7 +189,20 @@ func (u *Updater) Apply(ctx context.Context) (Release, bool, error) {
 		return Release{}, false, nil
 	}
 
-	if err := u.writable(); err != nil {
+	// A version this machine already gave up on. Reported as nothing to do
+	// rather than as an error, deliberately: it will still be /latest in an
+	// hour, and a machine that filed a report every hour about a decision it
+	// made itself would bury the reports that matter. What makes it visible is
+	// the rollback's own report, sent once, plus [Updater.Refused] — which
+	// doctor prints and the status page shows.
+	if u.refuses(latest.Version) {
+		u.log.Info("not installing a version this machine gave up on",
+			"version", latest.Version)
+
+		return Release{}, false, nil
+	}
+
+	if err := u.Writable(); err != nil {
 		return Release{}, false, err
 	}
 
@@ -206,29 +227,35 @@ func (u *Updater) Apply(ctx context.Context) (Release, bool, error) {
 		return Release{}, false, err
 	}
 
+	// Before the caller is told anything, because the caller's next move is to
+	// exit into the new binary and the new binary reads this on the way up.
+	// A failure is logged rather than returned: the swap has happened, and
+	// unwinding a working update because a bookkeeping file could not be
+	// written would be the wrong trade. The cost is a version nobody is
+	// watching, which is where this package was before probation.
+	if err := u.begin(latest.Version, u.current); err != nil {
+		u.log.Warn("installed a new version but could not put it on probation",
+			"err", err, "consequence", "it will not be rolled back if it fails to start")
+	}
+
 	u.log.Info("replaced this binary with a newer build",
-		"was", u.current, "now", latest.Version, "path", u.exe)
+		"was", u.current, "now", latest.Version, "path", u.exe,
+		"on_probation_for", probationStarts)
 
 	return latest, true, nil
 }
 
-// CleanupOld removes the binary left behind by the previous update.
-//
-// Called at startup rather than after the swap, because on Windows the file
-// being replaced is the image of the running process and cannot be deleted
-// until it stops running.
-func (u *Updater) CleanupOld() {
-	if err := os.Remove(u.exe + ".old"); err != nil && !errors.Is(err, os.ErrNotExist) {
-		u.log.Debug("could not remove the previous binary", "err", err)
-	}
-}
-
-// writable reports whether this process may replace the binary.
+// Writable reports whether this process may replace the binary.
 //
 // Checked by writing beside it rather than by reading permission bits, which
 // answer the wrong question on every platform for a different reason: an ACL
 // on Windows, a read-only mount on Linux, a signed bundle on macOS.
-func (u *Updater) writable() error {
+//
+// Exported because it is a question worth asking before anything has gone
+// wrong: on Windows and macOS the answer is usually no, and a machine that
+// cannot replace its own binary looks exactly like one that stopped checking
+// in. doctor asks it so that a person can be told plainly.
+func (u *Updater) Writable() error {
 	probe := u.exe + ".probe"
 
 	f, err := os.OpenFile(probe, os.O_CREATE|os.O_WRONLY|os.O_EXCL, 0o600)

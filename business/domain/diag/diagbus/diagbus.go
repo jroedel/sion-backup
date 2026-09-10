@@ -66,6 +66,16 @@ const (
 	// is still running afterwards — on the old version, which is the thing
 	// somebody needs to know.
 	KindUpdateFailed Kind = "update-failed"
+
+	// KindUpdateRolledBack is a version that installed, would not stay
+	// running, and was replaced with the one before it.
+	//
+	// The most valuable report this program sends. Every other kind describes
+	// one machine's bad evening; this one says a release is bad, and it says
+	// so from a machine that is running again and can therefore be believed.
+	// One of these is a reason to look; two from different machines is a
+	// reason to un-publish the release before the rest of the fleet takes it.
+	KindUpdateRolledBack Kind = "update-rolled-back"
 )
 
 // maxDetail bounds the free text.

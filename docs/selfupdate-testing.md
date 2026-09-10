@@ -23,9 +23,10 @@ field that no longer parses, or a nil dereference in the daemon's wiring
 answers `version` perfectly and then dies on the command the service manager
 actually runs.
 
-`scripts/selfupdate-e2e/run bricked` demonstrates it rather than arguing about
-it: a release that passes the hash and the smoke test, installs, and then
-crash-loops under a service manager for as long as you let it.
+`scripts/selfupdate-e2e/run rolled-back` is the test for this. A release that
+passes the hash and the smoke test, installs, and then will not start must end
+with the machine back on the version that worked, running, and refusing that
+release. It used to be a demonstration that it did not.
 
 **2. A release that is wrong on the wire.** A truncated download, a mismatched
 hash, a build for the wrong architecture, a prerelease that reached `/latest`
@@ -38,29 +39,44 @@ install directory owned by an administrator and a service running as the user,
 a machine whose home directory moved. These do not brick anything — they make
 self-update quietly stop happening, which is worse in a different way.
 
-## Two guards that do not exist yet
+## The guards
 
 Testing addresses risk 2 well and risk 3 completely. It does not address risk
 1, because risk 1 is a build that is wrong in a way nobody predicted, and a
-test suite is a list of things somebody predicted. Two structural guards would,
-and neither is here.
+test suite is a list of things somebody predicted. Two structural guards do.
+One is built; one is not.
 
-**There is no rollback.** `swap()` moves the running binary to `.old` before
-putting the new one in place, so the previous version is on the disk. Nothing
-ever restores it. Worse, `CleanupOld` runs at daemon startup
-(`cmd/sion-backup/daemon.go:64`), immediately after `wire()` succeeds and
-before the daemon has taken a single backup — so the only copy of the working
-version is deleted seconds into the new one's life, while the failure modes
-that matter most (restic incompatibility, a credential fetch that now 400s)
-are still hours away. A machine that gets that far and then fails has nothing
-left to fall back to.
+**Rollback: built** (`foundation/selfupdate/probation.go`). A swap is no longer
+the end of an update. The new version starts on probation, and the check runs
+at the top of the daemon command *before* `wire()` — which is the whole
+mechanism, because `wire()` failing is the failure being guarded against. After
+three starts without staying up, the previous binary is put back, the version
+is added to a list this machine will not install again, and the machine exits
+75 so the service manager starts the restored version. `sion-backup update
+--forget` clears the list; `doctor` prints it.
 
-The shape of the fix is a start counter: the new binary records that it
-started, and on start N without a completed backup it puts `.old` back. That
-turns risk 1 from "somebody drives to the building" into "the machine is a
-version behind, and the dashboard says so."
+"Working" means staying up for ten minutes, not taking a backup. A laptop can
+legitimately go a week without one, and three reboots in that week must not be
+read as a crash loop. A foreground `sion-backup run` that completes settles
+probation immediately, because a finished backup is stronger evidence than
+staying up.
 
-**There is no staged rollout and no kill switch.** `GitHub.Latest` reads
+Three limits worth knowing:
+
+- **The first upgrade into a probation-capable release is not protected.** The
+  probation file is written by the binary performing the swap — the old one —
+  so `v0.2.0 → v0.3.0` is unwatched and `v0.3.0 → v0.4.0` is watched. The gate
+  prints which case a given release is in.
+- **It only recovers from a failure after the check.** A build that dies at
+  package init never reaches the rollback code. That is what the smoke test is
+  for: it runs the downloaded binary before installing it, so anything failing
+  that early is refused rather than installed.
+- **It does not cover a build that starts and then fails at backup time.**
+  Probation will have settled. That failure is already a failed run on the
+  dashboard, from a machine that is up and can still be updated — somebody's
+  Tuesday rather than a drive to another building.
+
+**Staged rollout and a kill switch: not built.** `GitHub.Latest` reads
 `/releases/latest`, so every machine takes the newest published release within
 an hour of it existing. A bad tag pushed at 15:00 is on the whole fleet by the
 next morning, and the only way to stop it is to un-publish the release and
@@ -93,6 +109,7 @@ that covers "Linux" is less useful than one that covers *their* machines.
 | Install location and who runs it | `~/.local/bin` owned and run by the user; a root-owned directory run by the user; a root-owned directory run by root; a read-only mount | These are the fleet's three real install shapes, plus the case the code names but nothing exercised. See below — two of them mean self-update never happens. |
 | Version relationship | newer, identical, older, unparseable (`dev`) | `Newer()`'s entire contract, including that an older `/latest` must not downgrade and a hand-built binary must never replace itself. |
 | Baseline | the previously published release, upgraded to the candidate | The only arrangement that can catch risk 1. A candidate tested against itself proves nothing about an upgrade. |
+| Recovery | a build that starts, answers `version`, and dies on `daemon` | That the machine puts the previous version back, comes up on it, and will not take that release again. |
 | Service manager | a real systemd user unit, with lingering, running when the binary is replaced | The brick is the restart, not the swap. |
 | Platform | linux/amd64 today; Windows and macOS are a gap | See "What is not covered". |
 
@@ -103,7 +120,7 @@ Two of those four values mean self-update silently never happens:
 - **Windows.** `deploy/windows/install.ps1` installs to
   `%ProgramFiles%\sion-backup` and registers a scheduled task that runs as the
   signed-in user. If that user is not an administrator, the directory is not
-  writable, `writable()` fails, and `selfUpdate` logs `ErrNotWritable` at Info
+  writable, `Writable()` fails, and `selfUpdate` logs `ErrNotWritable` at Info
   once per process and deliberately never reports it. The machine backs up
   forever on the version it was installed with.
 - **macOS.** `deploy/launchd/us.schoenstatt.sion-backup.plist` runs

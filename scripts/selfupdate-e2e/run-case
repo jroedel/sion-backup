@@ -92,26 +92,58 @@ note "install dir $(stat -c '%A %U' "$INSTALL_DIR") ; run as ${RUN_AS}"
 # path reaches.
 # ---------------------------------------------------------------------------
 
-if [ "$EXPECT" = bricked ]; then
+if [ "$EXPECT" = rolled-back ]; then
   as_target "$EXE" update >/tmp/update.log 2>&1
-  note "update said: $(tail -1 /tmp/update.log)"
+  note "update said: $(grep -v '^ ' /tmp/update.log | tail -1)"
 
+  if [[ "$(installed_version "$EXE")" != *"$NEXT_VERSION"* ]]; then
+    bad "the bad version was never installed, so there is nothing to roll back"
+
+    exit 1
+  fi
+
+  # Enough starts for the three attempts probation allows plus the one that
+  # rolls back plus the one that comes up on the restored version. Fewer would
+  # pass for the wrong reason: a machine still crash-looping when the harness
+  # stopped watching looks the same as one that never rolled back.
   as_target /harness/supervise "$EXE" "$MAX_STARTS" /tmp/supervise.log
   sed 's/^/      | /' /tmp/supervise.log
 
-  starts=$(grep -c '^start [0-9]*:' /tmp/supervise.log)
+  now="$(installed_version "$EXE")"
 
-  if [ "$starts" -ge "$MAX_STARTS" ]; then
-    good "the service manager restarted it ${starts} times and it never came up"
+  if [[ "$now" == *"$CURRENT_VERSION"* ]]; then
+    good "gave up on ${NEXT_VERSION} and put ${CURRENT_VERSION} back"
   else
-    bad "expected a restart loop, saw ${starts} starts"
+    bad "the binary is ${now}: the machine is still on the version that will not run"
   fi
 
-  if [ -f "${EXE}.old" ]; then
-    good "the previous binary is still on the disk at ${EXE}.old"
-    note "and nothing ever restores it: that is the finding, not a pass"
+  # Started AND stayed started. "The binary on the disk changed" would pass on
+  # a machine that rolled back to something equally broken.
+  if grep -q 'stayed up' /tmp/supervise.log; then
+    # The version line for the start that survived, not the log line before it.
+    which=$(sed -n 's/^start \([0-9]*\) stayed up.*/\1/p' /tmp/supervise.log | tail -1)
+    stayed=$(sed -n "s/^start ${which}: //p" /tmp/supervise.log)
+    good "and start ${which} stayed up, running ${stayed}"
   else
-    bad "no ${EXE}.old — there is nothing left to roll back to"
+    bad "nothing ever came up and stayed up"
+  fi
+
+  # Without this the machine reinstalls the same broken release within the
+  # hour, forever, and the rollback is a slower brick rather than a fix.
+  note "refused list: $(cat "${EXE}.refused" 2>/dev/null | tr '\n' ' ')"
+  as_target "$EXE" update >/tmp/again.log 2>&1
+  sed 's/^/      | /' /tmp/again.log
+
+  if grep -q "given up on" /tmp/again.log; then
+    good "and it refuses to install ${NEXT_VERSION} again"
+  else
+    bad "it would install the same broken version again"
+  fi
+
+  if [ -e "${EXE}.probation" ]; then
+    bad "probation outlived the rollback: this machine will keep trying"
+  else
+    good "probation is over"
   fi
 
   exit "$fail"
@@ -143,6 +175,14 @@ case "$EXPECT" in
     else
       bad "no usable ${EXE}.old was kept"
     fi
+
+    # Keeping .old is only useful if something is watching. Without probation
+    # the previous version sits there and is deleted on the next start.
+    if [ -f "${EXE}.probation" ]; then
+      good "the new version is on probation: $(tr -d '\n ' <"${EXE}.probation")"
+    else
+      bad "the new version is not on probation; a bad build would not be put back"
+    fi
     ;;
 
   refused)
@@ -156,6 +196,8 @@ case "$EXPECT" in
 
     [ -f "${EXE}.old" ] && bad "an .old was left by an update that did not happen" \
                         || good "no .old: the swap never started"
+
+    [ -f "${EXE}.probation" ] && bad "a refused release was put on probation"
     ;;
 
   not-writable)

@@ -208,6 +208,41 @@ func doctorCmd(args []string) error {
 			waiting, d.paths.Diag), nil
 	})
 
+	c.check("self-update", func() (string, error) {
+		u := supervisor(d.log)
+		if u == nil {
+			return "", errors.New("cannot tell: this binary's own path could not be resolved")
+		}
+
+		// The list of versions this machine gave up on is the answer to "why
+		// is this machine a version behind", and the only place a person can
+		// read it. A machine that cannot say so is a machine somebody has to
+		// guess about.
+		if refused := u.Refused(); len(refused) > 0 {
+			return "", fmt.Errorf("gave up on %s: %s would not stay running here. "+
+				"It will not be installed again; \"sion-backup update --forget\" "+
+				"clears that if the version was fine and the machine was not",
+				strings.Join(refused, ", "), refused[len(refused)-1])
+		}
+
+		if !d.cfg.Update.On() {
+			return "off in this machine's config.toml", nil
+		}
+
+		// Whether this machine can replace its own binary at all. Checked
+		// rather than assumed, because on Windows and macOS the answer is
+		// usually no — the binary is in a directory an administrator owns and
+		// the service runs as the user — and the fleet dashboard cannot tell
+		// that apart from a machine that stopped checking in.
+		if err := u.Writable(); err != nil {
+			return "", fmt.Errorf("this machine cannot update itself: %w. "+
+				"It will keep backing up on %s until somebody installs a new "+
+				"one by hand", err, version)
+		}
+
+		return fmt.Sprintf("on; this binary is replaceable by this process (%s)", version), nil
+	})
+
 	c.check("eumaeus", func() (string, error) {
 		if !d.creds.Enrolled() {
 			return "", errors.New("this machine has no token: run \"sion-backup enroll\". " +

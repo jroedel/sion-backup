@@ -11,13 +11,23 @@
 # The delay is compressed to a second. Thirty seconds times a restart limit is
 # a harness that takes an hour to tell you the fleet is bricked.
 #
-# Usage: supervise <exe> <max-starts> <log>
+# STAYING UP IS AN OUTCOME
+#
+# A real service manager stops paying attention once the service is stably
+# running; this loop has to as well, because a healthy daemon never exits and
+# waiting for it would hang forever. So each start is given STAY seconds, and
+# one that survives them is recorded as having come up and ends the loop. That
+# is also the assertion worth making: not "the binary on the disk changed" but
+# "something started and stayed started".
+#
+# Usage: supervise <exe> <max-starts> <log> [stay-seconds]
 
 set -eu
 
 EXE="$1"
 MAX="$2"
 LOG="$3"
+STAY="${4:-5}"
 
 : >"$LOG"
 
@@ -27,15 +37,23 @@ while [ "$n" -lt "$MAX" ]; do
   n=$((n + 1))
 
   # What is on the disk right now, recorded before each start. This is the line
-  # the assertions read: a machine that came back on the new version has two
-  # different answers here, and a machine in a crash loop has the same wrong
-  # one over and over.
+  # the assertions read: a machine that came back on a different version has
+  # two different answers here, and one in a crash loop has the same wrong one
+  # over and over.
   printf 'start %d: %s\n' "$n" "$("$EXE" version 2>&1 || echo 'version failed')" >>"$LOG"
 
   set +e
-  "$EXE" daemon >>"$LOG" 2>&1
+  timeout "$STAY" "$EXE" daemon >>"$LOG" 2>&1
   status=$?
   set -e
+
+  # 124 is timeout's own code for "it was still running when I stopped it",
+  # which here means it did not crash.
+  if [ "$status" -eq 124 ]; then
+    printf 'start %d stayed up for %ss\n' "$n" "$STAY" >>"$LOG"
+
+    exit 0
+  fi
 
   printf 'start %d exited %d\n' "$n" "$status" >>"$LOG"
 

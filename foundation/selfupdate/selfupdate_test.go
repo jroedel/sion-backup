@@ -154,16 +154,30 @@ func TestAnUpdateIsInstalledAndTheOldOneKept(t *testing.T) {
 		t.Errorf("the installed binary is not executable: %v %v", info, err)
 	}
 
-	// The previous version is still there until the next start removes it,
-	// which is the only rollback this has.
+	// The previous version is kept, because the new one has not run yet.
 	if _, err := os.Stat(exe + ".old"); err != nil {
 		t.Errorf("the previous binary was not kept: %v", err)
 	}
 
-	u.CleanupOld()
+	// And the new one is on probation, which is what makes keeping it useful.
+	if _, err := os.Stat(exe + ".probation"); err != nil {
+		t.Errorf("the new version was not put on probation: %v", err)
+	}
+
+	// A start that settles is the ordinary case: the version works, so the
+	// probation ends and the way back is no longer needed.
+	if got := u.Start(context.Background()); got.Outcome != selfupdate.OnProbation {
+		t.Errorf("first start = %v, want OnProbation", got.Outcome)
+	}
+
+	u.Settle()
+
+	if _, err := os.Stat(exe + ".probation"); !os.IsNotExist(err) {
+		t.Error("Settle left the probation file behind")
+	}
 
 	if _, err := os.Stat(exe + ".old"); !os.IsNotExist(err) {
-		t.Error("CleanupOld left the previous binary behind")
+		t.Error("Settle left the previous binary behind")
 	}
 }
 
