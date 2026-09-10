@@ -138,6 +138,24 @@ checksums: ## Write SHA-256 sums for the release binaries
 	cd $(DIST) && sha256sum $(BINARY)-* > SHA256SUMS
 	@cat $(DIST)/SHA256SUMS
 
+##@ Releasing
+
+# The three of these do the same thing to different parts of the version.
+# The rules that stop a release going out from the wrong commit live in
+# scripts/tag, which explains why each one is there.
+
+.PHONY: tag-revision
+tag-revision: ## Tag the next patch release, vX.Y.(Z+1), and push it
+	@scripts/tag revision
+
+.PHONY: tag-minor
+tag-minor: ## Tag the next minor release, vX.(Y+1).0, and push it
+	@scripts/tag minor
+
+.PHONY: tag-major
+tag-major: ## Tag the next major release, v(X+1).0.0, and push it
+	@scripts/tag major
+
 ##@ Housekeeping
 
 .PHONY: tidy
