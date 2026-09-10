@@ -60,6 +60,7 @@ Commands:
   enroll     Fetch this machine's credentials from Eumaeus and store them
   doctor     Check everything a backup needs, and say what is wrong
   report     Report a failed install or a crash (for the installers)
+  update     Replace this binary with the newest release
   paths      Print where this program keeps its files
   version    Print the build
 
@@ -77,6 +78,12 @@ func main() {
 			os.Exit(2)
 		}
 
+		// Not a failure: the daemon replaced itself and stopped so that the
+		// service manager would start the new binary.
+		if errors.Is(err, errUpdated) {
+			os.Exit(updateExitCode)
+		}
+
 		fmt.Fprintf(os.Stderr, "sion-backup: %v\n", err)
 		os.Exit(1)
 	}
@@ -84,6 +91,10 @@ func main() {
 
 // errUsage reports a misuse that has already printed its own guidance.
 var errUsage = errors.New("see usage above")
+
+// errUpdated reports a daemon that stopped because it replaced itself. See
+// updateExitCode.
+var errUpdated = errors.New("a newer version was installed")
 
 func run() error {
 	if len(os.Args) < 2 {
@@ -107,6 +118,8 @@ func run() error {
 		return doctorCmd(args)
 	case "report":
 		return reportCmd(args)
+	case "update":
+		return updateCmd(args)
 	case "paths":
 		return pathsCmd()
 	case "version":
@@ -137,6 +150,11 @@ type deps struct {
 	// machine that has not been enrolled, which is a state several commands
 	// have to render rather than fail on.
 	machineToken string
+
+	// updated is signalled when self-update has replaced this binary, so the
+	// daemon can exit into the new one. Nil outside the daemon, where there
+	// is nothing to restart.
+	updated chan struct{}
 
 	plan    *planbus.Business
 	backups *backupbus.Runner

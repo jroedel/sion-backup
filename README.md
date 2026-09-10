@@ -453,13 +453,14 @@ Named here rather than left to be discovered.
   stated where people will see it: the status page should say "backups
   available since <date>" rather than implying a retention policy that nothing
   enforces.
-- **The macOS keyring write passes the secret in `argv`**, where `ps` can see
-  it for the moment it runs. There is no stdin form of
-  `security add-generic-password`. It affects enrollment only — the read path
-  passes nothing in — and the alternative was dragging cgo into every build.
-  See `foundation/secrets/keyring_darwin.go`.
-- **No self-update.** Binaries are installed by hand. The version is reported
-  to the dashboard, so at least "which machines are behind" is answerable.
+- **Self-update trusts GitHub twice.** The machine checks for a newer release
+  after each backup, verifies the download against the release's own
+  `SHA256SUMS`, and runs it once before installing it — but the binary and the
+  hash that vouches for it are published by the same workflow to the same
+  host, so the hash proves the download arrived intact and nothing more.
+  [`docs/eumaeus-requests.md`](docs/eumaeus-requests.md) §5.2 asks Eumaeus to
+  name the expected version and hash instead; `selfupdate.Source` is the seam
+  that goes through.
 - **No restore UI.** Restores are `restic restore` at a command line, with the
   password out of Eumaeus. That is the right place for a rare, high-stakes,
   supervised operation to start; a button would be worse.

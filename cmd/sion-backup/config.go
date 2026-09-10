@@ -36,6 +36,7 @@ type Config struct {
 	Excludes   []string `toml:"excludes"`
 
 	Schedule ScheduleConfig `toml:"schedule"`
+	Update   UpdateConfig   `toml:"update"`
 	Storage  StorageConfig  `toml:"storage"`
 	Tuning   TuningConfig   `toml:"tuning"`
 	Eumaeus  EumaeusConfig  `toml:"eumaeus"`
@@ -106,6 +107,26 @@ const DefaultEumaeusURL = "https://terraboskamp.org"
 type EumaeusConfig struct {
 	URL string `toml:"url"`
 }
+
+// UpdateConfig is how this program replaces itself.
+//
+// On by default, which is a decision rather than a convenience: the fleet is
+// laptops in several buildings with no management agent, and a version that
+// has to be installed by hand is a version half of them will never get. A
+// build whose version is not a release tag -- a developer's working copy --
+// is never replaced whatever this says, so the default cannot surprise
+// anybody who is working on the program.
+type UpdateConfig struct {
+	// Enabled is a pointer so that "unset" and "false" are different. Unset
+	// means on.
+	Enabled *bool `toml:"enabled"`
+
+	// Repository is "owner/name" on GitHub. Empty means the fleet's own.
+	Repository string `toml:"repository"`
+}
+
+// On reports whether self-update is wanted.
+func (u UpdateConfig) On() bool { return boolOr(u.Enabled, true) }
 
 // ServerConfig is how the daemon runs.
 type ServerConfig struct {

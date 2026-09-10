@@ -67,6 +67,14 @@ func runCmd(args []string) error {
 		return err
 	}
 
+	// A foreground run checks for a newer version too, at the end, in
+	// deps.backup. Saying so is worth a line: somebody who just watched a
+	// backup should know the next one will be a different program.
+	if selfUpdated() {
+		fmt.Println("\na newer version of sion-backup was installed; " +
+			"the next run will use it")
+	}
+
 	// Anything waiting from a failed install or an earlier crash goes now.
 	// A foreground run is the moment somebody is watching, which makes it the
 	// moment most likely to have a network.

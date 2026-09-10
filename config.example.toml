@@ -180,6 +180,24 @@ one_file_system = true
 # token = "..."
 # token_file = "/etc/sion-backup/eumaeus.token"
 
+[update]
+# This program replaces itself with the newest release, after a backup and
+# never during one. It verifies the download against the SHA256SUMS the
+# release publishes and runs the new binary once, asking it its version,
+# before anything is moved. The previous binary is kept beside it until the
+# next start.
+#
+# Leave it on. The fleet is laptops in several buildings with no management
+# agent, and a version that has to be installed by hand is a version half of
+# them will never get.
+#
+# A build whose version is not a release tag -- a developer's working copy,
+# which reports "dev" -- is never replaced, whatever this says.
+# enabled = true
+
+# Where releases come from. Only for testing against a fork.
+# repository = "jroedel/sion-backup"
+
 [server]
 # The status page. Loopback only -- it has no login, and the daemon refuses to
 # bind anything else. Reach it from elsewhere over SSH, not by changing this.
