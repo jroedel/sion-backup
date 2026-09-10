@@ -1,0 +1,387 @@
+#!/usr/bin/env bash
+#
+# run-machine — one machine, one restic repository, two real backups.
+#
+# Runs inside a container. Everything it needs arrives as environment
+# variables from ../run:
+#
+#   REPO_URL     the restic repository this machine writes to (its own prefix)
+#   KEY_ID       S3 access key id
+#   SECRET       S3 secret access key
+#   NODE_ID      what to enrol as
+#   SHAPE        a label for the output
+#
+# It stands up a fake Eumaeus on loopback, initialises the repository the way
+# the server would, enrols, and then drives the binary through the same path a
+# client machine takes every night -- twice, because the second backup is the
+# only one that exercises a parent snapshot, deduplication and the
+# unchanged-file path.
+#
+# WHAT IS REAL HERE
+#
+# The bucket, the network, restic, the binary, the credentials round trip, the
+# verification restore. What is fake is one HTTP server on 127.0.0.1 that
+# answers as Eumaeus, which foundation/eumaeusapi permits over plain HTTP for
+# loopback and nothing else.
+
+set -uo pipefail
+
+: "${REPO_URL:?}"
+: "${KEY_ID:?}"
+: "${SECRET:?}"
+: "${NODE_ID:=gate-machine}"
+: "${SHAPE:=default}"
+
+USER_NAME=sion
+HOME_DIR="/home/${USER_NAME}"
+EXE=/usr/local/bin/sion-backup
+DATA="${HOME_DIR}/data"
+STUB_ADDR=127.0.0.1:8088
+
+fail=0
+
+say()  { printf '\n\033[1m-- %s\033[0m\n' "$*"; }
+ok()   { printf '   \033[32mok\033[0m   %s\n' "$*"; }
+bad()  { printf '   \033[31mFAIL\033[0m %s\n' "$*"; fail=1; }
+note() { printf '        %s\n' "$*"; }
+
+as_user() { runuser -u "$USER_NAME" -- env HOME="$HOME_DIR" "$@"; }
+
+id "$USER_NAME" >/dev/null 2>&1 || useradd --create-home --shell /bin/bash "$USER_NAME"
+
+# ---------------------------------------------------------------------------
+# 1. Something worth backing up.
+#
+# Shaped like a person's home directory rather than sized like one: many small
+# files, a couple of big incompressible ones so deduplication has to be honest,
+# and a file that changes between the two runs so the second backup has
+# something to do.
+# ---------------------------------------------------------------------------
+
+say "A corpus"
+
+as_user mkdir -p "$DATA/docs" "$DATA/big"
+
+for i in $(seq 1 200); do
+  printf 'document %d\nthe quick brown fox\n' "$i" > "$DATA/docs/doc-$i.txt"
+done
+
+# Random, so restic cannot compress it away and the byte counts mean something.
+head -c 2097152 /dev/urandom > "$DATA/big/blob-a.bin"
+head -c 2097152 /dev/urandom > "$DATA/big/blob-b.bin"
+
+printf 'version one\n' > "$DATA/changes.txt"
+printf 'this file is deleted before the second run\n' > "$DATA/deleted.txt"
+
+# The file the restore is checked against. Random rather than text so that a
+# comparison passing by luck is not possible.
+head -c 65536 /dev/urandom > "$DATA/canary.bin"
+
+chown -R "$USER_NAME" "$DATA"
+
+ok "$(find "$DATA" -type f | wc -l) files, $(du -sh "$DATA" | cut -f1)"
+
+# ---------------------------------------------------------------------------
+# 2. A server that answers as Eumaeus.
+# ---------------------------------------------------------------------------
+
+say "Eumaeus, on loopback"
+
+JOURNAL=/tmp/journal.jsonl
+: >"$JOURNAL"
+chmod 666 "$JOURNAL"
+
+/harness/eumaeusstub \
+  -addr "$STUB_ADDR" \
+  -repo "$REPO_URL" \
+  -key-id "$KEY_ID" \
+  -secret "$SECRET" \
+  -node "$NODE_ID" \
+  -journal "$JOURNAL" \
+  -ready /tmp/stub-ready \
+  >/tmp/stub.log 2>&1 &
+
+for _ in $(seq 1 100); do
+  [ -f /tmp/stub-ready ] && break
+  sleep 0.1
+done
+
+[ -f /tmp/stub-ready ] || { bad "the stub never came up"; cat /tmp/stub.log; exit 1; }
+
+RESTIC_PW=$(cat /tmp/stub-ready)
+
+ok "serving ${REPO_URL}"
+
+# ---------------------------------------------------------------------------
+# 3. The machine's own config.
+#
+# The repository is named here as well as served, because seedPlan needs a
+# complete plan before the first run and takes it from this file. The server's
+# copy is the authority and wins on any disagreement -- see deps.backup.
+# ---------------------------------------------------------------------------
+
+CONFIG_DIR="${HOME_DIR}/.local/share/sion-backup"
+as_user mkdir -p "$CONFIG_DIR"
+
+cat > "$CONFIG_DIR/config.toml" <<TOML
+node_id    = "${NODE_ID}"
+repository = "${REPO_URL}"
+targets    = ["${DATA}"]
+excludes   = ["**/*.tmp"]
+
+[eumaeus]
+url = "http://${STUB_ADDR}"
+
+[schedule]
+times = ["03:00"]
+jitter_minutes = 0
+min_interval = "0s"
+
+[update]
+enabled = false
+
+[server]
+addr = "127.0.0.1:7391"
+TOML
+
+chown "$USER_NAME" "$CONFIG_DIR/config.toml"
+
+# Self-update is off above, deliberately: this harness is about backups, and a
+# machine that replaced its own binary halfway through would be testing two
+# things at once and reporting on neither.
+
+# ---------------------------------------------------------------------------
+# 4. restic, and the repository.
+#
+# The binary installs its own pinned restic; that is a real download from
+# restic's own release, verified against a hash compiled in.
+#
+# The repository is initialised HERE rather than by the binary, because nothing
+# in the binary initialises one. foundation/restic has Init and no command
+# calls it: provisioning a bucket and creating a repository in it are Eumaeus's
+# job. This is the one place the harness stands in for the server rather than
+# serving it.
+# ---------------------------------------------------------------------------
+
+say "restic"
+
+as_user "$EXE" restic >/tmp/restic-install.log 2>&1 ||
+  { bad "could not install restic"; tail -5 /tmp/restic-install.log; exit 1; }
+
+RESTIC="${CONFIG_DIR}/bin/restic"
+
+[ -x "$RESTIC" ] || { bad "no restic at ${RESTIC}"; exit 1; }
+
+ok "$(as_user "$RESTIC" version | head -1)"
+
+restic_do() {
+  as_user env \
+    RESTIC_REPOSITORY="$REPO_URL" \
+    RESTIC_PASSWORD="$RESTIC_PW" \
+    AWS_ACCESS_KEY_ID="$KEY_ID" \
+    AWS_SECRET_ACCESS_KEY="$SECRET" \
+    "$RESTIC" "$@"
+}
+
+if restic_do init >/tmp/init.log 2>&1; then
+  ok "repository created at ${REPO_URL}"
+else
+  bad "restic init failed"
+  tail -5 /tmp/init.log
+  exit 1
+fi
+
+# ---------------------------------------------------------------------------
+# 5. Enrol, and back up. Twice.
+# ---------------------------------------------------------------------------
+
+say "Enrolling"
+
+if as_user "$EXE" enroll --code GATE-TEST >/tmp/enroll.log 2>&1; then
+  ok "enrolled as ${NODE_ID}"
+else
+  bad "enroll failed"
+  tail -20 /tmp/enroll.log
+  exit 1
+fi
+
+say "First backup"
+
+if as_user "$EXE" run >/tmp/run1.log 2>&1; then
+  ok "run 1 finished"
+else
+  bad "run 1 failed"
+  tail -20 /tmp/run1.log
+fi
+
+snaps=$(restic_do snapshots --json 2>/dev/null | jq 'length' 2>/dev/null || echo 0)
+
+[ "$snaps" = 1 ] && ok "one snapshot in the repository" \
+                 || bad "expected 1 snapshot, found ${snaps}"
+
+# The nonce canary: the program restores its own verification file and compares
+# it byte for byte on every run. This asserts the program said so.
+if grep -qi 'verified' /tmp/run1.log || \
+   jq -e 'select(.kind=="run") | .body.verified == true' "$JOURNAL" >/dev/null 2>&1; then
+  ok "the run reported itself verified"
+else
+  bad "the run did not report a successful verification"
+  note "the program restores a nonce file and compares bytes on every run"
+fi
+
+# ---------------------------------------------------------------------------
+# 6. Change things, and back up again.
+#
+# The second backup is the valuable one: a parent snapshot to find, unchanged
+# files to skip, and new bytes to add.
+# ---------------------------------------------------------------------------
+
+say "Changing the corpus"
+
+printf 'version two, longer than version one\n' > "$DATA/changes.txt"
+rm -f "$DATA/deleted.txt"
+head -c 1048576 /dev/urandom > "$DATA/big/blob-c.bin"
+
+# Unreadable by the account that runs the backup. A real machine has these --
+# a lock file, another user's directory -- and the program is meant to record
+# them and carry on rather than fail.
+printf 'cannot read me\n' > "$DATA/unreadable.bin"
+chown root:root "$DATA/unreadable.bin"
+chmod 000 "$DATA/unreadable.bin"
+
+chown -R "$USER_NAME" "$DATA/docs" "$DATA/big" "$DATA/changes.txt" 2>/dev/null
+
+ok "changed one file, deleted one, added one, made one unreadable"
+
+say "Second backup"
+
+as_user "$EXE" run >/tmp/run2.log 2>&1
+run2_status=$?
+
+snaps=$(restic_do snapshots --json 2>/dev/null | jq 'length' 2>/dev/null || echo 0)
+
+[ "$snaps" = 2 ] && ok "two snapshots in the repository" \
+                 || bad "expected 2 snapshots, found ${snaps}"
+
+# A second snapshot with a parent is the proof that restic found the first one
+# and did an incremental rather than starting again.
+parent=$(restic_do snapshots --json 2>/dev/null | jq -r '.[1].parent // ""' 2>/dev/null)
+
+[ -n "$parent" ] && ok "the second snapshot has a parent: incremental" \
+                 || bad "the second snapshot has no parent"
+
+# The unreadable file must be counted and must not fail the run.
+unreadable=$(jq -r 'select(.kind=="run") | .body.unreadable_files // empty' "$JOURNAL" 2>/dev/null | tail -1)
+outcome=$(jq -r 'select(.kind=="run") | .body.outcome // empty' "$JOURNAL" 2>/dev/null | tail -1)
+
+if [ "${unreadable:-0}" -ge 1 ] 2>/dev/null; then
+  ok "the unreadable file was counted (${unreadable})"
+else
+  bad "the unreadable file was not reported (run exited ${run2_status})"
+fi
+
+case "$outcome" in
+  incomplete) ok "outcome '${outcome}': named files missing, and the rest is safe" ;;
+  success)    bad "outcome 'success' despite a file that could not be read" ;;
+  *)          bad "outcome '${outcome}'" ;;
+esac
+
+# ---------------------------------------------------------------------------
+# 7. Restore, and compare bytes.
+#
+# The assertion nothing in this repository's own tests has ever made. The
+# program does it nightly for its own nonce; this does it for a real file the
+# program does not know is special.
+# ---------------------------------------------------------------------------
+
+say "Restore"
+
+RESTORED=/tmp/restored
+rm -rf "$RESTORED"
+mkdir -p "$RESTORED"
+chown "$USER_NAME" "$RESTORED"
+
+if restic_do restore latest --target "$RESTORED" --include "$DATA/canary.bin" >/tmp/restore.log 2>&1; then
+  ok "restore completed"
+else
+  bad "restore failed"
+  tail -5 /tmp/restore.log
+fi
+
+if cmp -s "$DATA/canary.bin" "${RESTORED}${DATA}/canary.bin"; then
+  ok "the restored file is byte-for-byte identical to the original"
+else
+  bad "THE RESTORED FILE DIFFERS FROM THE ORIGINAL"
+  note "a backup that cannot be restored exactly is not a backup"
+fi
+
+# And the file that changed must come back as version two, not version one.
+restic_do restore latest --target "$RESTORED" --include "$DATA/changes.txt" >/dev/null 2>&1
+
+if grep -q 'version two' "${RESTORED}${DATA}/changes.txt" 2>/dev/null; then
+  ok "the changed file restored at its latest version"
+else
+  bad "the changed file did not restore at its latest version"
+fi
+
+# ---------------------------------------------------------------------------
+# 8. The commands the binary never calls.
+#
+# restic.Check exists in foundation/restic and nothing in the program invokes
+# it, so no machine in the fleet has ever verified its repository's structure.
+# It is cheap on a repository this size and it is the only thing that catches a
+# pack file that is present, correctly named, and wrong.
+# ---------------------------------------------------------------------------
+
+say "Repository integrity"
+
+if restic_do check >/tmp/check.log 2>&1; then
+  ok "restic check passes"
+else
+  bad "restic check FAILED — the repository is not sound"
+  tail -10 /tmp/check.log
+fi
+
+# stats, which the program calls weekly through Measure to drive the rotation
+# suggestion on the status page.
+if size=$(restic_do stats --json --mode raw-data 2>/dev/null | jq -r '.total_size'); then
+  ok "stats reports ${size} bytes of raw data"
+else
+  bad "stats failed"
+fi
+
+# unlock, which the program calls before every backup.
+restic_do unlock >/dev/null 2>&1 && ok "unlock works" || bad "unlock failed"
+
+# cat config, which is how the program asks whether a repository exists.
+restic_do cat config >/dev/null 2>&1 && ok "cat config works (Exists)" || bad "cat config failed"
+
+# ---------------------------------------------------------------------------
+# 9. What the machine told the server.
+#
+# A machine that backs up perfectly and reports nothing has gone silent on the
+# dashboard, which is the failure this whole program exists to make visible.
+# ---------------------------------------------------------------------------
+
+say "What was reported"
+
+started=$(grep -c '"phase":"started"' "$JOURNAL" 2>/dev/null || echo 0)
+finished=$(grep -c '"phase":"finished"' "$JOURNAL" 2>/dev/null || echo 0)
+creds=$(grep -c '"kind":"credentials"' "$JOURNAL" 2>/dev/null || echo 0)
+
+[ "$started" -ge 2 ] && ok "${started} run-started events" || bad "only ${started} started events"
+[ "$finished" -ge 2 ] && ok "${finished} run-finished events" || bad "only ${finished} finished events"
+
+# Nothing is cached: credentialbus fetches all three secrets at the start of
+# every run and wipes them at the end. Two runs means at least two fetches, and
+# a client that had quietly started caching would show one.
+if [ "$creds" -ge 2 ]; then
+  ok "credentials fetched ${creds} times: nothing is cached between runs"
+else
+  bad "credentials fetched ${creds} times; two runs should fetch twice"
+fi
+
+say "Doctor"
+as_user "$EXE" doctor 2>&1 | sed 's/^/        /'
+
+exit "$fail"

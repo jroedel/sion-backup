@@ -100,7 +100,7 @@ the deployment story, and the Windows one is entangled with the dedicated
 system account in `deploy/systemd/sion-backup.service`'s comment and the
 machine-scope paths that needs. Do not start here.
 
-## Real backups in the gate — CREDENTIALS VERIFIED, NOT YET BUILT
+## Real backups in the gate — BUILT (scripts/backup-e2e)
 
 The gate proves a machine comes back after an upgrade. It does not prove the
 machine still backs up, which is the thing the program is for. Nothing in any
@@ -193,6 +193,43 @@ Not "the backup exited 0". In order of what would actually catch something:
 4. Snapshot count is 2 and the second has a parent.
 5. An unreadable file in the target lands in `UnreadableFiles`, and the run is
    recorded degraded rather than failed.
+
+### What it found on its first real run
+
+Two bugs, both in the same place, and neither reachable without a real backup.
+
+**Per-file errors were read from the wrong stream.** restic writes progress
+and the summary to stdout and per-file failures to STDERR, as JSON, with the
+same envelope. `parseBackup` read stdout only -- so every incomplete backup in
+the fleet reported "0 files could not be read" while its outcome said files
+were missing, and `Run.UnreadableFiles` was always empty. That list is
+described in its own comment as "the list somebody actually needs: which files
+are not in my backup", and it could never have contained anything.
+`fleetbus.Event.UnreadableFiles` was therefore always 0 on the dashboard too.
+
+**The summary line blanked the error list.** Decoding it unmarshalled over the
+accumulated summary in place, and the code that compensated appended a
+synthetic "and N more" entry -- replacing real filenames with a count, and
+costing a slot in a capped list to do it. Now decoded into a fresh value and
+copied field by field, and `Summary.ErrorCount` carries the true total
+separately from the capped list, because "4000 files could not be read, here
+are the first hundred" and "100 files could not be read" are different
+sentences and only one gets somebody to look.
+
+Both are covered by tests written from restic 0.19.1's actual output.
+
+### Still worth doing
+
+`restic check` is never called by any command. `foundation/restic` defines it
+and nothing invokes it, so no machine in the fleet has ever verified its
+repository's structure -- and it is the only thing that catches a pack file
+that is present, correctly named and wrong. The harness calls it; the program
+does not. It is expensive over the network on a large repository, which is
+presumably why, but "never, anywhere, on any machine" is a different decision
+from "not nightly" and should be made deliberately.
+
+`restic.Init` is likewise uncalled, and that one is correct: Eumaeus
+provisions the repository. The harness stands in for it.
 
 ### Open questions
 

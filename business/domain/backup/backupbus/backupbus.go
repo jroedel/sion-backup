@@ -382,7 +382,12 @@ func (b *Runner) execute(ctx context.Context, run *Run, req Request, now func() 
 			// the repository is readable is useful even when the snapshot is
 			// short of a locked Outlook file.
 			run.Outcome = OutcomeIncomplete
-			run.Message = fmt.Sprintf("%d files could not be read", len(summary.Errors))
+
+			// summary.ErrorCount, not len(summary.Errors): the list is capped
+			// and the count is not, and "100 files could not be read" about a
+			// machine where four thousand could not is the sort of number
+			// somebody acts on and should not have.
+			run.Message = fmt.Sprintf("%d files could not be read", summary.ErrorCount)
 
 		case errors.As(backupErr, &rerr) && rerr.Retryable():
 			// A stale lock from a laptop suspended mid-backup is the most

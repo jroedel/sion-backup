@@ -247,12 +247,94 @@ func TestParseBackupCapsTheErrorList(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if len(summary.Errors) != maxErrorsKept+1 {
-		t.Fatalf("kept %d errors, want %d plus one overflow note", len(summary.Errors), maxErrorsKept)
+	if len(summary.Errors) != maxErrorsKept {
+		t.Fatalf("kept %d errors, want %d", len(summary.Errors), maxErrorsKept)
 	}
 
-	if last := summary.Errors[len(summary.Errors)-1].Error; !strings.Contains(last, "50 more") {
-		t.Errorf("the overflow note does not say how many were dropped: %q", last)
+	// The count is not capped, and that is the point of it being separate:
+	// "4000 files could not be read, here are the first hundred" and "100
+	// files could not be read" are different sentences, and only one of them
+	// gets somebody to look.
+	if summary.ErrorCount != maxErrorsKept+50 {
+		t.Errorf("ErrorCount = %d, want %d", summary.ErrorCount, maxErrorsKept+50)
+	}
+
+	// The paths are real paths, all the way to the cap. The list used to end
+	// with a synthetic "and 50 more" entry that had no item, which cost a slot
+	// and told a reader nothing the count does not.
+	for i, e := range summary.Errors {
+		if e.Item == "" {
+			t.Fatalf("error %d has no path: %+v", i, e)
+		}
+	}
+}
+
+// TestErrorsSurviveTheSummaryLine. restic's summary is the last message on
+// stdout, and decoding it used to overwrite the errors collected before it —
+// so a backup with holes reported an empty list and the code that compensated
+// replaced real filenames with a count.
+func TestErrorsSurviveTheSummaryLine(t *testing.T) {
+	stream := `{"message_type":"error","item":"/a","error":{"message":"denied"}}` + "\n" +
+		`{"message_type":"summary","snapshot_id":"abc","total_files_processed":9}`
+
+	summary, err := parseBackup(strings.NewReader(stream), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if summary.SnapshotID != "abc" || summary.TotalFilesProcessed != 9 {
+		t.Errorf("the summary was not read: %+v", summary)
+	}
+
+	if len(summary.Errors) != 1 || summary.Errors[0].Item != "/a" {
+		t.Errorf("the error list did not survive the summary: %+v", summary.Errors)
+	}
+}
+
+// TestErrorsAreReadFromStderr is the bug a real backup found.
+//
+// restic writes per-file failures to STDERR as JSON, and everything else to
+// stdout. Parsing only stdout meant every incomplete backup in the fleet
+// reported "0 files could not be read" — and the list of which files are
+// missing, which is the one thing somebody needs, was always empty.
+func TestErrorsAreReadFromStderr(t *testing.T) {
+	// Exactly what restic 0.19.1 puts on each stream for one unreadable file.
+	stdout := `{"message_type":"summary","snapshot_id":"abc","total_files_processed":1}`
+	stderr := `{"message_type":"error","error":{"message":"open /d/nope.txt: permission denied"},` +
+		`"during":"archival","item":"/d/nope.txt"}` + "\n" +
+		`{"message_type":"exit_error","code":3,"message":"Warning: at least one source file could not be read"}`
+
+	summary, err := parseBackup(strings.NewReader(stdout), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if len(summary.Errors) != 0 {
+		t.Fatal("stdout alone should carry no per-file errors")
+	}
+
+	errs, err := parseBackup(strings.NewReader(stderr), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	summary.mergeErrors(errs)
+
+	if summary.ErrorCount != 1 {
+		t.Fatalf("ErrorCount = %d after merging stderr, want 1", summary.ErrorCount)
+	}
+
+	if len(summary.Errors) != 1 || summary.Errors[0].Item != "/d/nope.txt" {
+		t.Fatalf("the unreadable path was not recovered: %+v", summary.Errors)
+	}
+
+	if !strings.Contains(summary.Errors[0].Error, "permission denied") {
+		t.Errorf("the reason was lost: %q", summary.Errors[0].Error)
+	}
+
+	// The snapshot from stdout must not be lost by the merge.
+	if summary.SnapshotID != "abc" {
+		t.Errorf("merging stderr lost the snapshot id: %q", summary.SnapshotID)
 	}
 }
 

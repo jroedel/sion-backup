@@ -171,6 +171,10 @@ deploy-ready: ## Check the repo's secrets, variables and credentials before tagg
 deploy-propagate: ## Push this machine's credentials to the repo's secrets and variables
 	scripts/deploy-ready --propagate
 
+.PHONY: backup-e2e
+backup-e2e: ## Real backups to a real bucket, several machines at once (needs docker + Wasabi)
+	scripts/backup-e2e/run
+
 .PHONY: selfupdate-e2e
 selfupdate-e2e: ## Every way a release can be wrong, in containers (needs docker)
 	scripts/selfupdate-e2e/run
