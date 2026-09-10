@@ -280,6 +280,16 @@ reap() {
   local now
   now=$(date -u +%s)
 
+  # Asked once, and checked, before anything is concluded from the answer.
+  #
+  # This used to read straight into the loop, so a 401 produced an empty list
+  # and "reaped 0 instance(s)" — a clean bill of health from a run that never
+  # managed to look. That is the one failure a leak-guard must never have.
+  local listing
+  if ! listing=$(api GET "/instances?tag=${TAG}&per_page=500" 2>/dev/null); then
+    die "could not list instances, so cannot say whether any leaked. Check the API key."
+  fi
+
   local found=0
 
   while read -r id created label; do
@@ -298,19 +308,22 @@ reap() {
     api DELETE "/instances/${id}" >/dev/null || say "could not destroy ${id}"
     found=$((found + 1))
   done < <(
-    api GET "/instances?tag=${TAG}&per_page=500" |
+    printf '%s' "$listing" |
       jq -r '.instances[]? | "\(.id) \(.date_created) \(.label)"'
   )
 
   # The keys outlive the boxes when a run dies between uploading one and
   # creating the instance, and an account full of them is its own mess.
+  local keys
+  keys=$(api GET "/ssh-keys?per_page=500" 2>/dev/null || true)
+
   while read -r id name; do
     [ -n "$id" ] || continue
 
     say "reaping key ${name}"
     api DELETE "/ssh-keys/${id}" >/dev/null || true
   done < <(
-    api GET "/ssh-keys?per_page=500" |
+    printf '%s' "$keys" |
       jq -r --arg tag "$TAG" '.ssh_keys[]? | select(.name | startswith($tag)) | "\(.id) \(.name)"'
   )
 
@@ -321,8 +334,50 @@ usage() {
   sed -n '2,40p' "$0" | sed 's/^#\{0,1\} \{0,1\}//'
 }
 
+# check reports whether this key can actually be used, and says why not.
+#
+# Exists so that a caller can DECIDE rather than fail. A release must never go
+# out ungated, but a credential problem is not evidence that the release is
+# bad — so the workflow asks this and falls back to a weaker machine rather
+# than refusing to ship.
+check() {
+  local body code
+
+  body=$(curl -s -o /tmp/vultr-check.$$ -w '%{http_code}' "${API}/account" \
+    -H "Authorization: Bearer ${VULTR_API_KEY}" 2>/dev/null) || body=000
+
+  code="$body"
+  body=$(cat /tmp/vultr-check.$$ 2>/dev/null)
+  rm -f /tmp/vultr-check.$$
+
+  if [ "$code" = 200 ]; then
+    say "the API key works"
+
+    return 0
+  fi
+
+  # The message is the useful part. "Unauthorized IP address" means the key is
+  # fine and its access control list is not — which cannot be fixed for a
+  # GitHub-hosted runner, whose address changes every run and comes from ranges
+  # far too large to list.
+  say "the API key was rejected (HTTP ${code}): ${body}"
+
+  case "$body" in
+    *"Unauthorized IP address"*)
+      say "the key is valid; its IP access control list does not include this machine."
+      say "A hosted CI runner cannot be allowlisted: its address changes every run."
+      say "Either clear the allowlist on a key used only for CI -- and keep that key"
+      say "in a separate Vultr account with a small balance -- or let CI gate in a"
+      say "container and use Vultr from an allowlisted machine by hand."
+      ;;
+  esac
+
+  return 1
+}
+
 case "${1:-}" in
   up)    up ;;
+  check) check ;;
   down)  down ;;
   ip)    cat "$STATE/ip" ;;
   ssh)   shift; [ "${1:-}" = -- ] && shift; ssh_to "$@" ;;

@@ -109,12 +109,65 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create "$GITHUB_REF_NAME" \
-            --draft \
-            --title "$GITHUB_REF_NAME" \
-            --generate-notes \
-            --notes-file "$RUNNER_TEMP/notes.md" \
-            dist/sion-backup-* dist/SHA256SUMS dist/restic.pin
+          # Idempotent, because re-running this job is a normal event: the gate
+          # below can fail for reasons that have nothing to do with the release
+          # -- an expired API key, a cloud provider having a bad afternoon --
+          # and the fix for those is to re-run, not to re-tag. A plain
+          # `gh release create` fails on the second attempt and takes the whole
+          # job with it before the gate ever gets another chance.
+          #
+          # A DRAFT CANNOT BE LOOKED UP BY TAG. GitHub does not attach the tag
+          # to a release until it is published, so a draft for v0.3.0 lives at
+          # /releases/tag/untagged-<hash> and `gh release view v0.3.0` reports
+          # that it does not exist. Found by matching tag_name across the
+          # listing instead, which is the only thing that works.
+          #
+          # Try-then-recover rather than check-then-create, so that whatever
+          # the listing does or does not show, the outcome is the same: exactly
+          # one draft carrying this tag name and these assets.
+          assets="dist/sion-backup-* dist/SHA256SUMS dist/restic.pin"
+
+          # shellcheck disable=SC2086  # a glob list, deliberately split
+          if gh release create "$GITHUB_REF_NAME" \
+               --draft \
+               --title "$GITHUB_REF_NAME" \
+               --generate-notes \
+               --notes-file "$RUNNER_TEMP/notes.md" \
+               $assets
+          then
+            exit 0
+          fi
+
+          echo "::notice::could not create the release; looking for an existing one."
+
+          existing=$(gh api "repos/$GITHUB_REPOSITORY/releases?per_page=100" \
+            --jq ".[] | select(.tag_name == \"$GITHUB_REF_NAME\") | \"\(.id) \(.draft)\"" | head -1)
+
+          if [ -z "$existing" ]; then
+            echo "::error::$GITHUB_REF_NAME could not be created and does not exist."
+
+            exit 1
+          fi
+
+          id=${existing%% *}
+          draft=${existing##* }
+
+          if [ "$draft" = false ]; then
+            echo "::notice::$GITHUB_REF_NAME is already published; nothing to do."
+
+            exit 0
+          fi
+
+          echo "::notice::refreshing the assets on the existing draft (id $id)."
+
+          # By id, because by tag would not find it.
+          # shellcheck disable=SC2086
+          gh release upload "$(gh api "repos/$GITHUB_REPOSITORY/releases/$id" --jq .tag_name)" \
+            $assets --clobber || {
+              echo "::error::could not refresh the draft's assets."
+
+              exit 1
+            }
 
       # Every way a release can be broken, against the binary that is about to
       # ship: a wrong hash, a truncated download, a rate-limited API, a build
@@ -136,12 +189,29 @@ jobs:
         env:
           VULTR_API_KEY: ${{ secrets.VULTR_API_KEY }}
         run: |
-          if [ -n "${VULTR_API_KEY:-}" ]; then
+          # The gate is never skipped. The BACKEND degrades.
+          #
+          # A real instance is better evidence than a privileged container, but
+          # an unusable API key is not evidence that the release is bad — and a
+          # workflow that refuses to ship because of a billing lapse or a
+          # changed IP allowlist has turned a safety measure into an outage.
+          # So: ask whether Vultr is usable, say loudly when it is not, and
+          # gate anyway on what is available.
+          where="--docker"
+
+          if [ -z "${VULTR_API_KEY:-}" ]; then
+            echo "::warning::VULTR_API_KEY is not set; gating in a container instead."
+          elif scripts/vultr-testbed check; then
             where=""
           else
-            echo "::warning::VULTR_API_KEY is not set; gating in a container."
-            echo "::warning::A container is weaker evidence: it runs privileged."
-            where="--docker"
+            echo "::warning::Vultr is not usable from this runner; gating in a container."
+            echo "::warning::Most likely the key's IP allowlist, which cannot include a"
+            echo "::warning::hosted runner. See scripts/vultr-testbed check for the detail."
+          fi
+
+          if [ "$where" = "--docker" ]; then
+            echo "::warning::A container runs privileged, so it proves less about a"
+            echo "::warning::locked-down laptop. The upgrade itself is still real."
           fi
 
           scripts/selfupdate-gate $where \
@@ -157,11 +227,39 @@ jobs:
           VULTR_API_KEY: ${{ secrets.VULTR_API_KEY }}
         run: |
           [ -n "${VULTR_API_KEY:-}" ] || exit 0
+
+          # If the key cannot even be used to look, say so rather than exiting
+          # green: "nothing leaked" and "could not check" must not look the
+          # same in a log somebody reads six months from now.
+          if ! scripts/vultr-testbed check >/dev/null 2>&1; then
+            echo "::warning::Could not reach Vultr to check for leaked instances."
+            echo "::warning::If this run bought one, it is still running. Check the panel."
+            exit 0
+          fi
+
           scripts/vultr-testbed down || true
           scripts/vultr-testbed reap --older-than 0 || true
 
       # Only now can the fleet see it.
+      #
+      # By id for the same reason the draft step is: until this call succeeds
+      # there is no tag attached to the release, so `gh release edit <tag>`
+      # cannot find the thing it is meant to publish. Publishing is what
+      # creates the association.
       - name: Publish
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release edit "$GITHUB_REF_NAME" --draft=false
+        run: |
+          id=$(gh api "repos/$GITHUB_REPOSITORY/releases?per_page=100" \
+            --jq ".[] | select(.tag_name == \"$GITHUB_REF_NAME\") | .id" | head -1)
+
+          if [ -z "$id" ]; then
+            echo "::error::no release found for $GITHUB_REF_NAME to publish."
+
+            exit 1
+          fi
+
+          gh api --method PATCH "repos/$GITHUB_REPOSITORY/releases/$id" \
+            -F draft=false -f tag_name="$GITHUB_REF_NAME" >/dev/null
+
+          echo "::notice::published $GITHUB_REF_NAME; the fleet can now see it."
