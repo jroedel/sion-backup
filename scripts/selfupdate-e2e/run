@@ -71,9 +71,10 @@ CASES=(
   "elevated-task|none|next|updated|INSTALL_DIR=/opt/sion/bin INSTALL_OWNER=root RUN_AS=root"
   "readonly-mount|none|next|not-writable|READONLY=1 INSTALL_DIR=/opt/ro/bin RUN_AS=sion"
 
-  # -- Not a test. A demonstration, kept in the suite so that the gap has a
-  #    number attached to it instead of an argument.
-  "bricked|none|broken|bricked|MAX_STARTS=3"
+  # -- The one that used to be a demonstration of a gap. A build that passes
+  #    the hash and the smoke test and then will not start must end with the
+  #    machine back on the version that worked, and refusing that release.
+  "rolled-back|none|broken|rolled-back|MAX_STARTS=6"
 )
 
 case "${1:-}" in
@@ -104,9 +105,28 @@ wanted() {
 
 WORK="$(mktemp -d)"
 
-cleanup() {
-  docker rm -f "$NETWORK-server" >/dev/null 2>&1 || true
+# teardown removes everything this harness created, in an order that works.
+#
+# A network cannot be removed while a container is attached, and an interrupted
+# run leaves one attached — so the containers go first, by name, and then
+# anything else still holding the network. Without that last step one killed
+# run wedges every later one with "network already exists".
+teardown() {
+  docker rm -f "$NETWORK-server" "$NETWORK-case" >/dev/null 2>&1 || true
+
+  local held
+  held=$(docker ps -aq --filter "network=$NETWORK" 2>/dev/null || true)
+
+  if [ -n "$held" ]; then
+    # shellcheck disable=SC2086  # a list of ids, deliberately split
+    docker rm -f $held >/dev/null 2>&1 || true
+  fi
+
   docker network rm "$NETWORK" >/dev/null 2>&1 || true
+}
+
+cleanup() {
+  teardown
   # The read-only case's bind mount is populated as this user, so nothing here
   # needs root to remove.
   rm -rf "$WORK"
@@ -144,7 +164,7 @@ DOCKER
 
 docker build -q -t "$IMAGE" "$WORK/ctx" >/dev/null
 
-docker network rm "$NETWORK" >/dev/null 2>&1 || true
+teardown
 docker network create "$NETWORK" >/dev/null
 
 # ---------------------------------------------------------------------------
@@ -252,7 +272,7 @@ for spec in "${CASES[@]}"; do
     PREINSTALLED=1
   fi
 
-  if docker run --rm --network "$NETWORK" "${mounts[@]}" \
+  if docker run --rm --name "$NETWORK-case" --network "$NETWORK" "${mounts[@]}" \
     -e "CURRENT_VERSION=$CASE_CURRENT" \
     -e "NEXT_VERSION=$CASE_NEXT" \
     -e "EXPECT=$expect" \

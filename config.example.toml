@@ -193,6 +193,13 @@ one_file_system = true
 #
 # A build whose version is not a release tag -- a developer's working copy,
 # which reports "dev" -- is never replaced, whatever this says.
+#
+# A new version starts on probation. If it will not stay running, the previous
+# one is put back automatically and this machine will not install that version
+# again -- see "sion-backup doctor" for whether that has happened, and
+# "sion-backup update --forget" to try it anyway. Switching this off does not
+# switch that off: a machine that has already taken a bad version still comes
+# back.
 # enabled = true
 
 # Where releases come from. Only for testing against a fork.

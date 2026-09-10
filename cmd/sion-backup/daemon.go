@@ -5,6 +5,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"log/slog"
 	"net"
 	"net/http"
 	"os"
@@ -17,6 +18,7 @@ import (
 	"github.com/jroedel/sion-backup/business/domain/credential/credentialbus"
 	"github.com/jroedel/sion-backup/business/domain/fleet/fleetbus"
 	"github.com/jroedel/sion-backup/business/domain/plan/planbus"
+	"github.com/jroedel/sion-backup/foundation/selfupdate"
 	"github.com/jroedel/sion-backup/foundation/web"
 )
 
@@ -51,18 +53,34 @@ func daemonCmd(args []string) error {
 	ctx, cancel := signalContext()
 	defer cancel()
 
+	// BEFORE wire(), and that ordering is the entire mechanism.
+	//
+	// The failure this guards against is a new version for which wire() does
+	// not work: a schema migration that will not apply, a config field that no
+	// longer parses. Such a build passes the hash and the smoke test — which
+	// runs `version`, handled before wire() in main's dispatch — and then
+	// fails here, every thirty seconds, on a machine that is no longer running
+	// the code that could report it or replace it.
+	//
+	// So this decides what to do about the last update using nothing but the
+	// path to this binary and a file beside it.
+	startLog := slog.New(slog.NewTextHandler(os.Stderr, nil))
+
+	u, start, wentBack := superviseLastUpdate(ctx, startLog)
+	if wentBack {
+		// The previous version is on the disk now. Exiting is how it starts:
+		// the same path a successful update takes, for the same reason.
+		startLog.Warn("went back to the previous version; exiting so the service manager starts it",
+			"gave_up_on", start.Failed, "now", start.Version)
+
+		return errUpdated
+	}
+
 	d, err := wire(ctx, *verbose)
 	if err != nil {
 		return err
 	}
 	defer d.close()
-
-	// The binary the previous update replaced, if there was one: it can only
-	// be removed once it is no longer the running image, which on Windows
-	// means now rather than then.
-	if u := d.updater(); u != nil {
-		u.CleanupOld()
-	}
 
 	d.updated = make(chan struct{}, 1)
 
@@ -133,6 +151,23 @@ func daemonCmd(args []string) error {
 	}
 
 	errs := make(chan error, 1)
+
+	// A version on probation is believed once it has stayed up. Not once it has
+	// taken a backup: a laptop can legitimately go a week without one, and
+	// three reboots in that week must not be read as a crash loop. A daemon
+	// still running after the grace period has opened its database, read its
+	// config, resolved restic and served this page.
+	//
+	// Stopped on the way out, so a daemon that is shut down before the grace
+	// period ends leaves the probation in place for the next start to judge.
+	if start.Outcome == selfupdate.OnProbation && u != nil {
+		d.log.Info("this version is on probation",
+			"version", start.Version, "start", start.Starts,
+			"settles_in", selfupdate.Grace())
+
+		settle := time.AfterFunc(selfupdate.Grace(), u.Settle)
+		defer settle.Stop()
+	}
 
 	go supervise(d.log, "status page", func() {
 		if err := server.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {

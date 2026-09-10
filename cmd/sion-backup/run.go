@@ -67,6 +67,15 @@ func runCmd(args []string) error {
 		return err
 	}
 
+	// A backup that finished is the strongest evidence this version works that
+	// the program can obtain — better than the daemon's "it stayed up for ten
+	// minutes", because it means the database opened, the credentials were
+	// fetched and restic ran. So a foreground run settles any probation now
+	// rather than leaving it to a timer.
+	if u := supervisor(d.log); u != nil {
+		u.Settle()
+	}
+
 	// A foreground run checks for a newer version too, at the end, in
 	// deps.backup. Saying so is worth a line: somebody who just watched a
 	// backup should know the next one will be a different program.

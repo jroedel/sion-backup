@@ -13,27 +13,37 @@ Last reviewed: 2026-09-10.
 
 ## Self-update: the four findings
 
-From `docs/selfupdate-testing.md`, which has the reasoning. None are fixed.
-They are ordered by what a failure costs.
+From `docs/selfupdate-testing.md`, which has the reasoning. Ordered by what a
+failure costs, which is also the order to do them in. Finding 1 is done;
+2, 3 and 4 are open.
 
-### 1. No rollback — NOT STARTED
+### 1. No rollback — DONE
 
-`swap()` keeps the previous binary as `.old` and nothing ever restores it.
-`CleanupOld` deletes it at the next startup (`cmd/sion-backup/daemon.go:64`),
-which is seconds into the new version's life and hours before the failures that
-matter most — a restic incompatibility, a credential fetch that now 400s.
+`foundation/selfupdate/probation.go`. A new version starts on probation; the
+check runs at the top of the daemon command before `wire()`, because `wire()`
+failing on a new build is the failure being guarded against. Three starts
+without staying up and the previous binary is put back, the version is recorded
+as refused, and the process exits 75 so the service manager starts the restored
+one. `scripts/selfupdate-e2e/run rolled-back` asserts all of it.
 
-This is the one that turns a bad build into somebody driving to a building, and
-it is the highest-value item in this file.
+Three limits, documented in `docs/selfupdate-testing.md` and worth remembering
+before trusting it:
 
-Shape of the fix: the new binary records that it started. On start N with no
-completed backup since the swap, it puts `.old` back and reports why. The
-counter has to live somewhere that survives a crash-loop, so the database is
-the wrong home — a file beside the binary, or the diag store.
+- The first upgrade *into* a probation-capable release is unwatched, because
+  the probation file is written by the binary doing the swap. `v0.2.0 → v0.3.0`
+  is not protected; `v0.3.0 → v0.4.0` is. The gate prints which case a release
+  is in.
+- It recovers only from a build that fails *after* the check. Earlier failures
+  are the smoke test's job, and it does run the binary before installing it.
+- A build that starts and then fails at backup time settles probation first.
+  That failure is a failed run on the dashboard from a machine that is still
+  reachable, which is the acceptable outcome.
 
-Blocked on nothing. `scripts/selfupdate-e2e/run bricked` already reproduces the
-crash loop, so the fix has a test before it has an implementation: that case
-should end with the machine back on the old version instead of looping.
+Left undone deliberately: nothing restores a machine that reached `Stuck` — a
+version that failed probation with no working binary to go back to. It is
+reported and carried on with, because a machine on a bad version is still
+better than one with no binary at all, and the honest fix is a fresh install by
+a person.
 
 ### 2. No staged rollout and no kill switch — MITIGATED, NOT FIXED
 
@@ -53,22 +63,28 @@ own repository password and is therefore already trusted more than GitHub is.
 
 Blocked on the Eumaeus side of §5.2.
 
-### 3. The smoke test cannot catch the likeliest brick — NOT STARTED
+### 3. The smoke test cannot catch the likeliest brick — NOT STARTED, AND NOW WORTH LESS
 
 `version` returns from main's dispatch (`cmd/sion-backup/main.go:131`) before
 `wire()`, so it opens no database, reads no config and never looks for restic.
 A build with a broken migration answers it perfectly and dies on `daemon`.
 
 A `sion-backup selftest` that opens the database read-only, parses the config,
-and resolves restic would catch most of it, and `smokeTest` would call that
-instead. It cannot catch everything — that is what finding 1 is for — so it is
-worth less than the rollback and should not be done first.
+and resolves restic would catch most of it before anything is installed, and
+`smokeTest` would call that instead of `version`.
+
+Worth less now that finding 1 is done: the machine already recovers from
+exactly this build. What a selftest would buy is one less crash loop and one
+less rollback report — a nicer failure, not a different one. The exception is
+the case probation cannot cover, an upgrade from a release that predates it,
+where a selftest is the only guard. Worth doing before the fleet is large
+enough for that to matter; not urgent.
 
 ### 4. Self-update never happens on Windows or macOS — NOT STARTED
 
 `%ProgramFiles%` with a task running as the signed-in user, and
 `/usr/local/bin` with a user agent. Neither is writable by the account that
-runs the service, so `writable()` refuses. That refusal is correct.
+runs the service, so `Writable()` refuses. That refusal is correct.
 
 Two separate pieces of work, and they are worth doing in this order:
 
@@ -115,7 +131,7 @@ Used:
 | `user-local-bin` | Linux via `install.sh`; the only shape that updates today |
 | `program-files` | Windows: admin-owned directory, task as the user |
 | `elevated-task` | Windows with `-Elevated`: the same directory, writable |
-| `readonly-mount` | A read-only mount, which `writable()` names as its own cause |
+| `readonly-mount` | A read-only mount, which `Writable()` names as its own cause |
 
 Candidates, in rough order of how likely they are to be real:
 
