@@ -115,11 +115,25 @@ func Claim(ctx context.Context, client *eumaeusapi.Client, code string, m Machin
 
 	err := client.Do(ctx, http.MethodPost, claimPath, claimRequest{Code: code, Machine: m}, &got)
 
+	var refused *eumaeusapi.BadRequest
+
 	switch {
 	case errors.Is(err, eumaeusapi.ErrNotFound):
 		return Enrollment{}, ErrCodeUnknown
+
 	case errors.Is(err, eumaeusapi.ErrConflict):
 		return Enrollment{}, ErrCodeUsed
+
+	case errors.As(err, &refused):
+		// Passed up as it stands, with no prefix of ours in front of it.
+		//
+		// A refused claim is the one error in this program whose reader is
+		// standing at the machine rather than reading a log: they typed the
+		// hostname, or failed to, and the server has told them which input to
+		// look at. Eumaeus dropped its own package prefix from that sentence
+		// at our asking; wrapping it here would put a prefix straight back.
+		return Enrollment{}, refused
+
 	case err != nil:
 		return Enrollment{}, fmt.Errorf("eumaeuscreds: claiming the enrollment code: %w", err)
 	}

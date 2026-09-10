@@ -134,7 +134,7 @@ paths:
         '401':
           $ref: '#/components/responses/Unauthorised'
         '403':
-          $ref: '#/components/responses/Unauthorised'
+          $ref: '#/components/responses/Forbidden'
 
   /machines/me/credentials:
     get:
@@ -171,7 +171,7 @@ paths:
         '401':
           $ref: '#/components/responses/Unauthorised'
         '403':
-          $ref: '#/components/responses/Unauthorised'
+          $ref: '#/components/responses/Forbidden'
         '500':
           description: |
             Returned rather than a partial answer when the stored record has no
@@ -224,7 +224,7 @@ paths:
         '401':
           $ref: '#/components/responses/Unauthorised'
         '403':
-          $ref: '#/components/responses/Unauthorised'
+          $ref: '#/components/responses/Forbidden'
 
   /machines/me/rotation-request:
     post:
@@ -252,7 +252,10 @@ paths:
           description: Queued for an administrator.
         '403':
           description: |
-            `fresh_bucket_available` is false for this machine.
+            Fresh buckets are not on offer. The setting is fleet-wide rather
+            than per machine, so this is an ordinary answer about how the
+            fleet is configured and not a fault of this machine's — and it
+            must never be read as de-enrolment. See the `Forbidden` response.
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }
@@ -289,7 +292,7 @@ paths:
         '401':
           $ref: '#/components/responses/Unauthorised'
         '403':
-          $ref: '#/components/responses/Unauthorised'
+          $ref: '#/components/responses/Forbidden'
 
 components:
   securitySchemes:
@@ -301,8 +304,10 @@ components:
         read that machine's state and credentials, post that machine's run
         events, and record that machine's card was printed. Nothing else.
 
-        Revocation must be immediate; the client treats 401 and 403 as terminal
-        and reports the machine as de-enrolled rather than retrying.
+        Revocation must be immediate; the client treats 401 as terminal and
+        reports the machine as de-enrolled rather than retrying. It must
+        therefore be a 401 that a revoked or retired token receives, never a
+        403 — see the `Forbidden` response.
 
         Revocation is sufficient on its own: the machine caches no credentials,
         so a revoked token means the next backup cannot obtain a password. The
@@ -317,8 +322,24 @@ components:
           schema: { $ref: '#/components/schemas/Error' }
     Unauthorised:
       description: |
-        The token was refused — wrong, revoked or expired. Terminal for the
-        client, which stops trying.
+        The token was refused — unknown, malformed, revoked or expired.
+        Terminal for the client, which stops trying and reports the machine
+        as de-enrolled.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    Forbidden:
+      description: |
+        The token was accepted and the request was refused anyway.
+
+        **Not de-enrolment.** The client keeps this apart from 401 precisely
+        so that a fleet-wide setting — fresh buckets being switched off, say —
+        cannot tell an owner their machine has been cut off. What it means is
+        the endpoint's business, and each one says.
+
+        The exception is `GET /machines/me/credentials`, where the two
+        coincide: a token that may not read its own credentials cannot back
+        up, whichever status says so.
       content:
         application/json:
           schema: { $ref: '#/components/schemas/Error' }

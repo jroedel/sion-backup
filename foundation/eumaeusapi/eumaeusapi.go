@@ -32,17 +32,41 @@ import (
 // way.
 var ErrNotFound = errors.New("eumaeusapi: not found")
 
-// ErrUnauthorised is a 401 or 403: the token is wrong, revoked or expired.
-// Distinguished because it is the one failure retrying will never fix, and
-// because for this client it means something specific — the machine has been
-// de-enrolled and should say so rather than showing a network error forever.
+// ErrUnauthorised is a 401: the token is unknown, malformed, revoked or
+// expired. Distinguished because it is the one failure retrying will never
+// fix, and because for this client it means something specific — the machine
+// has been de-enrolled and should say so rather than showing a network error
+// forever.
+//
+// A 401 and nothing else. It used to be a 403 as well; see ErrForbidden.
 var ErrUnauthorised = errors.New("eumaeusapi: the token was refused")
+
+// ErrForbidden is a 403: the token was accepted, and what it asked for was
+// refused anyway.
+//
+// The two statuses look alike and mean opposite things to a machine. A 401
+// says this machine is finished and should stop. A 403 says the fleet is not
+// set up for what was just asked — Eumaeus answers one when fresh buckets are
+// not on offer, which is the ordinary state of a fleet where nobody has
+// turned them on. Folded together, as they were until now, the rotation
+// button would have told an owner their machine had been de-enrolled because
+// an administrator had never run `eumaeus backup settings -fresh-buckets=on`.
+//
+// So nothing may treat this as terminal for the machine's identity. Whether
+// it is terminal for the request is the endpoint's business and is left to
+// the domain that knows: eumaeuscreds does treat it as de-enrolment, because
+// a token that may not read its own credentials is finished whichever status
+// says so.
+var ErrForbidden = errors.New("eumaeusapi: the server refused this request")
 
 // ErrBadRequest is a 400: the server could not parse what was sent, and says
 // so about a request that will never become well-formed. Distinguished because
 // it is the other failure retrying cannot fix — but unlike ErrUnauthorised it
 // is this program's fault, and the caller's job is to stop resending and make
 // enough noise that somebody fixes the client.
+//
+// Every 400 arrives as a [BadRequest] wrapping this, so a caller that wants
+// the class asks errors.Is and one that wants the sentence asks errors.As.
 var ErrBadRequest = errors.New("eumaeusapi: the request was rejected as malformed")
 
 // ErrConflict is a 409: the request collided with existing state. The only
@@ -50,6 +74,94 @@ var ErrBadRequest = errors.New("eumaeusapi: the request was rejected as malforme
 // claimed, where re-issuing a token would turn a replayed code into a second
 // machine.
 var ErrConflict = errors.New("eumaeusapi: already claimed")
+
+// BadRequest is a 400 with the server's own explanation read out of it.
+//
+// The explanation is the point of the type. Eumaeus answers a refused claim
+// with one sentence written for a person and the name of the input that was
+// wrong:
+//
+//	{ "error": "a claim must say what the machine is called", "field": "hostname" }
+//
+// That sentence is read by whoever is standing at the machine at nine in the
+// evening. Until this type existed the client did keep it — as a JSON
+// fragment, at the end of a line that began "eumaeuscreds: claiming the
+// enrollment code: eumaeusapi: the request was rejected as malformed". Which
+// is to say the client put back, twice over, the package prefix Eumaeus had
+// just been asked to drop.
+type BadRequest struct {
+	Method string
+	Path   string
+
+	// Message is the server's sentence, fit to print as it stands. Empty when
+	// the body was not the shape the contract describes.
+	Message string
+
+	// Field names the input that was wrong. Optional, and often absent.
+	Field string
+
+	// Body is what actually arrived, kept only when no Message could be read
+	// out of it — a proxy's HTML error page, or a shape nobody agreed to.
+	Body string
+}
+
+// Error prefers the server's sentence, because the reader this status usually
+// concerns is the one who cannot look anything up.
+func (e *BadRequest) Error() string {
+	switch {
+	case e.Message != "" && e.Field != "":
+		return fmt.Sprintf("%s (%s)", e.Message, e.Field)
+
+	case e.Message != "":
+		return e.Message
+
+	default:
+		return fmt.Sprintf("%s: %s %s: %s", ErrBadRequest, e.Method, e.Path, e.Body)
+	}
+}
+
+// Unwrap keeps errors.Is(err, ErrBadRequest) true, which is all the callers
+// that only need to know the class ever ask.
+func (e *BadRequest) Unwrap() error { return ErrBadRequest }
+
+// maxDetail bounds how much server text this client will carry around inside
+// an error. A 400 body is one sentence; anything near this is a proxy's error
+// page, and the whole of one belongs neither in a log file nor on a screen.
+const maxDetail = 1 << 10
+
+// newBadRequest reads the contract's error shape out of a body, and keeps the
+// body itself when it is not that shape.
+func newBadRequest(method, path string, body []byte) *BadRequest {
+	e := BadRequest{Method: method, Path: path}
+
+	var decoded struct {
+		Error string `json:"error"`
+		Field string `json:"field"`
+	}
+
+	if err := json.Unmarshal(body, &decoded); err == nil && decoded.Error != "" {
+		e.Message = clip(decoded.Error)
+		e.Field = clip(decoded.Field)
+
+		return &e
+	}
+
+	e.Body = clip(string(body))
+
+	return &e
+}
+
+// clip trims and shortens server text, cutting on a rune boundary so that a
+// truncated sentence is still printable.
+func clip(s string) string {
+	s = strings.TrimSpace(s)
+
+	if len(s) <= maxDetail {
+		return s
+	}
+
+	return strings.ToValidUTF8(s[:maxDetail], "") + "…"
+}
 
 // APIPrefix is the base path every endpoint hangs off.
 //
@@ -210,15 +322,18 @@ func (c *Client) Do(ctx context.Context, method, path string, body, out any) err
 		return ErrNotFound
 
 	case resp.StatusCode == http.StatusBadRequest:
-		// The body is kept: it names the field that was wrong, and that
-		// sentence is the whole value of the status to whoever reads the log.
+		// The body is kept, and decoded: it carries one sentence meant for a
+		// person and the name of the field that was wrong, and that sentence
+		// is the whole value of the status to whoever reads it.
 		detail, _ := io.ReadAll(limited)
 
-		return fmt.Errorf("%w: %s %s: %s", ErrBadRequest,
-			method, path, strings.TrimSpace(string(detail)))
+		return newBadRequest(method, path, detail)
 
-	case resp.StatusCode == http.StatusUnauthorized, resp.StatusCode == http.StatusForbidden:
+	case resp.StatusCode == http.StatusUnauthorized:
 		return ErrUnauthorised
+
+	case resp.StatusCode == http.StatusForbidden:
+		return ErrForbidden
 
 	case resp.StatusCode == http.StatusConflict:
 		return ErrConflict

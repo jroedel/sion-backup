@@ -114,3 +114,112 @@ func TestABadRequestIsDistinguished(t *testing.T) {
 		t.Errorf("the explanation was lost: %v", err)
 	}
 }
+
+// TestAForbiddenIsNotAnUnauthorised is the regression this split was made
+// for. Both used to answer ErrUnauthorised, which this client treats as
+// terminal de-enrolment — so the first 403 the server ever sends for an
+// ordinary reason ("fresh buckets are not on offer for this fleet") would
+// have told an owner their machine had been cut off.
+func TestAForbiddenIsNotAnUnauthorised(t *testing.T) {
+	for _, tt := range []struct {
+		status int
+		want   error
+		wrong  error
+	}{
+		{http.StatusUnauthorized, eumaeusapi.ErrUnauthorised, eumaeusapi.ErrForbidden},
+		{http.StatusForbidden, eumaeusapi.ErrForbidden, eumaeusapi.ErrUnauthorised},
+	} {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(tt.status)
+		}))
+
+		client, err := eumaeusapi.New(eumaeusapi.Config{BaseURL: srv.URL, Token: "mt_1"})
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		err = client.Do(context.Background(), http.MethodPost,
+			"/machines/me/rotation-request", struct{}{}, nil)
+
+		if !errors.Is(err, tt.want) {
+			t.Errorf("%d: got %v, want %v", tt.status, err, tt.want)
+		}
+
+		if errors.Is(err, tt.wrong) {
+			t.Errorf("%d: %v also matched %v; the two must stay apart", tt.status, err, tt.wrong)
+		}
+
+		srv.Close()
+	}
+}
+
+// TestABadRequestCarriesTheServersSentence covers the other half of the
+// bargain in §3.1 of eumaeus's reply: the server took its package name off
+// the front of that sentence, and it is worth nothing if this client hands
+// the whole JSON body to somebody standing at a machine.
+func TestABadRequestCarriesTheServersSentence(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+		w.Write([]byte(`{"error":"a claim must say what the machine is called","field":"hostname"}`))
+	}))
+	defer srv.Close()
+
+	client, err := eumaeusapi.New(eumaeusapi.Config{BaseURL: srv.URL})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	err = client.Do(context.Background(), http.MethodPost, "/enrollments/claim", struct{}{}, nil)
+
+	var bad *eumaeusapi.BadRequest
+	if !errors.As(err, &bad) {
+		t.Fatalf("got %v, want a *BadRequest", err)
+	}
+
+	if bad.Message != "a claim must say what the machine is called" {
+		t.Errorf("message: got %q", bad.Message)
+	}
+
+	if bad.Field != "hostname" {
+		t.Errorf("field: got %q", bad.Field)
+	}
+
+	// What the installer reads. Not a JSON fragment, and not behind a prefix
+	// naming a package of ours or of theirs.
+	if got, want := err.Error(),
+		"a claim must say what the machine is called (hostname)"; got != want {
+		t.Errorf("got %q, want %q", got, want)
+	}
+
+	if !errors.Is(err, eumaeusapi.ErrBadRequest) {
+		t.Error("the class was lost; callers that only test errors.Is would stop matching")
+	}
+}
+
+// TestABadRequestThatIsNotTheAgreedShapeKeepsWhatArrived. A proxy in front of
+// Eumaeus answers HTML, and a client that decoded only the documented shape
+// would report an empty error and leave whoever is debugging it with nothing.
+func TestABadRequestThatIsNotTheAgreedShapeKeepsWhatArrived(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+		w.Write([]byte("<html><body>400 Bad Request</body></html>\n"))
+	}))
+	defer srv.Close()
+
+	client, err := eumaeusapi.New(eumaeusapi.Config{BaseURL: srv.URL})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	err = client.Do(context.Background(), http.MethodPost, "/runs", struct{}{}, nil)
+
+	if !errors.Is(err, eumaeusapi.ErrBadRequest) {
+		t.Fatalf("got %v, want ErrBadRequest", err)
+	}
+
+	for _, want := range []string{"400 Bad Request", "/runs"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("%q is missing from %v", want, err)
+		}
+	}
+}
