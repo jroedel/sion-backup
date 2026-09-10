@@ -100,6 +100,110 @@ the deployment story, and the Windows one is entangled with the dedicated
 system account in `deploy/systemd/sion-backup.service`'s comment and the
 machine-scope paths that needs. Do not start here.
 
+## Real backups in the gate — CREDENTIALS VERIFIED, NOT YET BUILT
+
+The gate proves a machine comes back after an upgrade. It does not prove the
+machine still backs up, which is the thing the program is for. Nothing in any
+test has ever written to a bucket, and nothing has ever restored a file.
+
+### What makes this easy
+
+`foundation/eumaeusapi/eumaeusapi.go:239` refuses plain HTTP except on
+loopback. So the gate needs no TLS trick for this: a fake Eumaeus on
+`http://127.0.0.1:8088` and `[eumaeus] url` in the machine's config.toml is
+enough. Four endpoints under `/api/backup/v1`:
+
+    POST /enrollments/claim        -> a machine token and the credentials
+    GET  /machines/me/credentials  -> the same credentials
+    POST /runs                     -> 202
+    POST /diagnostics              -> 202
+
+The repository URL comes from the credentials response, not from config, so
+the fake is where the bucket is injected. Targets and excludes come from
+config.toml (`cmd/sion-backup/daemon.go:242`). The fleet's real Eumaeus is
+never involved.
+
+### What Wasabi needs to look like
+
+Confirmed working: `sion-backup-gate` in `us-central-1`, list, put, get and
+delete all verified by a signed round trip from `scripts/deploy-ready`.
+
+One bucket, dedicated, not production and preferably not the production
+sub-account. Object lock OFF -- a default retention makes test repositories
+uncleanable. Versioning off. A sub-user with its own key pair and a policy
+scoped to that bucket:
+
+    Bucket:  s3:ListBucket, s3:GetBucketLocation, s3:ListBucketMultipartUploads
+    Objects: s3:GetObject, s3:PutObject, s3:DeleteObject,
+             s3:AbortMultipartUpload, s3:ListMultipartUploadParts
+
+**This key may delete, and the fleet's must never.** That is the whole point of
+`TestTheRunnerCannotDeleteBackupData` and of removing `restic.Forget`. Test
+repositories have to be cleanable, which is a different job with a different
+key in a different bucket. Nobody should copy this policy to production.
+
+Endpoint is `s3.<region>.wasabisys.com`, except us-east-1 which is the bare
+`s3.wasabisys.com`. Repository URL:
+
+    s3:https://s3.<region>.wasabisys.com/<bucket>/gate/<date>/<run-id>/<shape>
+
+### Secrets and variables
+
+Split deliberately, and `scripts/deploy-ready` depends on the split:
+
+| | |
+| --- | --- |
+| Secrets | `WASABI_ACCESS_KEY_ID`, `WASABI_SECRET_ACCESS_KEY` |
+| Variables | `WASABI_BUCKET`, `WASABI_REGION` |
+
+Both live in `~/.config/sion-backup/sion-backup-deploy.env` on a machine that
+runs the gate by hand, and reach the repository through `make
+deploy-propagate`. Until a workflow references the two secrets,
+`scripts/deploy-ready` warns that they are set and unused -- which is the
+signal that this work is not finished, and clears itself when it is.
+
+A secret cannot be read back, so it can only be tested. A variable can, so the
+local value and the repository value are really compared -- and a gate writing
+to a different bucket from the one somebody is testing against is exactly the
+sort of thing that is never noticed.
+
+### Cost, checked rather than worried about
+
+Wasabi bills a minimum storage duration: deleting an object does not stop it
+being billed for the minimum period (90 days on the long-standing pay-go plan;
+some plans 30). Verify against the actual plan.
+
+It does not bite at this scale. The standard plan bills a 1 TB minimum per
+month regardless, so test data is free at the margin until it crosses that --
+roughly twenty thousand runs at 50 MB each. Create a repository per run as
+planned; a reaper for prefixes older than N days keeps the bucket legible
+rather than cheap.
+
+### What to assert
+
+Not "the backup exited 0". In order of what would actually catch something:
+
+1. **Restore a file and compare bytes.** A backup that cannot be restored is
+   not a backup, and nothing in this repository has ever restored anything.
+2. `restic check` on the repository -- catches a corrupt pack that a zero exit
+   status will not.
+3. Two backups with a mutation between them: a changed file, a new file, a
+   deleted one. The second is the valuable one, because it is the only one
+   that exercises the parent snapshot, dedup and the unchanged-file path.
+4. Snapshot count is 2 and the second has a parent.
+5. An unreadable file in the target lands in `UnreadableFiles`, and the run is
+   recorded degraded rather than failed.
+
+### Open questions
+
+- Same Wasabi account as production? If so the policy scoping is load-bearing
+  and deserves the same treatment the reap tag filter got.
+- Real boxes only, or the container matrix too? Keeping the 19 container cases
+  hermetic is worth something; this belongs in the real-box gate.
+- Blocking or degrading? After the v0.3.0 Vultr failure: degrade when the
+  bucket is unreachable, because that is not evidence about the release --
+  but block when a restore fails, because that is.
+
 ## Gate coverage
 
 ### Windows and macOS gate scripts — NOT STARTED
@@ -161,10 +265,27 @@ real bucket. The two differ only in the throttle and in who exits, but that
 
 ### Set the Vultr key — READY, NEEDS A PERSON
 
-    gh secret set VULTR_API_KEY          # the release gate
-    mkdir -p ~/.config/sion-backup       # running the gate by hand
+One file holds every credential the release path needs, and one command
+checks and pushes them:
+
+    mkdir -p ~/.config/sion-backup && chmod 700 ~/.config/sion-backup
     umask 077
-    printf 'VULTR_API_KEY=%s\n' "..." > ~/.config/sion-backup/vultr.env
+    cat > ~/.config/sion-backup/sion-backup-deploy.env <<'ENV'
+    VULTR_API_KEY=...
+    WASABI_ACCESS_KEY_ID=...
+    WASABI_SECRET_ACCESS_KEY=...
+    WASABI_BUCKET=sion-backup-gate
+    WASABI_REGION=us-central-1
+    ENV
+
+    make deploy-ready        # check it, and test every credential live
+    make deploy-propagate    # push secrets and variables to the repository
+
+The directory mode is not fussiness. A 0600 file inside a group-writable
+directory cannot be read by the group, but it can be renamed and replaced --
+which substitutes a credential rather than stealing one, and is the worse of
+the two, because the next release would be gated with somebody else's key and
+nothing would look wrong.
 
 Without the secret the gate still runs, in a privileged container on the
 runner, and says so with a warning. That is weaker evidence — a container that

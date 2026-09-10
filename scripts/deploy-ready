@@ -1,0 +1,478 @@
+#!/usr/bin/env bash
+#
+# deploy-ready — can this repository actually cut a release?
+#
+# Run it before tagging. Everything the release path needs from outside the
+# repository is checked here, in the order that a failure would surprise you:
+# whether the workflows reference something nobody configured, whether the
+# configured thing matches what is on this machine, and whether the credentials
+# work at all.
+#
+#     scripts/deploy-ready              # check
+#     scripts/deploy-ready --propagate  # and set any secret this machine has
+#
+# WHY THIS EXISTS
+#
+# v0.3.0 was tagged, built, gated and blocked -- because a Vultr key had an IP
+# allowlist that could never include a hosted runner. Nothing was wrong with
+# the release. The whole failure was configuration that had never been checked
+# from the outside, and it was discovered by pushing a tag, which is the most
+# expensive place to discover it.
+#
+# WHAT "MATCHES" CAN AND CANNOT MEAN
+#
+# A GitHub secret cannot be read back, so nothing here can compare one to a
+# local file byte for byte. Three weaker checks together get close:
+#
+#   1. The secret EXISTS, and the workflows that reference it are named.
+#   2. The credential WORKS -- tested live, from this machine, against the
+#      real service, because "it is set" and "it is valid" are different
+#      claims and only the second one matters.
+#   3. The secret is NOT OLDER than the local file that holds the same
+#      credential. A local copy newer than the secret means somebody rotated
+#      a key here and did not push it, which is exactly what happened once.
+#
+# Repository VARIABLES are different: they are readable, so those really are
+# compared, exactly. That is why the bucket and the region are variables and
+# not secrets -- they are configuration, they are not sensitive, and being able
+# to check them is worth more than hiding a bucket name nobody can reach
+# without a key anyway.
+#
+# WHAT IS REQUIRED IS DERIVED, NOT LISTED
+#
+# A credential is required when a workflow references it. So this file does not
+# carry a list to keep in step with .github/workflows -- it reads them. Adding
+# `secrets.WASABI_ACCESS_KEY_ID` to the gate makes it required here on the same
+# commit, with no second edit to forget.
+
+set -uo pipefail
+
+cd "$(dirname "$0")/.."
+
+PROPAGATE=0
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --propagate) PROPAGATE=1; shift ;;
+    -h|--help)   sed -n '2,45p' "$0" | sed 's/^#\{0,1\} \{0,1\}//'; exit 0 ;;
+    *)           echo "deploy-ready: unknown option $1" >&2; exit 2 ;;
+  esac
+done
+
+CONFIG_DIR="${SION_CONFIG_DIR:-$HOME/.config/sion-backup}"
+
+# One file for every credential the release path needs, rather than one per
+# service. Fewer files to get the mode wrong on, and one place to look when a
+# key is rotated -- which is the operation that actually goes wrong.
+#
+# It is not read by the program itself, only by the scripts in here. The
+# machine token, which sion-backup does read, lives in the data directory and
+# has nothing to do with this.
+DEPLOY_ENV="${SION_DEPLOY_ENV:-$CONFIG_DIR/sion-backup-deploy.env}"
+
+fail=0
+warn=0
+
+section() { printf '\n\033[1m%s\033[0m\n' "$*"; }
+ok()      { printf '  \033[32mok\033[0m    %s\n' "$*"; }
+bad()     { printf '  \033[31mFAIL\033[0m  %s\n' "$*"; fail=$((fail + 1)); }
+soft()    { printf '  \033[33mwarn\033[0m  %s\n' "$*"; warn=$((warn + 1)); }
+note()    { printf '        %s\n' "$*"; }
+
+# ---------------------------------------------------------------------------
+# Tools, first, because every check below is one of these in a trench coat.
+# ---------------------------------------------------------------------------
+
+section "Tools"
+
+for tool in gh jq curl git; do
+  if command -v "$tool" >/dev/null 2>&1; then
+    ok "$tool"
+  else
+    bad "$tool is not installed; nothing below can run"
+  fi
+done
+
+# --aws-sigv4 arrived in curl 7.75. Without it the Wasabi check cannot sign a
+# request, and an unsigned one proves nothing.
+if curl --help all 2>/dev/null | grep -q -- '--aws-sigv4'; then
+  ok "curl can sign AWS SigV4 requests"
+else
+  soft "this curl has no --aws-sigv4; the Wasabi checks will be skipped"
+fi
+
+if ! gh auth status >/dev/null 2>&1; then
+  bad "gh is not authenticated: run 'gh auth login'"
+
+  exit 1
+fi
+
+REPO=$(gh repo view --json nameWithOwner -q .nameWithOwner 2>/dev/null)
+
+if [ -z "$REPO" ]; then
+  bad "cannot identify the repository"
+
+  exit 1
+fi
+
+ok "authenticated for ${REPO}"
+
+# ---------------------------------------------------------------------------
+# The repository itself.
+# ---------------------------------------------------------------------------
+
+section "Repository"
+
+visibility=$(gh repo view --json visibility -q .visibility 2>/dev/null)
+
+if [ "$visibility" = PUBLIC ]; then
+  ok "public: Actions minutes on standard runners are unlimited"
+else
+  soft "${visibility}: Actions minutes are metered, and the gate is not free"
+fi
+
+for wf in .github/workflows/release.yml .github/workflows/ci.yml; do
+  [ -f "$wf" ] && ok "$wf" || bad "$wf is missing"
+done
+
+# The release workflow is tag-triggered, and a tag that does not match its
+# filter is a tag that quietly does nothing at all.
+if grep -qE "tags:\s*\[?'?v\*" .github/workflows/release.yml 2>/dev/null; then
+  ok "release.yml triggers on v* tags"
+else
+  bad "release.yml does not appear to trigger on v* tags"
+fi
+
+# ---------------------------------------------------------------------------
+# What the workflows ask for, against what exists.
+# ---------------------------------------------------------------------------
+
+section "Secrets the workflows reference"
+
+referenced_secrets=$(grep -rhoE 'secrets\.[A-Z_][A-Z0-9_]*' .github/workflows/ 2>/dev/null |
+  sed 's/^secrets\.//' | sort -u | grep -v '^GITHUB_TOKEN$')
+
+existing_secrets=$(gh secret list --json name -q '.[].name' 2>/dev/null | sort)
+
+if [ -z "$referenced_secrets" ]; then
+  note "none"
+fi
+
+for name in $referenced_secrets; do
+  where=$(grep -rlE "secrets\.${name}\b" .github/workflows/ | xargs -r -n1 basename | tr '\n' ' ')
+
+  if printf '%s\n' "$existing_secrets" | grep -qx "$name"; then
+    ok "${name} is set (used by: ${where% })"
+  else
+    bad "${name} is referenced by ${where% } and is NOT set"
+    note "set it with: gh secret set ${name}"
+  fi
+done
+
+# The other direction is a warning, not a failure: a secret nobody references
+# is clutter and possibly a live credential nobody is watching, but it breaks
+# nothing today.
+for name in $existing_secrets; do
+  printf '%s\n' "$referenced_secrets" | grep -qx "$name" ||
+    soft "${name} is set but no workflow references it"
+done
+
+section "Variables the workflows reference"
+
+referenced_vars=$(grep -rhoE 'vars\.[A-Z_][A-Z0-9_]*' .github/workflows/ 2>/dev/null |
+  sed 's/^vars\.//' | sort -u)
+
+existing_vars=$(gh variable list --json name -q '.[].name' 2>/dev/null | sort)
+
+if [ -z "$referenced_vars" ]; then
+  note "none"
+fi
+
+for name in $referenced_vars; do
+  if printf '%s\n' "$existing_vars" | grep -qx "$name"; then
+    ok "${name} = $(gh variable get "$name" 2>/dev/null)"
+  else
+    bad "${name} is referenced by a workflow and is NOT set"
+    note "set it with: gh variable set ${name} --body <value>"
+  fi
+done
+
+# ---------------------------------------------------------------------------
+# Credentials: do they match, and do they work.
+#
+# One function per service rather than a table, because the live check is the
+# interesting part of each and they have nothing in common.
+# ---------------------------------------------------------------------------
+
+section "Credentials file"
+
+# HAVE_ENV distinguishes "no file" from "a file this refused to read", because
+# those send you to different places.
+HAVE_ENV=0
+
+if [ ! -f "$DEPLOY_ENV" ]; then
+  soft "no ${DEPLOY_ENV}"
+  note "nothing below can be tested from this machine without it"
+else
+  mode=$(stat -c '%a' "$DEPLOY_ENV" 2>/dev/null || stat -f '%Lp' "$DEPLOY_ENV" 2>/dev/null)
+
+  case "$mode" in
+    600|400)
+      ok "$(basename "$DEPLOY_ENV") is mode ${mode}"
+
+      # shellcheck source=/dev/null
+      . "$DEPLOY_ENV"
+      HAVE_ENV=1
+      ;;
+    *)
+      bad "$(basename "$DEPLOY_ENV") is mode ${mode}; chmod 600 it"
+      ;;
+  esac
+
+  # The directory matters too, and is easier to miss. A 0600 file inside a
+  # group-writable directory cannot be READ by the group -- but it can be
+  # renamed and replaced, which substitutes a credential rather than stealing
+  # one. That is the worse of the two: the next release would be gated with
+  # somebody else's key and nothing would look wrong.
+  dirmode=$(stat -c '%a' "$CONFIG_DIR" 2>/dev/null || stat -f '%Lp' "$CONFIG_DIR" 2>/dev/null)
+
+  case "$dirmode" in
+    700|500) ok "$(basename "$CONFIG_DIR")/ is mode ${dirmode}" ;;
+    *)
+      soft "$(basename "$CONFIG_DIR")/ is mode ${dirmode}: others may replace files in it"
+      note "the file itself is unreadable to them, but a credential that can be"
+      note "SWAPPED is worse than one that can be read -- fix: chmod 700 ${CONFIG_DIR}"
+      ;;
+  esac
+fi
+
+# Credentials that used to live one per service. Left behind after a move they
+# are a live key in a file nobody looks at any more.
+for stale in "${CONFIG_DIR}/vultr.env" "${CONFIG_DIR}/wasabi.env"; do
+  [ -f "$stale" ] && soft "$(basename "$stale") is still here; it was superseded by $(basename "$DEPLOY_ENV")"
+done
+
+# secret_age_ok warns when a local credential file is newer than the secret
+# made from it -- a rotation that was never pushed.
+secret_age_ok() {
+  local name=$1 file=$DEPLOY_ENV
+
+  local updated local_mtime secret_epoch
+  updated=$(gh secret list --json name,updatedAt -q ".[] | select(.name==\"${name}\") | .updatedAt" 2>/dev/null)
+
+  [ -n "$updated" ] || return 0
+  [ -f "$file" ] || return 0
+
+  secret_epoch=$(date -u -d "$updated" +%s 2>/dev/null) || return 0
+  local_mtime=$(stat -c '%Y' "$file" 2>/dev/null) || return 0
+
+  if [ "$local_mtime" -gt "$secret_epoch" ]; then
+    soft "${name}: $(basename "$file") is newer than the secret"
+    note "a key rotated here and never pushed is the failure this catches."
+    note "Rewriting the file for any other reason trips it too -- it compares"
+    note "timestamps, not keys, because a secret cannot be read back."
+    note "fix: scripts/deploy-ready --propagate"
+
+    return 1
+  fi
+
+  ok "${name} is at least as new as $(basename "$file")"
+
+  return 0
+}
+
+propagate() {
+  local name=$1 value=$2
+
+  [ "$PROPAGATE" -eq 1 ] || return 0
+
+  # stdin, never argv: a value passed as an argument is briefly readable in
+  # /proc by anything running as this user.
+  if printf '%s' "$value" | gh secret set "$name" 2>/dev/null; then
+    ok "${name} pushed from this machine"
+  else
+    bad "could not set ${name}"
+  fi
+}
+
+# --- Vultr -----------------------------------------------------------------
+
+section "Vultr (the release gate's real machine)"
+
+if [ "$HAVE_ENV" -eq 1 ] && [ -n "${VULTR_API_KEY:-}" ]; then
+  body=$(curl -s -o /tmp/dr-vultr.$$ -w '%{http_code}' \
+    https://api.vultr.com/v2/account -H "Authorization: Bearer ${VULTR_API_KEY}" 2>/dev/null)
+  detail=$(cat /tmp/dr-vultr.$$ 2>/dev/null)
+  rm -f /tmp/dr-vultr.$$
+
+  case "$body" in
+    200)
+      ok "the key works from this machine"
+
+      # The failure that blocked v0.3.0 was an allowlist, and an allowlist that
+      # happens to include this machine still excludes every hosted runner. It
+      # cannot be detected from here -- so it is stated rather than tested.
+      note "a hosted runner has a different, changing address: if this key has"
+      note "an IP allowlist, CI will still be refused. Only an empty one works."
+      ;;
+    401)
+      case "$detail" in
+        *"Unauthorized IP address"*)
+          bad "the key is valid but its IP allowlist rejects this machine"
+          note "$detail"
+          note "a hosted runner cannot be allowlisted; clear the list for CI use"
+          ;;
+        *) bad "Vultr rejected the key: ${detail}" ;;
+      esac
+      ;;
+    *) bad "Vultr answered HTTP ${body}: ${detail}" ;;
+  esac
+
+  secret_age_ok VULTR_API_KEY
+  propagate VULTR_API_KEY "$VULTR_API_KEY"
+else
+  if printf '%s\n' "$referenced_secrets" | grep -qx VULTR_API_KEY; then
+    soft "VULTR_API_KEY is not in $(basename "$DEPLOY_ENV"), so it was not tested"
+    note "the gate falls back to a container when Vultr is unusable, so this"
+    note "does not block a release -- it only makes the evidence weaker"
+  fi
+fi
+
+# --- Wasabi ----------------------------------------------------------------
+
+section "Wasabi (real backups in the gate)"
+
+if [ "$HAVE_ENV" -eq 1 ] && [ -n "${WASABI_ACCESS_KEY_ID:-}" ]; then
+  region="${WASABI_REGION:-}"
+  bucket="${WASABI_BUCKET:-}"
+
+  if [ -z "$region" ] || [ -z "$bucket" ]; then
+    bad "WASABI_REGION and WASABI_BUCKET must both be set in $(basename "$DEPLOY_ENV")"
+  else
+    # us-east-1 is the bare hostname; every other region is prefixed.
+    if [ "$region" = us-east-1 ]; then
+      endpoint="s3.wasabisys.com"
+    else
+      endpoint="s3.${region}.wasabisys.com"
+    fi
+
+    ok "bucket ${bucket} at ${endpoint}"
+
+    # The repository URL restic will actually be handed, spelled out, because
+    # a wrong endpoint here is a failure that only shows up mid-backup.
+    note "repository URL: s3:https://${endpoint}/${bucket}/<prefix>"
+
+    # Variables, not secrets: these are readable on both sides, so this is the
+    # one place a real comparison is possible.
+    for pair in "WASABI_REGION:${region}" "WASABI_BUCKET:${bucket}"; do
+      name=${pair%%:*}
+      local_value=${pair#*:}
+
+      if printf '%s\n' "$existing_vars" | grep -qx "$name"; then
+        remote_value=$(gh variable get "$name" 2>/dev/null)
+
+        if [ "$remote_value" = "$local_value" ]; then
+          ok "${name} matches: ${local_value}"
+        else
+          bad "${name} differs — here ${local_value}, on GitHub ${remote_value}"
+          note "the gate would write to a different bucket than you are testing"
+        fi
+      else
+        soft "${name} is not set on GitHub"
+        note "set it with: gh variable set ${name} --body ${local_value}"
+      fi
+    done
+
+    if curl --help all 2>/dev/null | grep -q -- '--aws-sigv4'; then
+      sig="aws:amz:${region}:s3"
+      auth="${WASABI_ACCESS_KEY_ID}:${WASABI_SECRET_ACCESS_KEY}"
+
+      # 1. Can it list? This is the permission restic needs most often and the
+      #    one a too-narrow policy usually omits.
+      code=$(curl -s -o /tmp/dr-w.$$ -w '%{http_code}' --aws-sigv4 "$sig" --user "$auth" \
+        "https://${endpoint}/${bucket}?list-type=2&max-keys=1" 2>/dev/null)
+
+      if [ "$code" = 200 ]; then
+        ok "ListBucket works"
+      else
+        bad "ListBucket returned HTTP ${code}"
+        head -c 300 /tmp/dr-w.$$ 2>/dev/null | tr -d '\n' | sed 's/^/        /'; echo
+      fi
+      rm -f /tmp/dr-w.$$
+
+      # 2. Write, read back, delete. Delete is the one that matters: this key
+      #    is deliberately allowed to delete, which the FLEET's key must never
+      #    be, and a policy copied from production would pass every check above
+      #    and then leave every test repository in the bucket forever.
+      probe="deploy-ready-probe/$(date -u +%Y%m%dT%H%M%SZ)-$$"
+      payload="written by scripts/deploy-ready"
+
+      code=$(printf '%s' "$payload" | curl -s -o /dev/null -w '%{http_code}' \
+        -X PUT --data-binary @- --aws-sigv4 "$sig" --user "$auth" \
+        "https://${endpoint}/${bucket}/${probe}" 2>/dev/null)
+
+      if [ "$code" = 200 ]; then
+        ok "PutObject works"
+
+        got=$(curl -s --aws-sigv4 "$sig" --user "$auth" \
+          "https://${endpoint}/${bucket}/${probe}" 2>/dev/null)
+
+        [ "$got" = "$payload" ] && ok "GetObject returns what was written" \
+                                || bad "GetObject returned something else"
+
+        code=$(curl -s -o /dev/null -w '%{http_code}' -X DELETE --aws-sigv4 "$sig" --user "$auth" \
+          "https://${endpoint}/${bucket}/${probe}" 2>/dev/null)
+
+        case "$code" in
+          204|200)
+            ok "DeleteObject works, so test repositories can be cleaned up"
+            note "this key may delete ON PURPOSE. The fleet's key must not:"
+            note "see TestTheRunnerCannotDeleteBackupData."
+            ;;
+          *)
+            bad "DeleteObject returned HTTP ${code}"
+            note "left ${probe} behind, and every test repository would stay too"
+            ;;
+        esac
+      else
+        bad "PutObject returned HTTP ${code}"
+      fi
+    fi
+  fi
+
+  secret_age_ok WASABI_ACCESS_KEY_ID
+  secret_age_ok WASABI_SECRET_ACCESS_KEY
+  propagate WASABI_ACCESS_KEY_ID "${WASABI_ACCESS_KEY_ID}"
+  propagate WASABI_SECRET_ACCESS_KEY "${WASABI_SECRET_ACCESS_KEY}"
+
+  if [ "$PROPAGATE" -eq 1 ]; then
+    gh variable set WASABI_REGION --body "${WASABI_REGION}" >/dev/null 2>&1 &&
+      ok "WASABI_REGION pushed" || bad "could not set WASABI_REGION"
+    gh variable set WASABI_BUCKET --body "${WASABI_BUCKET}" >/dev/null 2>&1 &&
+      ok "WASABI_BUCKET pushed" || bad "could not set WASABI_BUCKET"
+  fi
+else
+  if printf '%s\n' "$referenced_secrets" | grep -qE '^WASABI_'; then
+    bad "a workflow needs Wasabi and $(basename "$DEPLOY_ENV") has no WASABI_ keys"
+  else
+    note "not configured on this machine, and nothing references it yet"
+  fi
+fi
+
+# ---------------------------------------------------------------------------
+
+section "Result"
+
+if [ "$fail" -gt 0 ]; then
+  printf '  \033[31m%d problem(s)\033[0m' "$fail"
+  [ "$warn" -gt 0 ] && printf ', %d warning(s)' "$warn"
+  printf '\n  Do not tag until these are fixed.\n\n'
+
+  exit 1
+fi
+
+if [ "$warn" -gt 0 ]; then
+  printf '  ready to tag, with %d warning(s) above\n\n' "$warn"
+else
+  printf '  \033[32mready to tag\033[0m\n\n'
+fi

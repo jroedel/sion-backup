@@ -194,6 +194,26 @@ fi
 # Say what is about to happen, then do it
 # ---------------------------------------------------------------------------
 
+# Before the summary, because a release that cannot possibly succeed should be
+# stopped here rather than eight minutes into a workflow.
+#
+# This is the check that v0.3.0 needed and did not have: its Vultr key carried
+# an IP allowlist that could never include a hosted runner, and the way that
+# was discovered was pushing a tag and watching the gate refuse it. Nothing was
+# wrong with the release.
+#
+# Not fatal on its own -- SKIP_DEPLOY_CHECK=1 goes past it -- because the gate
+# degrades rather than blocks when a credential is unusable, so a release can
+# still legitimately go out with a warning here. What must not happen is going
+# out without anybody having looked.
+if [ "${SKIP_DEPLOY_CHECK:-}" != "1" ] && [ -x "$(dirname "$0")/deploy-ready" ]; then
+  if ! "$(dirname "$0")/deploy-ready"; then
+    echo "  The release path is not ready. Fix the above, or re-run with"
+    echo "  SKIP_DEPLOY_CHECK=1 if you know the gate will degrade gracefully."
+    exit 1
+  fi
+fi
+
 echo
 echo "  from     ${latest:-no tags yet}"
 echo "  next     $next"
