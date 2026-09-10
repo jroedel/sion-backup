@@ -125,17 +125,17 @@ func daemonCmd(args []string) error {
 
 	errs := make(chan error, 1)
 
-	go func() {
+	go supervise(d.log, "status page", func() {
 		if err := server.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			errs <- err
 		}
-	}()
+	})
 
 	if !*noSchedule {
-		go d.scheduler(ctx)
+		go supervise(d.log, "scheduler", func() { d.scheduler(ctx) })
 	}
 
-	go d.flusher(ctx)
+	go supervise(d.log, "flusher", func() { d.flusher(ctx) })
 
 	select {
 	case err := <-errs:
@@ -267,11 +267,11 @@ func (d *deps) maybeRun(ctx context.Context) {
 		return
 	}
 
-	go func() {
+	go supervise(d.log, "scheduled backup", func() {
 		if err := d.backup(ctx, plan); err != nil && !errors.Is(err, backupbus.ErrAlreadyRunning) {
 			d.log.Error("the scheduled backup failed to start", "err", err)
 		}
-	}()
+	})
 }
 
 // flusher pushes runs the fleet dashboard has not heard about.
@@ -289,8 +289,11 @@ func (d *deps) flusher(ctx context.Context) {
 	}
 }
 
-// flush sends pending run events, and never fails loudly.
+// flush sends pending run events and any diagnostic reports, and never fails
+// loudly.
 func (d *deps) flush(ctx context.Context) {
+	d.flushDiagnostics(ctx)
+
 	pending, err := d.backups.Unreported(ctx, 50)
 	if err != nil {
 		d.log.Error("could not read unreported runs", "err", err)
@@ -321,6 +324,23 @@ func (d *deps) flush(ctx context.Context) {
 	}
 }
 
+// flushDiagnostics sends crash and install reports that are waiting on disk.
+//
+// Separate from the run events above and unconditional, because the machine
+// with reports waiting is often the machine with no runs to report — an
+// install that failed leaves one and not the other.
+func (d *deps) flushDiagnostics(ctx context.Context) {
+	sent, err := d.diag.Flush(ctx)
+
+	if sent > 0 {
+		d.log.Info("sent diagnostic reports", "count", sent)
+	}
+
+	if err != nil {
+		d.log.Debug("diagnostic reports are still waiting", "err", err)
+	}
+}
+
 // startRun returns the closure the status page's "Back up now" button calls.
 //
 // The context is the daemon's, not the request's: a backup must not be
@@ -336,12 +356,12 @@ func (d *deps) startRun(daemonCtx context.Context) func(context.Context) error {
 			return backupbus.ErrAlreadyRunning
 		}
 
-		go func() {
+		go supervise(d.log, "requested backup", func() {
 			if err := d.backup(daemonCtx, plan); err != nil &&
 				!errors.Is(err, backupbus.ErrAlreadyRunning) {
 				d.log.Error("the requested backup failed to start", "err", err)
 			}
-		}()
+		})
 
 		return nil
 	}

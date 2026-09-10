@@ -67,6 +67,11 @@ func runCmd(args []string) error {
 		return err
 	}
 
+	// Anything waiting from a failed install or an earlier crash goes now.
+	// A foreground run is the moment somebody is watching, which makes it the
+	// moment most likely to have a network.
+	d.flushDiagnostics(ctx)
+
 	last, err := d.backups.Last(ctx)
 	if err != nil {
 		return err

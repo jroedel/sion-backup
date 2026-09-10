@@ -167,6 +167,20 @@ func doctorCmd(args []string) error {
 		return fmt.Sprintf("%s, %s ago, verified=%v", last.Outcome, age, last.Verified), nil
 	})
 
+	c.check("diagnostics", func() (string, error) {
+		waiting := d.diag.Waiting()
+		if waiting == 0 {
+			return "nothing waiting to be reported", nil
+		}
+
+		// Not a failure. Today it is the expected state: Eumaeus does not
+		// serve the endpoint yet, so reports queue and age out. It is worth a
+		// line because a machine with reports waiting is a machine something
+		// happened to.
+		return fmt.Sprintf("%d report(s) waiting in %s; they go with the next run",
+			waiting, d.paths.Diag), nil
+	})
+
 	c.check("eumaeus", func() (string, error) {
 		if !d.creds.Enrolled() {
 			return "", errors.New("this machine has no token: run \"sion-backup enroll\". " +
