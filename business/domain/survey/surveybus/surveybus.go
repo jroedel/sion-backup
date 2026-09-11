@@ -159,14 +159,15 @@ type Business struct {
 
 // NewBusiness constructs the survey for this machine.
 //
-// The choices are worked out once, at construction: which of the standard
-// folders exist here, and where they are. That is a handful of stat calls and
-// it does not change while a daemon runs.
-func NewBusiness(log *slog.Logger, probe Prober) *Business {
+// The choices are worked out once and handed in, rather than read off the
+// filesystem here: [Choices] is a handful of stat calls against a real home
+// directory, and a domain that performs them in its constructor cannot be
+// tested without one. The composition root calls Choices; see the daemon.
+func NewBusiness(log *slog.Logger, probe Prober, choices []Choice) *Business {
 	return &Business{
 		log:     log,
 		probe:   probe,
-		choices: Choices(),
+		choices: choices,
 		sizes:   map[Style]Sizing{},
 	}
 }
@@ -207,15 +208,7 @@ func (b *Business) Measure(ctx context.Context, custom, excludes []string, large
 		opts.LargerThan = int64(largerThanGB) << 30
 	}
 
-	// The list somebody wrote themselves is measured like the offered choices
-	// are. It has to be: on a machine that adopt-enroll set up, that list is
-	// the only answer on the page, and showing every other option's size while
-	// leaving the chosen one blank would be exactly backwards.
-	wanted := b.choices
-	if len(custom) > 0 {
-		wanted = append(append([]Choice{}, b.choices...),
-			Choice{Style: StyleCustom, Roots: custom})
-	}
+	wanted := order(b.choices, custom)
 
 	b.mu.Lock()
 
@@ -254,10 +247,11 @@ func (b *Business) Measure(ctx context.Context, custom, excludes []string, large
 
 // measure walks each style in turn.
 //
-// In turn rather than at once, and in the order the choices are offered, which
-// is cheapest first. Walking three trees in parallel on one disk is slower than
-// walking them one after another, and doing the smallest first means the page
-// has something on it within a second or two.
+// In turn rather than at once: walking three trees in parallel on one disk is
+// slower than walking them one after another. The order is the one Measure
+// assembled — whatever is chosen first, then the offered choices cheapest
+// first — so the page has the figure somebody is looking at within a second or
+// two and fills the others in behind it.
 func (b *Business) measure(ctx context.Context, todo []Choice, opts dirsize.Options,
 	excludes []string, largerThanGB int) {
 	defer func() {
@@ -389,4 +383,31 @@ func (b *Business) Remeasure() {
 	}
 
 	clear(b.sizes)
+}
+
+// order is the sequence the walks happen in.
+//
+// The list somebody wrote themselves is measured like the offered choices are,
+// and BEFORE them.
+//
+// It has to be measured at all because on a machine that adopt-enroll set up,
+// that list is the only answer on the page, and showing every other option's
+// size while leaving the chosen one blank would be exactly backwards. It has to
+// be measured first for the same reason: a custom list exists only when
+// somebody already has one — out of config.toml, out of a legacy script, or
+// typed — and in every one of those cases it is the choice the radio is on.
+// Walking the whole home directory before it means the one figure they are
+// waiting for is the last to arrive, which on a large home directory is
+// minutes.
+//
+// A free function over its inputs so the ordering can be asserted without
+// walking a filesystem, which is the only way to assert it at all: a test that
+// waits for two small temporary directories to be measured cannot tell which
+// of them was measured first.
+func order(choices []Choice, custom []string) []Choice {
+	if len(custom) == 0 {
+		return choices
+	}
+
+	return append([]Choice{{Style: StyleCustom, Roots: custom}}, choices...)
 }

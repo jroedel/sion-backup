@@ -318,3 +318,62 @@ func contains(list []string, want string) bool {
 
 	return false
 }
+
+// TestChoosingAnOfferedStyleWritesItsFolders is the ordinary path: somebody
+// picks a radio button rather than typing a list, and what lands in the plan is
+// that choice's folders.
+func TestChoosingAnOfferedStyleWritesItsFolders(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+
+	if err := h.plan.Put(ctx, unconfirmed(), time.Now()); err != nil {
+		t.Fatal(err)
+	}
+
+	rec := h.post(t, "/setup", "action=confirm&style="+string(h.offered.Style)+
+		"&schedule=daily&daily_time=13:00")
+
+	if rec.Code != http.StatusSeeOther {
+		t.Fatalf("status %d: %s", rec.Code, rec.Body)
+	}
+
+	plan, err := h.plan.Get(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if len(plan.Targets) != 1 || plan.Targets[0] != h.offered.Roots[0] {
+		t.Errorf("targets %v, want the chosen style's folders %v", plan.Targets, h.offered.Roots)
+	}
+
+	if plan.Style != string(h.offered.Style) {
+		t.Errorf("style %q, want %q", plan.Style, h.offered.Style)
+	}
+}
+
+// TestAStyleThatIsNotOnThePageIsRefused. The folders come from the server's own
+// list of choices, never from the form, so a made-up style must not fall
+// through to an empty target list.
+func TestAStyleThatIsNotOnThePageIsRefused(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+
+	if err := h.plan.Put(ctx, unconfirmed(), time.Now()); err != nil {
+		t.Fatal(err)
+	}
+
+	rec := h.post(t, "/setup", "action=confirm&style=everything&schedule=daily&daily_time=13:00")
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status %d, want the page back with the problem on it", rec.Code)
+	}
+
+	plan, err := h.plan.Get(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if plan.Confirmed() {
+		t.Error("a style that is not on the page was accepted and confirmed")
+	}
+}

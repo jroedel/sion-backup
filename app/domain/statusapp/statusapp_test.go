@@ -37,6 +37,7 @@ type harness struct {
 	plan    *planbus.Business
 	backups *backupbus.Runner
 	survey  *surveybus.Business
+	offered surveybus.Choice
 	runs    *backupdb.Store
 	started int
 }
@@ -85,11 +86,22 @@ func newHarness(t *testing.T) *harness {
 		backups: backupbus.NewRunner(runs, nil, p, slog.New(slog.NewTextHandler(io.Discard, nil))),
 	}
 
-	// A survey with no prober: the setup page renders without one, saying the
-	// speed has not been measured, and a test must never send megabytes
-	// anywhere. What it does measure is this machine's real home directory,
-	// which is why the tests below that touch /setup do not assert on sizes.
-	h.survey = surveybus.NewBusiness(slog.New(slog.NewTextHandler(io.Discard, nil)), nil)
+	// A survey with no prober and one made-up choice.
+	//
+	// No prober because a test must never send megabytes anywhere; the page
+	// renders without one, saying the speed has not been measured. A made-up
+	// choice because the real [surveybus.Choices] walks this machine's own home
+	// directory, and a page test that does that is a page test whose runtime
+	// depends on whose machine it is — it timed out on a macOS CI runner,
+	// whose /Users/runner holds Xcode and several toolchains.
+	h.offered = surveybus.Choice{
+		Style: surveybus.StylePersonal,
+		Title: "My documents, desktop and pictures",
+		Roots: []string{t.TempDir()},
+	}
+
+	h.survey = surveybus.NewBusiness(slog.New(slog.NewTextHandler(io.Discard, nil)), nil,
+		[]surveybus.Choice{h.offered})
 
 	app, err := statusapp.New(statusapp.Config{
 		Plan:        h.plan,

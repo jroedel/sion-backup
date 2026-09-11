@@ -157,16 +157,52 @@ XDG_PUBLICSHARE_DIR="$HOME"
 	}
 }
 
+// folder makes a directory holding one file of a known size, and returns it as
+// an offered choice.
+//
+// Every measuring test below is built out of these rather than out of the
+// machine's own home directory. That is not only tidiness: the first version
+// of these tests used the real one, passed everywhere, and then failed on a
+// macOS CI runner, whose /Users/runner holds Xcode and several toolchains and
+// takes minutes to walk. A domain test that is fast on a laptop and times out
+// on a build machine is a test nobody can read the result of.
+func folder(t *testing.T, style surveybus.Style, size int) surveybus.Choice {
+	t.Helper()
+
+	root := t.TempDir()
+
+	if err := os.WriteFile(filepath.Join(root, "a.txt"), make([]byte, size), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	return surveybus.Choice{Style: style, Roots: []string{root}}
+}
+
+// measured waits for one style's figure to be final, and returns it.
+func measured(t *testing.T, b *surveybus.Business, style surveybus.Style) surveybus.Sizing {
+	t.Helper()
+
+	deadline := time.Now().Add(30 * time.Second)
+
+	for time.Now().Before(deadline) {
+		if got := b.Sizing(style); got.State == surveybus.StateMeasured {
+			return got
+		}
+
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	t.Fatalf("%s was never measured", style)
+
+	return surveybus.Sizing{}
+}
+
 // TestMeasuringIsStartedOnceAndAnswersImmediately is the property the page
 // depends on: it refreshes itself every three seconds while a walk runs, and
 // each of those refreshes calls Measure.
 func TestMeasuringIsStartedOnceAndAnswersImmediately(t *testing.T) {
-	b := surveybus.NewBusiness(quiet(), nil)
-
-	choices := b.Choices()
-	if len(choices) == 0 {
-		t.Skip("this machine has no home directory to measure")
-	}
+	choice := folder(t, surveybus.StylePersonal, 4096)
+	b := surveybus.NewBusiness(quiet(), nil, []surveybus.Choice{choice})
 
 	ctx := context.Background()
 
@@ -174,49 +210,35 @@ func TestMeasuringIsStartedOnceAndAnswersImmediately(t *testing.T) {
 		b.Measure(ctx, nil, nil, 0)
 	}
 
-	deadline := time.Now().Add(30 * time.Second)
-
-	for time.Now().Before(deadline) {
-		if b.Sizing(choices[0].Style).State == surveybus.StateMeasured {
-			return
-		}
-
-		time.Sleep(20 * time.Millisecond)
+	if got := measured(t, b, surveybus.StylePersonal); got.Result.Bytes != 4096 {
+		t.Errorf("%d bytes, want 4096", got.Result.Bytes)
 	}
-
-	t.Fatal("the first folder was never measured")
 }
 
 // TestAListSomebodyWroteThemselvesIsMeasuredToo.
 //
 // On a machine adopt-enroll set up, the folders come out of the legacy script
 // and land in the custom box — so that list is the only answer on the page, and
-// leaving it the one choice with no size beside it would be exactly backwards.
+// leaving it the one choice with no size beside it would be backwards.
+//
+// That it is measured FIRST is a separate claim and cannot be checked from
+// here: both of these finish in microseconds and either order passes. It is
+// asserted against the decision instead, in order_test.go.
 func TestAListSomebodyWroteThemselvesIsMeasuredToo(t *testing.T) {
-	root := t.TempDir()
+	slow := folder(t, surveybus.StyleHome, 8192)
+	custom := folder(t, surveybus.StyleCustom, 4096)
 
-	if err := os.WriteFile(filepath.Join(root, "a.txt"), make([]byte, 4096), 0o644); err != nil {
-		t.Fatal(err)
+	b := surveybus.NewBusiness(quiet(), nil, []surveybus.Choice{slow})
+	b.Measure(context.Background(), custom.Roots, nil, 0)
+
+	if got := measured(t, b, surveybus.StyleCustom); got.Result.Bytes != 4096 {
+		t.Errorf("%d bytes, want 4096", got.Result.Bytes)
 	}
 
-	b := surveybus.NewBusiness(quiet(), nil)
-	b.Measure(context.Background(), []string{root}, nil, 0)
-
-	deadline := time.Now().Add(30 * time.Second)
-
-	for time.Now().Before(deadline) {
-		if got := b.Sizing(surveybus.StyleCustom); got.State == surveybus.StateMeasured {
-			if got.Result.Bytes != 4096 {
-				t.Errorf("%d bytes, want 4096", got.Result.Bytes)
-			}
-
-			return
-		}
-
-		time.Sleep(20 * time.Millisecond)
+	// The offered choice is still measured, behind it.
+	if got := measured(t, b, surveybus.StyleHome); got.Result.Bytes != 8192 {
+		t.Errorf("%d bytes, want 8192", got.Result.Bytes)
 	}
-
-	t.Fatal("the hand-written list was never measured")
 }
 
 // TestAFailedProbeIsReportedRatherThanRetriedForever.
@@ -227,7 +249,7 @@ func TestAFailedProbeIsReportedRatherThanRetriedForever(t *testing.T) {
 		calls++
 
 		return s3probe.Result{}, errors.New("the bucket refused")
-	})
+	}, nil)
 
 	b.Probe(context.Background())
 
@@ -301,7 +323,7 @@ func TestTheSpeedTestRunsWithoutBeingAskedTheFirstTime(t *testing.T) {
 		close(done)
 
 		return s3probe.Result{BytesPerSecond: 1 << 20}, nil
-	})
+	}, nil)
 
 	b.ProbeOnce(context.Background())
 

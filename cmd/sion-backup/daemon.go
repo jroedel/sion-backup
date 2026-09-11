@@ -111,7 +111,7 @@ func daemonCmd(args []string) error {
 	// A local rather than a field on deps: nothing outside this function uses
 	// it, and every other command exits long before background work would
 	// finish.
-	survey := surveybus.NewBusiness(d.log, d.probeUpload)
+	survey := surveybus.NewBusiness(d.log, d.probeUpload, surveybus.Choices())
 
 	app, err := statusapp.New(statusapp.Config{
 		Plan:                    d.plan,
