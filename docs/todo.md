@@ -59,6 +59,26 @@ two things that can only be found for real:
 probe to it is the cheapest way to close this, and it belongs there rather than
 in the unit tests for the reason everything else in that harness does.
 
+### The gate asserts on log lines that a person is not shown — WORKS, FRAGILE
+
+`scripts/backup-e2e/run-machine` checks that the machine scheduled its own
+weekly repository check by grepping `run1.log` for `checking the repository`.
+That is an Info line, and `run` logs at Warn — so the harness passes `-v`.
+
+It broke once already, silently and across two changes that were each correct
+on their own: #33 dropped `wire()` from Info to Warn so that `adopt-enroll`
+would stop putting slog lines through the middle of its own output, and the
+gate went on greping for a line that was no longer there. Nothing failed until
+the next release, because the gate only runs on a tag.
+
+The durable fix is to assert on the recorded state rather than on the
+narration: `planbus.Integrity` is written to the database and `doctor` already
+prints it (`repository check  sound 0s ago, having re-read 64M`). What the log
+grep buys that the record does not is the count — "checked once across two
+runs, not twice" — and that wants either a second recorded field or a `status
+--json`. Worth doing the next time this file is opened; not worth blocking a
+release on.
+
 ### The dashboard cannot see a machine waiting to be set up — NEEDS EUMAEUS
 
 A machine that is enrolled and unconfirmed looks exactly like one that has

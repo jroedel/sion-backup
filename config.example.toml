@@ -19,6 +19,9 @@
 # file buys is that the boxes on that page are already filled in with an
 # administrator's answer -- not that the question is skipped.
 #
+# UNLESS you say `confirmed = true` below. An unattended install has already
+# had the question answered, in writing, by the person who wrote this file.
+#
 # THE DEPLOYMENT SETTINGS -- [eumaeus]
 # Where this machine gets its credentials, and where it reports.
 #
@@ -92,6 +95,22 @@ targets = [
   # "C:\\Users\\Example",
   # "/Users/example",
 ]
+
+# Say that the folders above are the decision and not a suggestion.
+#
+# Without it, this machine holds: it will not start a scheduled backup until
+# somebody at the keyboard has confirmed the plan at
+# http://127.0.0.1:7391/setup. That is right for a laptop being handed to a
+# person -- a first backup is hours of their uplink, and the folder list is
+# somebody else's guess at what matters to them.
+#
+# It is wrong for a machine built by a script, where nobody is ever going to
+# open that page and the wait would mean it silently never backs up. So an
+# unattended install says so here.
+#
+# Read once, with the rest of the plan. Adding it to a machine that already has
+# a plan does nothing; that machine is confirmed on the page.
+# confirmed = true
 
 # What to leave out, in restic's exclude syntax.
 #
