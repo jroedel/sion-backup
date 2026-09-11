@@ -17,6 +17,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"os/signal"
@@ -196,7 +197,7 @@ func (d *deps) close() {
 // the machine token, and the credentials it fetches live in memory for the
 // length of one backup.
 func wire(ctx context.Context, verbose bool) (*deps, error) {
-	return wireLogging(ctx, verbose, slog.LevelWarn)
+	return wireLogging(ctx, verbose, forPerson)
 }
 
 // wireDaemon is wire for the one command whose log is a record rather than an
@@ -205,16 +206,55 @@ func wire(ctx context.Context, verbose bool) (*deps, error) {
 // Everything else here is a person at a terminal reading formatted output, and
 // a slog line in the middle of it is not a log — it is a paragraph break with
 // timestamps in it. `sion-backup adopt-enroll` printed two of them between
-// "The plan is written" and the next sentence, which is how this was found.
+// "The plan is written" and the next sentence, which is how this was first
+// found; `sion-backup update` printed one between "replaced this binary" and
+// what to do next, which is how it was found again.
 //
-// The information in those lines is not lost: the commands that wait on
-// something worth mentioning say so themselves, in their own voice. See
-// deps.fetchRestic.
+// The information in those lines is not lost. It is rendered for whoever is
+// reading — see humanlog.go, which is where that decision is made, once.
 func wireDaemon(ctx context.Context, verbose bool) (*deps, error) {
-	return wireLogging(ctx, verbose, slog.LevelInfo)
+	return wireLogging(ctx, verbose, forRecord)
 }
 
-func wireLogging(ctx context.Context, verbose bool, base slog.Level) (*deps, error) {
+// audience is who a command's log is for. See humanlog.go.
+type audience int
+
+const (
+	// forPerson is somebody at a terminal reading a command's output.
+	forPerson audience = iota
+
+	// forRecord is a log file, a journal, or a test harness.
+	forRecord
+)
+
+// newLogger decides how this process talks, and is the only place that
+// decides it.
+//
+// -v outranks the audience: it means "show me the log", and the log is the
+// structured one. That is what somebody debugging wants, and what
+// scripts/backup-e2e reads key=value pairs out of.
+func newLogger(who audience, verbose bool) *slog.Logger {
+	return loggerTo(os.Stderr, who, verbose)
+}
+
+// loggerTo is newLogger with the destination named, so a test can read what
+// this program would have put in front of somebody.
+func loggerTo(w io.Writer, who audience, verbose bool) *slog.Logger {
+	if verbose {
+		return slog.New(slog.NewTextHandler(w, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	}
+
+	if who == forRecord {
+		return slog.New(slog.NewTextHandler(w, &slog.HandlerOptions{Level: slog.LevelInfo}))
+	}
+
+	// Warnings and errors only, as sentences. A person is already being told
+	// what happened by the command itself; this is for the things the command
+	// cannot say because they happened underneath it.
+	return slog.New(newHumanHandler(w, slog.LevelWarn))
+}
+
+func wireLogging(ctx context.Context, verbose bool, who audience) (*deps, error) {
 	p, err := paths.Resolve()
 	if err != nil {
 		return nil, err
@@ -224,14 +264,7 @@ func wireLogging(ctx context.Context, verbose bool, base slog.Level) (*deps, err
 		return nil, err
 	}
 
-	level := base
-	if verbose {
-		// -v is the escape hatch, and it still reaches everything: a command
-		// that will not say why it is failing is worse than a noisy one.
-		level = slog.LevelDebug
-	}
-
-	log := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: level}))
+	log := newLogger(who, verbose)
 
 	cfg, found, err := LoadConfig(p.Config)
 	if err != nil {

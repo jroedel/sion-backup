@@ -191,8 +191,10 @@ func reportCmd(args []string) error {
 		*installID = uuid.NewString()
 	}
 
-	log := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelWarn}))
-	diag := diagnostics(log)
+	// `report` is run by the installers and by a person, and never by the
+	// daemon — so it talks like a command rather than like a log. It does not
+	// go through wire(): see the comment on diagnostics.
+	diag := diagnostics(newLogger(forPerson, false))
 
 	if err := diag.Record(diagbus.Report{
 		Kind:         diagbus.Kind(*kind),
