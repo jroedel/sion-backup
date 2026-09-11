@@ -1,6 +1,7 @@
 package legacybus_test
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 
@@ -156,5 +157,119 @@ func TestAScriptWithNothingInItSaysNothing(t *testing.T) {
 
 	if got.RepositoryURL != "" || got.NodeID != "" || got.HasCredentials || len(got.Targets) != 0 {
 		t.Errorf("got %+v from a script with nothing in it", got)
+	}
+}
+
+// TestParseTakesTheExcludesOffTheCommandLine. The 1.1 script keeps the
+// pseudo-filesystems in a brace expansion on the backup command and
+// everything else in a file. A migration that carried the file across and not
+// this line would spend its first night backing up /proc and /sys, and the
+// person who wrote the exclude list would be told their excludes had been
+// preserved.
+func TestParseTakesTheExcludesOffTheCommandLine(t *testing.T) {
+	got := legacybus.Parse(linux11)
+
+	want := []string{"/dev", "/media", "/mnt", "/proc", "/run", "/sys", "/tmp", "/var/tmp"}
+
+	if len(got.Excludes) != len(want) {
+		t.Fatalf("excludes = %v, want %v", got.Excludes, want)
+	}
+
+	for i := range want {
+		if got.Excludes[i] != want[i] {
+			t.Errorf("exclude %d = %q, want %q", i, got.Excludes[i], want[i])
+		}
+	}
+
+	// The exclude FILE is a different thing and must not have been swept up
+	// as a pattern: --exclude-file is not --exclude.
+	for _, pattern := range got.Excludes {
+		if strings.Contains(pattern, "excludes.txt") {
+			t.Errorf("the exclude file %q was read as an exclude pattern", pattern)
+		}
+	}
+}
+
+// TestParseFindsNoExcludesWhereThereAreNone guards the brace-expansion
+// handling against inventing patterns: the Windows script excludes only
+// through a file.
+func TestParseFindsNoExcludesWhereThereAreNone(t *testing.T) {
+	if got := legacybus.Parse(windows13); len(got.Excludes) != 0 {
+		t.Errorf("excludes = %v, want none — this script excludes only through a file", got.Excludes)
+	}
+}
+
+// TestParseDoesNotCarryCredentials is the invariant that lets recon print a
+// Fields, and --json hand one to an installer, without anybody having to
+// check first. The secrets come out through ParseCredentials or not at all.
+func TestParseDoesNotCarryCredentials(t *testing.T) {
+	const script = `export AWS_ACCESS_KEY_ID="AKIAREAL"
+export AWS_SECRET_ACCESS_KEY="s3cr3t"
+export RESTIC_PASSWORD="hunter2"
+export RESTIC_REPOSITORY="s3:https://s3.example.com/bucket"
+/home/restic/bin/restic backup /
+`
+
+	got := legacybus.Parse(script)
+
+	if !got.HasCredentials {
+		t.Fatal("HasCredentials = false, want true: this script carries all three")
+	}
+
+	if rendered := fmt.Sprintf("%+v", got); strings.Contains(rendered, "s3cr3t") ||
+		strings.Contains(rendered, "hunter2") || strings.Contains(rendered, "AKIAREAL") {
+		t.Errorf("a credential reached Fields, which is printed: %s", rendered)
+	}
+}
+
+// TestParseCredentialsReadsWhatAdoptionNeeds. Adoption opens the legacy
+// repository to count what is in it, which needs all three.
+func TestParseCredentialsReadsWhatAdoptionNeeds(t *testing.T) {
+	const script = `export AWS_ACCESS_KEY_ID="AKIAREAL"
+export AWS_SECRET_ACCESS_KEY="s3cr3t"
+export RESTIC_PASSWORD="hunter2"
+`
+
+	got := legacybus.ParseCredentials(script)
+
+	if string(got.AccessKeyID) != "AKIAREAL" || string(got.SecretAccessKey) != "s3cr3t" ||
+		string(got.Password) != "hunter2" {
+		t.Fatalf("ParseCredentials read %q/%q/%q", got.AccessKeyID, got.SecretAccessKey, got.Password)
+	}
+
+	if !got.Complete() {
+		t.Error("Complete = false on a script carrying all three")
+	}
+}
+
+// TestParseCredentialsTreatsAScrubbedScriptAsEmpty. A copy filed with the
+// keys replaced by a run of x's is a thing that exists, and an operator sent
+// to adopt a bucket with "xxxx" as the password gets an authentication error
+// and no explanation of it.
+func TestParseCredentialsTreatsAScrubbedScriptAsEmpty(t *testing.T) {
+	got := legacybus.ParseCredentials(linux11)
+
+	if got.Complete() {
+		t.Fatalf("Complete = true on the scrubbed script: %q/%q/%q",
+			got.AccessKeyID, got.SecretAccessKey, got.Password)
+	}
+
+	if len(got.Password) != 0 {
+		t.Errorf("password = %q, want empty: a run of x's is not a credential", got.Password)
+	}
+}
+
+// TestParseCredentialsFindsTheWindowsPasswordFile. The .bat keeps the
+// password in a file beside the script and refers to it through %BACKUP_PATH%.
+func TestParseCredentialsFindsTheWindowsPasswordFile(t *testing.T) {
+	got := legacybus.ParseCredentials(windows13)
+
+	if want := `C:\Users\backup\Documents\backup\backup.txt`; got.PasswordFile != want {
+		t.Errorf("password file = %q, want %q", got.PasswordFile, want)
+	}
+
+	if len(got.Password) != 0 {
+		t.Errorf("password = %q, want empty: it is in the file, and reading that "+
+			"file is the caller's decision", got.Password)
 	}
 }

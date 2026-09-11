@@ -223,3 +223,74 @@ func TestABadRequestThatIsNotTheAgreedShapeKeepsWhatArrived(t *testing.T) {
 		}
 	}
 }
+
+// TestA422CarriesTheSentenceAndIsNotABadRequest.
+//
+// 422 used to fall into the catch-all, which rendered it as two package
+// prefixes, a status line and a JSON fragment. It is now the status an
+// adopting machine is most likely to meet — the code enrols it against a
+// repository it has not been writing to — and the sentence is the whole value
+// of it to whoever is standing at that machine.
+//
+// It must not arrive as ErrBadRequest. The two say opposite things about what
+// to do: a 400 is this client sending nonsense and nobody present can help; a
+// 422 is a situation on the server that the person present is exactly who can
+// fix, usually without the code expiring.
+func TestA422CarriesTheSentenceAndIsNotABadRequest(t *testing.T) {
+	const sentence = "this machine backs up to s3:…/bucket123, and that code enrols it " +
+		"against s3:…/desktop-2026-09. The code has not been used"
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnprocessableEntity)
+		w.Write([]byte(`{"error":"` + sentence + `","field":"legacy.repository_url"}`))
+	}))
+	defer srv.Close()
+
+	client, err := eumaeusapi.New(eumaeusapi.Config{BaseURL: srv.URL})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	err = client.Do(context.Background(), http.MethodPost, "/enrollments/claim", struct{}{}, nil)
+
+	var refused *eumaeusapi.BadRequest
+	if !errors.As(err, &refused) {
+		t.Fatalf("got %v, want a *BadRequest carrying the server's sentence", err)
+	}
+
+	if refused.Field != "legacy.repository_url" {
+		t.Errorf("field: got %q", refused.Field)
+	}
+
+	if got, want := err.Error(), sentence+" (legacy.repository_url)"; got != want {
+		t.Errorf("got %q, want %q", got, want)
+	}
+
+	if !errors.Is(err, eumaeusapi.ErrUnprocessable) {
+		t.Error("a 422 did not arrive as ErrUnprocessable")
+	}
+
+	if errors.Is(err, eumaeusapi.ErrBadRequest) {
+		t.Error("a 422 arrived as ErrBadRequest: retrying advice and blame both go the wrong way")
+	}
+}
+
+// TestA400IsStillNotAn422, the other half of the pair.
+func TestA400IsStillNotAn422(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+		w.Write([]byte(`{"error":"a claim must say what the machine is called","field":"hostname"}`))
+	}))
+	defer srv.Close()
+
+	client, err := eumaeusapi.New(eumaeusapi.Config{BaseURL: srv.URL})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	err = client.Do(context.Background(), http.MethodPost, "/enrollments/claim", struct{}{}, nil)
+
+	if errors.Is(err, eumaeusapi.ErrUnprocessable) {
+		t.Error("a 400 arrived as ErrUnprocessable")
+	}
+}

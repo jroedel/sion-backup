@@ -85,23 +85,8 @@ restic: ## Download the pinned restic into dist/, for the real-restic tests
 	@# match and leaves nothing behind when it does.
 	./scripts/fetch-restic "$(GOOS)" "$(GOARCH)" $(DIST)
 
-.PHONY: api-check
-api-check: ## Validate docs/openapi.yaml and every example in it
-	@# A venv rather than the system Python: this is the only Python in the
-	@# project and it should not be able to break anything outside itself.
-	@test -d .venv-api || python3 -m venv .venv-api
-	@.venv-api/bin/pip install -q -r scripts/requirements-api.txt
-	@.venv-api/bin/python scripts/check-api-spec.py
-
-.PHONY: api-docs
-api-docs: ## Render docs/openapi.yaml into a readable docs/api.html
-	@test -d .venv-api || python3 -m venv .venv-api
-	@.venv-api/bin/pip install -q -r scripts/requirements-api.txt
-	@.venv-api/bin/python scripts/render-api-docs.py
-	@echo "open docs/api.html in a browser"
-
 .PHONY: check
-check: fmt vet test cross ## Everything CI runs (except api-check, which needs Python)
+check: fmt vet test cross ## Everything CI runs
 
 ##@ Cross-platform
 
@@ -192,7 +177,7 @@ tidy: ## Tidy go.mod
 
 .PHONY: clean
 clean: ## Remove build output
-	rm -rf $(BINARY) $(DIST) coverage.out .venv-api
+	rm -rf $(BINARY) $(DIST) coverage.out
 
 .PHONY: paths
 paths: build ## Print where this program keeps its files on this machine

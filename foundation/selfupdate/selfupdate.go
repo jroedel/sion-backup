@@ -39,7 +39,7 @@
 // to its own backups, so it is already trusted more than GitHub is, and a
 // hash from it means a compromised release cannot reach the fleet on its own.
 // It also gives a staged rollout and a kill switch. [Source] is the seam that
-// change goes through — see docs/eumaeus-requests.md §5.2.
+// change goes through — see jroedel/eumaeus#114.
 package selfupdate
 
 import (

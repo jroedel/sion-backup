@@ -2,7 +2,9 @@
 
 **Status: for implementation.** Written against the settled fleet model in
 [`model.md`](model.md); read that first for *why* any of this is shaped the way
-it is. The machine-readable form is [`openapi.yaml`](openapi.yaml).
+it is. The machine-readable form is
+[`openapi.yaml`](https://github.com/jroedel/eumaeus/blob/main/docs/openapi.yaml),
+which lives in eumaeus beside the handlers it describes.
 
 Audience: whoever implements these endpoints in
 [eumaeus](https://github.com/jroedel/eumaeus).
@@ -148,12 +150,14 @@ server records its own `received_at` alongside, and all alerting logic uses
 and the output of `sion-backup doctor`, so it must be useful and must contain
 nothing sensitive. `field` is optional.
 
-The client distinguishes only four outcomes, so the choice of status matters:
+The client distinguishes only a handful of outcomes, so the choice of status
+matters:
 
 | Status | Client behaviour |
 |---|---|
 | `2xx` | Success. Response body discarded unless the endpoint returns data |
 | `400` | The `error` sentence and `field` are decoded out and shown as they stand — see below |
+| `422` | The same, and told apart from `400`: the request was fine and the situation is not |
 | `404` | "No such thing" — an ordinary answer, not a failure |
 | `409` | Only meaningful on the claim: the code has already been used |
 | `401` | Terminal. Never retried. Surfaced to the user as de-enrolment |
@@ -162,7 +166,16 @@ The client distinguishes only four outcomes, so the choice of status matters:
 
 Everything outside that list is one error to the client: a `429` and a `500`
 are indistinguishable. If you need it to behave differently, the case has to
-map onto one of the six.
+map onto one of the seven.
+
+**`400` and `422` are two answers.** A `400` is this client sending nonsense:
+nobody standing at the machine can help, and the answer is to stop and make
+enough noise that somebody fixes the client. A `422` is the server saying the
+request was well-formed and something on its own side has to change first — the
+machine's bucket is not provisioned, or the code enrols it against a repository
+it has never written to (§4.2) — and the person standing at the machine is
+exactly who can fix that, usually without the code expiring. Both carry the
+sentence; only one is worth apologising for.
 
 **`401` and `403` are two answers, not one.** They were one until 2026-09-10,
 and the bug that reading hides is quiet: `403` is how §8 says a fleet has
@@ -210,7 +223,12 @@ to start backing up. **The only unauthenticated endpoint.**
   "hostname": "DESKTOP-4KJ2P1",
   "os": "windows/amd64",
   "local_account": "CORP\\jdoe",
-  "agent": "v1.2.0"
+  "agent": "v1.2.0",
+  "legacy": {
+    "repository_url": "s3:https://s3.us-central-1.wasabisys.com/bucket123",
+    "snapshots": 1412,
+    "oldest_snapshot": "2019-03-01T22:04:00Z"
+  }
 }
 ```
 
@@ -221,6 +239,7 @@ to start backing up. **The only unauthenticated endpoint.**
 | `os` | yes | `GOOS/GOARCH` |
 | `local_account` | yes | **The OS account the daemon runs as.** Not trivia: DPAPI and Keychain bind the cached credentials to it, so a machine whose account changes can no longer read its own credentials, and the dashboard needs to be able to show why |
 | `agent` | yes | Client build |
+| `legacy` | no | The old backup this machine is being migrated off, as the machine sees it. Sent only by `adopt-enroll`, and only about an install it actually found. See §4.2 |
 
 ### Response `200`
 
@@ -235,7 +254,9 @@ to start backing up. **The only unauthenticated endpoint.**
     "provider": "wasabi",
     "region": "us-central-1",
     "bucket": "example-node-bucket",
-    "created_at": "2026-09-09T10:04:00+02:00"
+    "created_at": "2026-09-09T10:04:00+02:00",
+    "adopted": true,
+    "snapshots": 1412
   },
   "credentials_version": 1,
   "credentials": {
@@ -250,6 +271,70 @@ The `machine` key writes and may delete only under `locks/`. The `restore` key
 is read-only and is what gets printed on the owner's card
 ([`model.md`](model.md) §6.4) — the client needs both.
 
+### 4.1 An adopted repository
+
+`adopted` and `snapshots` describe a bucket taken over from a legacy install
+rather than provisioned empty — [eumaeus#112](https://github.com/jroedel/eumaeus/issues/112),
+`eumaeus backup adopt`. The same two fields appear on `repository` in §5, so a
+machine adopted before they shipped picks them up on its next poll.
+
+| Field | Notes |
+|---|---|
+| `adopted` | `omitempty`. **Absence means "ask restic", not "there is nothing there"** |
+| `snapshots` | `omitempty`. What restic reported at adoption, recorded by hand with `-snapshots`. The repository remains the authority on what it contains |
+| `created_at` | On an adopted repository this is the **history horizon** — 2019, say — and not when the row in Eumaeus was made. It is what "backups available since …" should read |
+
+The client reads all three in `sion-backup adopt-enroll`, which claims the code
+and then checks that the repository it was handed is the legacy machine's own.
+That check is the point: `provision` typed where `adopt` was meant returns a
+perfectly good empty bucket, and every step after it succeeds. So the client
+treats a missing `adopted` as no answer rather than as a denial, and asks
+restic for the snapshot count either way.
+
+### 4.2 `legacy` — what the machine already has
+
+Optional, and sent only by `sion-backup adopt-enroll`, about an install it
+actually found. A claim without it takes exactly the path it took before the
+block existed, which is every machine in the field today.
+[eumaeus#123](https://github.com/jroedel/eumaeus/issues/123).
+
+| Field | Notes |
+|---|---|
+| `repository_url` | Where the legacy script writes, in restic's syntax. **Omitted rather than guessed at**: a client that found an install and could not open its repository says nothing, because "I do not know" must not read as "somewhere else" |
+| `snapshots` | What restic reported when the client opened it |
+| `oldest_snapshot` | Where its history starts. A value in the future is dropped by the server rather than refused — a laptop with a wrong clock must still be able to enrol |
+
+The server does exactly two things with it.
+
+**It refuses a claim whose `repository_url` is not the repository the code
+enrols this machine against** — `422`, `field: legacy.repository_url`, and a
+sentence naming both. **The code is not consumed.** Adopt the bucket the
+machine is writing to and present the same code again.
+
+That refusal is the point of the block. `provision` typed where `adopt` was
+meant returns a working, empty bucket: the claim succeeds, the first backup
+succeeds, the dashboard goes green, and years of snapshots sit in a bucket
+nothing points at. Both buckets are real, so the machine that has been writing
+to one of them nightly is the only thing that can tell the difference — and the
+claim is the last moment at which saying so is free. The client checks after
+the fact too, in `adopt.go`, because a server that has not been told cannot
+answer; but by then the code is spent and the recovery is a second one.
+
+The comparison ignores surrounding space and trailing slashes and is otherwise
+exact. Case is significant, because on a provider where `Bucket123` and
+`bucket123` are two buckets, folding it would accept a claim against the wrong
+one.
+
+**It fills in the history of a bucket that was adopted without one**, from
+`snapshots` and `oldest_snapshot`. It can only widen what is known: a figure an
+administrator typed at `adopt` is never replaced, and a provisioned repository
+takes neither.
+
+`422` rather than `409` for the refusal, which is Eumaeus's decision and a good
+one: `409` on this endpoint already means "that code has been used, ask for
+another", which is the opposite of what has happened and would send whoever is
+standing at the machine for the one thing that cannot help.
+
 ### Responses
 
 | Status | When |
@@ -257,7 +342,7 @@ is read-only and is what gets printed on the owner's card
 | `200` | Claimed |
 | `404` | No such code, or it has expired |
 | `409` | Already claimed. **Do not re-issue the token** — see below |
-| `422` | The code is valid but the machine it names has no repository provisioned yet |
+| `422` | Two causes. The code is valid and the machine it names has no repository provisioned yet — or `legacy.repository_url` is not the repository that code enrols it against (§4.2), in which case **the code is not consumed** |
 | `429` | Rate limited |
 
 ### Server rules
@@ -504,7 +589,7 @@ future client adding a sixth value must not blank a dashboard.
 | Status | When |
 |---|---|
 | `200`, `204` | Recorded |
-| `400` | Malformed. **The client marks the run reported and logs loudly** — a request the server calls malformed will not become well-formed by being resent. This is why `400` may never mean "the server could not store it": see [`eumaeus-followup.md`](eumaeus-followup.md) §1 |
+| `400` | Malformed. **The client marks the run reported and logs loudly** — a request the server calls malformed will not become well-formed by being resent. This is why `400` may never mean "the server could not store it": see [jroedel/eumaeus#115](https://github.com/jroedel/eumaeus/issues/115) |
 | `401` | Terminal |
 
 ---
@@ -621,6 +706,11 @@ Done, in this repository:
 | `run_uuid` on both phases, stored so a late report keeps its identity | `backupbus.Run`, `backupdb`, `cmd/.../events.go` |
 | `seeding` and `repository_url` on run events | `backupbus.Runner.Seeding`, `fleetbus.Event` |
 | A rejected event dropped rather than resent forever | `fleetbus.ErrRejected`, `fleetbus.Flush` |
+| Install failures and panics, queued on disk and sent with or without a token | `business/domain/diag`, `eumaeusdiag` |
+| `repository.adopted`, `repository.snapshots` and the history horizon on the claim (§4.1) | `eumaeuscreds.Enrollment` |
+| The `legacy` block on the claim (§4.2), so a code pointing at the wrong bucket is refused before it is spent | `eumaeuscreds.LegacyInstall`, `cmd/sion-backup/adopt.go` |
+| `422` carrying the server's own sentence, kept apart from `400` | `eumaeusapi.ErrUnprocessable`, `eumaeusapi.BadRequest` |
+| Taking a legacy install over: the plan assembled from it, the Eumaeus commands printed, the adopted bucket checked afterwards | `cmd/sion-backup/adopt.go` |
 
 Still to do:
 
@@ -631,6 +721,41 @@ Still to do:
 | Hourly poll of §5, for `paused_until` and retirement | new, in the daemon | medium |
 | `POST /machines/me/card-issued` after printing | `cmd/sion-backup/enroll.go` | trivial |
 | Show "backups available since" from `repository.created_at` | `statusapp` | trivial |
+| `selfupdate.Source` against the `agent` block, replacing the GitHub fallback | `foundation/selfupdate` | medium |
+| Honour `poll_after_seconds` once the poll exists | daemon | trivial |
+| Take the seeding flag from `repository.adopted` rather than local history. **Live now, not hypothetical:** every machine `adopt-enroll` migrates has no local history, so its first run reports `seeding: true` against a repository holding years of snapshots, and §7's cutover guard waits on it | `backupbus`, `cmd/.../events.go` | small |
+
+### 11.1 Live on the server, not yet specified above
+
+Three things `terraboskamp.org` does that this document does not describe.
+They are recorded here so the gap is visible rather than discovered; each links
+to the issue where the server side is set out, and none of them is guesswork on
+our part.
+
+| What | Issue |
+|---|---|
+| `POST /diagnostics` — §5's install failures and panics, accepted with or without a machine token, `202` always, deduplicated on `(install_id, kind)` | [eumaeus#113](https://github.com/jroedel/eumaeus/issues/113) |
+| An `agent` block on §5's response, naming the version, an optional `minimum`, and a per-platform URL and SHA-256. **Absent when nobody has decided**, which is not the same as an empty version | [eumaeus#114](https://github.com/jroedel/eumaeus/issues/114) |
+| `poll_after_seconds` on §5's response. Omitted means no opinion; floored at 60 seconds and capped at a day | [eumaeus#117](https://github.com/jroedel/eumaeus/issues/117) |
+
+Writing them up properly here is work this repository owes — the client
+cannot consume any of them until it is done anyway. `repository.adopted` and
+`repository.snapshots` were the fourth of these and are now written up, in
+§4.1, because `adopt-enroll` consumes them.
+
+`openapi.yaml` was a different matter and is now settled: it moved to eumaeus
+in [eumaeus#121](https://github.com/jroedel/eumaeus/issues/121), because a
+machine-readable spec maintained by the client has no way to notice the server
+changing — these were the proof. All four drift items went in with it, along
+with four more corrections that came out of reading it against the handlers,
+and `Server.Endpoints()` there is now compared against the document in both
+directions by a test. Paths and methods only; every field and sentence below
+that is still hand-maintained, and is now hand-maintained in one repository
+rather than two.
+
+This document stays here. Half of it is this client's own reasoning and status
+— §11 and §11.1 — and it has a reason to live on this side that a
+machine-readable file does not.
 
 ## 12. Still open
 

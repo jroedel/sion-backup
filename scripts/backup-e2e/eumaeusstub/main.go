@@ -36,6 +36,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"strings"
 	"sync"
 	"time"
 )
@@ -48,8 +49,17 @@ func main() {
 		keyID    = flag.String("key-id", "", "S3 access key id")
 		secret   = flag.String("secret", "", "S3 secret access key")
 		nodeID   = flag.String("node", "gate-machine", "node id to enrol as")
-		journal  = flag.String("journal", "", "append every request to this file, as JSON lines")
-		ready    = flag.String("ready", "", "touch this file once listening")
+
+		// The two fields a bucket adopted from a legacy install carries.
+		// Off by default, which is also what an unadopted machine looks
+		// like — and what every machine adopted before Eumaeus grew these
+		// fields still looks like, which is why the client treats their
+		// absence as "ask restic" rather than as a denial.
+		adopted   = flag.Bool("adopted", false, "answer the claim as an adopted repository")
+		snapshots = flag.Int("snapshots", 0, "snapshots the adopted repository already holds")
+		since     = flag.String("history-since", "", "history horizon, as 2006-01-02")
+		journal   = flag.String("journal", "", "append every request to this file, as JSON lines")
+		ready     = flag.String("ready", "", "touch this file once listening")
 	)
 
 	flag.Parse()
@@ -69,12 +79,15 @@ func main() {
 	}
 
 	s := &server{
-		repo:     *repoURL,
-		password: pw,
-		keyID:    *keyID,
-		secret:   *secret,
-		node:     *nodeID,
-		journal:  *journal,
+		repo:      *repoURL,
+		password:  pw,
+		keyID:     *keyID,
+		secret:    *secret,
+		node:      *nodeID,
+		journal:   *journal,
+		adopted:   *adopted,
+		snapshots: *snapshots,
+		since:     *since,
 	}
 
 	mux := http.NewServeMux()
@@ -113,6 +126,12 @@ type server struct {
 	secret   string
 	node     string
 	journal  string
+
+	// adopted, snapshots and since describe a repository taken over from a
+	// legacy install rather than provisioned empty. See the -adopted flag.
+	adopted   bool
+	snapshots int
+	since     string
 
 	mu sync.Mutex
 }
@@ -167,6 +186,24 @@ func (s *server) claim(w http.ResponseWriter, r *http.Request) {
 	s.record("claim", body)
 	log.Printf("eumaeusstub: claim from %v", body["hostname"])
 
+	if where := legacyRepository(body); where != "" && !sameRepository(where, s.repo) {
+		// The refusal that exists for one mistake: a code that enrols this
+		// machine against a bucket it has not been writing to. Answered here
+		// so the client's half of it can be exercised without the real
+		// server. The code is not consumed, which in a stub means nothing at
+		// all is consumed.
+		log.Printf("eumaeusstub: refusing a claim from a machine writing to %s", where)
+
+		writeJSON(w, http.StatusUnprocessableEntity, map[string]any{
+			"error": "this machine backs up to " + where + ", and that code enrols it " +
+				"against " + s.repo + ". The code has not been used: adopt the bucket the " +
+				"machine is already writing to, then present it again",
+			"field": "legacy.repository_url",
+		})
+
+		return
+	}
+
 	resp := map[string]any{
 		"machine_token": "gate-token-" + s.node,
 		"node_id":       s.node,
@@ -175,12 +212,7 @@ func (s *server) claim(w http.ResponseWriter, r *http.Request) {
 			"email": "gate@example.invalid",
 		},
 		"warn_after_hours": 48,
-		"repository": map[string]string{
-			"url":      s.repo,
-			"provider": "wasabi",
-			"region":   "test",
-			"bucket":   "test",
-		},
+		"repository":       s.repository(),
 		"credentials": map[string]any{
 			"restic_password": s.password,
 			"machine":         keyPair{s.keyID, s.secret},
@@ -193,6 +225,62 @@ func (s *server) claim(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, resp)
+}
+
+// legacyRepository reads where the claiming machine says it has been backing
+// up. Absent is not a mismatch: a client that found an install and could not
+// open its repository says nothing here, and "I do not know" must not be read
+// as "somewhere else".
+func legacyRepository(body map[string]any) string {
+	legacy, ok := body["legacy"].(map[string]any)
+	if !ok {
+		return ""
+	}
+
+	where, _ := legacy["repository_url"].(string)
+
+	return where
+}
+
+// sameRepository compares two repository URLs the way the contract says to:
+// surrounding space and trailing slashes ignored, case significant, because a
+// provider where Bucket123 and bucket123 are two buckets is a provider where
+// folding case accepts a claim against the wrong one.
+func sameRepository(a, b string) bool {
+	trim := func(s string) string {
+		return strings.TrimRight(strings.TrimSpace(s), "/")
+	}
+
+	return trim(a) == trim(b)
+}
+
+// repository is the claim's repository block.
+//
+// The adoption fields are omitted rather than sent as false and zero, which is
+// what the real server does and what the client depends on: absence means "ask
+// restic", and a hard `"adopted": false` would be a denial the server is not
+// in a position to make.
+func (s *server) repository() map[string]any {
+	out := map[string]any{
+		"url":      s.repo,
+		"provider": "wasabi",
+		"region":   "test",
+		"bucket":   "test",
+	}
+
+	if s.adopted {
+		out["adopted"] = true
+	}
+
+	if s.snapshots > 0 {
+		out["snapshots"] = s.snapshots
+	}
+
+	if s.since != "" {
+		out["created_at"] = s.since + "T00:00:00Z"
+	}
+
+	return out
 }
 
 func (s *server) credentials(w http.ResponseWriter, r *http.Request) {

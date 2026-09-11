@@ -82,7 +82,7 @@ $Script:PriorVersion = ''
 # The failures worth hearing about are the ones nobody will type up: an
 # install that fell over at nine in the evening on somebody's laptop, which
 # will fall over the same way on the next machine unless it is seen. Sending
-# needs no token -- see docs/eumaeus-requests.md 5.1.
+# needs no token -- see jroedel/eumaeus#113.
 function Report-Failure {
   param([string] $Detail)
 
@@ -155,6 +155,9 @@ This machine is already backing up with the old scripts.
 Read the plan above. Nothing below touches the legacy install, its bucket or
 its credentials -- but decide the bucket question BEFORE enrolling, because
 enrolling is what fixes the answer.
+
+"sion-backup adopt-enroll" is the command that decides it in the direction
+that keeps the history. It is step 2 at the end of this script.
 "@
 
   if ((Read-Host "Continue? [y/N]") -notmatch '^[Yy]') {
@@ -281,18 +284,28 @@ if ($DisableLegacyTask) {
 $Script:Step = 'done'
 
 Write-Host ""
+# Repeated on the command lines below so that a machine whose old install is
+# somewhere the notes never mentioned gets an instruction that works as typed.
+$legacyDirArg = if ($LegacyDir) { " --legacy-dir `"$LegacyDir`"" } else { "" }
+
 Write-Host "Next:"
 Write-Host "  1. Nothing to configure: the server is built in. To see where this"
 Write-Host "     machine keeps its files:"
 Write-Host "       $InstallDir\sion-backup.exe paths"
 if ($legacy) {
-Write-Host "     If this machine's existing bucket is being adopted, that has to"
-Write-Host "     be set up on the server FIRST - docs/eumaeus-requests.md 5.3."
-}
+Write-Host "  2. Take the old install over. This writes its plan as this machine's"
+Write-Host "     own and prints the Eumaeus commands to run, filled in:"
+Write-Host "       $InstallDir\sion-backup.exe adopt-enroll$legacyDirArg"
+Write-Host "     Run those on the server -- adopt, NOT provision -- then come back"
+Write-Host "     with the code. This checks that the bucket handed back is the"
+Write-Host "     legacy one, and prints the restore card for the owner:"
+Write-Host "       $InstallDir\sion-backup.exe adopt-enroll --code XXXX-XXXX"
+} else {
 Write-Host "  2. In Eumaeus, choose 'Enrol a computer', pick the owner and the"
 Write-Host "     bucket, and bring the code over. It lasts fifteen minutes:"
 Write-Host "       $InstallDir\sion-backup.exe enroll --code XXXX-XXXX"
 Write-Host "     Print the restore card it produces and give it to the owner."
+}
 Write-Host "  3. Start it:"
 Write-Host "       Start-ScheduledTask -TaskName sion-backup"
 Write-Host "  4. Check it:"

@@ -9,9 +9,10 @@
 // # The server side
 //
 // Eumaeus serves these endpoints under APIPrefix; docs/eumaeus-api.md is the
-// contract and openapi.yaml is its machine-readable form. Not all six exist
-// yet on either side, and that is fine: an endpoint neither has implemented
-// answers 404, which `sion-backup doctor` reports as clearly as a wrong token.
+// contract, and its machine-readable form is openapi.yaml in the eumaeus
+// repository, beside the handlers. Not all six exist yet on either side, and
+// that is fine: an endpoint neither has implemented answers 404, which
+// `sion-backup doctor` reports as clearly as a wrong token.
 package eumaeusapi
 
 import (
@@ -75,7 +76,22 @@ var ErrBadRequest = errors.New("eumaeusapi: the request was rejected as malforme
 // machine.
 var ErrConflict = errors.New("eumaeusapi: already claimed")
 
-// BadRequest is a 400 with the server's own explanation read out of it.
+// ErrUnprocessable is a 422: the request was well-formed and the server will
+// not act on it, because something on its own side has to change first.
+//
+// Kept apart from ErrBadRequest because the two say opposite things about
+// whose fault it is and what to do next. A 400 is this client sending
+// nonsense; nobody at the machine can help and the answer is to stop and make
+// noise. A 422 is the server saying the request is fine and the situation is
+// not — the machine's bucket has not been provisioned, or the code enrols it
+// against a repository it is not the one writing to — and the person standing
+// at the machine is exactly who can fix it, often without the code expiring.
+//
+// Every 422 arrives as a [BadRequest] too, for its sentence.
+var ErrUnprocessable = errors.New("eumaeusapi: the server will not act on this yet")
+
+// BadRequest is a refusal with the server's own explanation read out of it: a
+// 400, or a 422.
 //
 // The explanation is the point of the type. Eumaeus answers a refused claim
 // with one sentence written for a person and the name of the input that was
@@ -92,6 +108,11 @@ var ErrConflict = errors.New("eumaeusapi: already claimed")
 type BadRequest struct {
 	Method string
 	Path   string
+
+	// Status is 400 or 422, and decides which sentinel [BadRequest.Unwrap]
+	// answers with. A caller that only wants the sentence never reads it; one
+	// deciding whether to give up or to send somebody to fix something does.
+	Status int
 
 	// Message is the server's sentence, fit to print as it stands. Empty when
 	// the body was not the shape the contract describes.
@@ -116,13 +137,19 @@ func (e *BadRequest) Error() string {
 		return e.Message
 
 	default:
-		return fmt.Sprintf("%s: %s %s: %s", ErrBadRequest, e.Method, e.Path, e.Body)
+		return fmt.Sprintf("%s: %s %s: %s", e.Unwrap(), e.Method, e.Path, e.Body)
 	}
 }
 
-// Unwrap keeps errors.Is(err, ErrBadRequest) true, which is all the callers
-// that only need to know the class ever ask.
-func (e *BadRequest) Unwrap() error { return ErrBadRequest }
+// Unwrap keeps errors.Is true for the class this refusal belongs to, which is
+// all the callers that only need the class ever ask.
+func (e *BadRequest) Unwrap() error {
+	if e.Status == http.StatusUnprocessableEntity {
+		return ErrUnprocessable
+	}
+
+	return ErrBadRequest
+}
 
 // maxDetail bounds how much server text this client will carry around inside
 // an error. A 400 body is one sentence; anything near this is a proxy's error
@@ -131,8 +158,8 @@ const maxDetail = 1 << 10
 
 // newBadRequest reads the contract's error shape out of a body, and keeps the
 // body itself when it is not that shape.
-func newBadRequest(method, path string, body []byte) *BadRequest {
-	e := BadRequest{Method: method, Path: path}
+func newBadRequest(status int, method, path string, body []byte) *BadRequest {
+	e := BadRequest{Method: method, Path: path, Status: status}
 
 	var decoded struct {
 		Error string `json:"error"`
@@ -321,13 +348,22 @@ func (c *Client) Do(ctx context.Context, method, path string, body, out any) err
 	case resp.StatusCode == http.StatusNotFound:
 		return ErrNotFound
 
-	case resp.StatusCode == http.StatusBadRequest:
+	case resp.StatusCode == http.StatusBadRequest,
+		resp.StatusCode == http.StatusUnprocessableEntity:
 		// The body is kept, and decoded: it carries one sentence meant for a
 		// person and the name of the field that was wrong, and that sentence
 		// is the whole value of the status to whoever reads it.
+		//
+		// 422 belongs here rather than in the catch-all below, and did not
+		// until the claim grew a second cause for one. It is now the status
+		// an adopting client is most likely to meet — the code enrols this
+		// machine against a repository it has not been writing to — and the
+		// catch-all rendered it as two package prefixes, a status line and a
+		// JSON fragment, in front of the one reader who cannot look anything
+		// up.
 		detail, _ := io.ReadAll(limited)
 
-		return newBadRequest(method, path, detail)
+		return newBadRequest(resp.StatusCode, method, path, detail)
 
 	case resp.StatusCode == http.StatusUnauthorized:
 		return ErrUnauthorised

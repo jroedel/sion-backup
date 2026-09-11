@@ -173,6 +173,41 @@ plain text, and this says which file they are in and leaves them there. If the
 install is somewhere the notes never mentioned — they were done by hand —
 point at it with `--legacy-dir`.
 
+`recon` reports. `adopt-enroll` is what acts on the report:
+
+```sh
+sudo ./sion-backup adopt-enroll          # asks before it writes anything
+```
+
+It takes the plan out of the legacy install — the targets, both halves of the
+exclude list, the per-machine tuning, VSS on Windows — writes it as this
+machine's own, opens the old repository to count what is in it, and prints the
+two Eumaeus commands to run, with the bucket name, node ID, snapshot count and
+history horizon already filled in and wrapped in `ssh` so they can be run from
+right there:
+
+```sh
+ssh -t terraboskamp.org "eumaeus backup adopt -owner … -node dell3-backup   -bucket bucket123 -history-since 2019-03-01 -snapshots 1412"
+ssh terraboskamp.org 'eumaeus backup code dell3-backup'
+```
+
+`--ssh` names a different host; `--ssh ""` prints them bare. Then, with the
+code that second command issues:
+
+```sh
+sudo ./sion-backup adopt-enroll --code K4TP-9QX2
+```
+
+The claim tells Eumaeus which bucket this machine has actually been writing to,
+and a code that enrols it against a different one is **refused without being
+consumed** — adopt the right bucket and present the same code again. After a
+successful claim it checks again from this end, against the repository itself.
+
+That check is the reason the command exists. `provision` typed where `adopt`
+was meant hands back a working, empty bucket: every step after it succeeds, the
+dashboard goes green, and two years of history sit in a bucket nothing points
+at until somebody needs a file from 2024.
+
 The installers run it for you and stop before doing anything irreversible:
 
 ```sh
@@ -185,7 +220,8 @@ has taken one verified backup: `install.sh --disable-legacy`, or
 `install.ps1 -DisableLegacyTask`. Two backup systems for one night is untidy;
 none is worse.
 
-To set up a machine:
+To set up a machine with no backup on it — the rare case; on one that already
+backs up, `adopt-enroll` above replaces steps 1 and 2 and keeps the history:
 
 ```sh
 # 1. In Eumaeus: sign in, "Enrol a computer", choose the owner and the bucket.
@@ -221,6 +257,10 @@ sion-backup daemon     the scheduler and the status page (what the service runs)
 sion-backup run        one backup now, in the foreground
 sion-backup status     the last few runs, as a table
 sion-backup enroll     fetch this machine's credentials and prove they work
+sion-backup adopt-enroll
+                       take over the backup already running here, keeping its
+                       bucket and its history
+sion-backup recon      what is already on this machine, including the old scripts
 sion-backup doctor     check everything a backup needs, and say what is wrong
 sion-backup paths      where this program keeps its files
 ```
@@ -418,7 +458,7 @@ be read. That is theirs.
 
 ---
 
-## The Eumaeus side does not exist yet
+## The Eumaeus side
 
 The contract is these documents, in the order to read them:
 
@@ -426,12 +466,11 @@ The contract is these documents, in the order to read them:
 |---|---|
 | [`docs/model.md`](docs/model.md) | the fleet model — people, machines, repositories, the alerting state machine, and what survives Eumaeus itself being lost. **Read first, and argue with this one.** |
 | [`docs/eumaeus-api.md`](docs/eumaeus-api.md) | the endpoint specification, and the rules a correct server has to follow |
-| [`docs/openapi.yaml`](docs/openapi.yaml) | the same endpoints, machine-readable. `make api-check` validates it and all 29 examples in it |
-| [`docs/eumaeus-requests.md`](docs/eumaeus-requests.md) | what this client needs from the server, and the behaviours it now depends on — the document to hand to whoever works on Eumaeus |
-| [`docs/eumaeus-followup.md`](docs/eumaeus-followup.md) | the reply to Eumaeus's answers of 2026-09-10: what changed here because of them, what they did not see, and what is still open |
+| [`eumaeus/docs/openapi.yaml`](https://github.com/jroedel/eumaeus/blob/main/docs/openapi.yaml) | the same endpoints, machine-readable. **It lives there now** ([eumaeus#121](https://github.com/jroedel/eumaeus/issues/121)): a spec the client maintains has no way to notice the server changing, and ours was four features behind for exactly that reason. A test beside their routing table now fails when a served path is missing from the document, or the reverse |
+| [eumaeus issues](https://github.com/jroedel/eumaeus/issues) | what this client still needs from the server. One issue per ask, on their tracker — not a document passed back and forth, which is how the last round went unanswered for a week |
 
-Six endpoints. The installation at `https://terraboskamp.org` now answers
-under this base path; the client speaks the first, third and fourth of them:
+Seven endpoints. The installation at `https://terraboskamp.org` answers all of
+them; the client speaks the first, third, fourth and seventh:
 
 ```
 POST /api/backup/v1/enrollments/claim           code → machine token + credentials
@@ -440,11 +479,14 @@ GET  /api/backup/v1/machines/me/credentials     the secrets, audited
 POST /api/backup/v1/runs                        a run event
 POST /api/backup/v1/machines/me/rotation-request  the owner asks for a fresh bucket
 POST /api/backup/v1/machines/me/card-issued     the owner's card was printed
+POST /api/backup/v1/diagnostics                 an install that failed, token or not
 ```
 
-§11 of the API spec lists what is done on this side and what is not.
+§11 of the API spec lists what is done on this side and what is not —
+including four things the server now does that the specification has not caught
+up with.
 
-One rule shapes all six: **the server owns the facts, the machine reports what
+One rule shapes all seven: **the server owns the facts, the machine reports what
 it did.** Eumaeus provisions the bucket, generates the repository password,
 mints both S3 keys and decides when a machine is overdue. The machine caches
 none of it: every run fetches its credentials and discards them.
@@ -465,8 +507,12 @@ intended and not yet done is in [`docs/todo.md`](docs/todo.md).
   way to hold one back from part of the fleet or recall one already out. What
   stands in for it is a release gate: the release is published as a draft, the
   previously published version is upgraded to it on a real machine, and it is
-  only un-drafted if that machine comes back. The real answer is Eumaeus —
-  `selfupdate.Source` is the seam, `docs/eumaeus-requests.md` §5.2 the ask.
+  only un-drafted if that machine comes back. **The real answer now exists on
+  the server** — `GET /machines/me` carries an `agent` block naming the version
+  and the per-platform hash, with `-version none` as the kill switch
+  ([jroedel/eumaeus#114](https://github.com/jroedel/eumaeus/issues/114)). The
+  remaining gap is ours: `selfupdate.Source` is the seam and nothing implements
+  it against Eumaeus yet.
 - **A rolled-back machine is protected, but only from the release after the
   one that taught it how.** A new version now starts on probation: if it will
   not stay running it is replaced with the previous one and never installed
@@ -540,9 +586,10 @@ intended and not yet done is in [`docs/todo.md`](docs/todo.md).
   `SHA256SUMS`, and runs it once before installing it — but the binary and the
   hash that vouches for it are published by the same workflow to the same
   host, so the hash proves the download arrived intact and nothing more.
-  [`docs/eumaeus-requests.md`](docs/eumaeus-requests.md) §5.2 asks Eumaeus to
-  name the expected version and hash instead; `selfupdate.Source` is the seam
-  that goes through.
+  Eumaeus now names the expected version and hash itself
+  ([jroedel/eumaeus#114](https://github.com/jroedel/eumaeus/issues/114)), and an
+  absent `agent` block is what means "fall back to the release's own sums" —
+  so this gap closes as soon as `selfupdate.Source` is wired to it.
 - **No restore UI.** Restores are `restic restore` at a command line, with the
   password out of Eumaeus. That is the right place for a rare, high-stakes,
   supervised operation to start; a button would be worse.

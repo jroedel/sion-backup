@@ -48,8 +48,7 @@ import (
 // Kind is what happened.
 //
 // A short closed set, because the server groups by it. A kind it does not
-// recognise is a fourth kind and not an error — see docs/eumaeus-requests.md
-// §5.1.
+// recognise is a fourth kind and not an error — see jroedel/eumaeus#113.
 type Kind string
 
 const (

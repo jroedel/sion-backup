@@ -142,25 +142,3 @@ jobs:
 
       - name: Every way a release can be wrong
         run: scripts/selfupdate-e2e/run
-
-  api-spec:
-    # The OpenAPI document and its examples. Separate from the Go jobs because
-    # it needs Python and nothing else does, and because its failure means
-    # something different: the contract handed to the Eumaeus team has drifted
-    # from itself.
-    runs-on: ubuntu-latest
-
-    steps:
-      - uses: actions/checkout@v7
-
-      - uses: actions/setup-python@v7
-        with:
-          python-version: '3.12'
-          cache: pip
-          cache-dependency-path: scripts/requirements-api.txt
-
-      - name: Install
-        run: pip install -r scripts/requirements-api.txt
-
-      - name: Validate the OpenAPI document and its examples
-        run: python scripts/check-api-spec.py

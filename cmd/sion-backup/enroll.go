@@ -74,15 +74,41 @@ func enrollCmd(args []string) error {
 	}
 	defer d.close()
 
-	if d.machineToken != "" && !*force {
-		return fmt.Errorf("this machine is already enrolled.\n\n"+
-			"Its token is in %s. Use --force to replace it — the old token stays "+
-			"valid until it is revoked in Eumaeus", d.paths.Token)
+	_, err = d.enroll(ctx, enrollment{code: *code, server: *server, force: *force})
+
+	return err
+}
+
+// enrollment is one claim, as asked for on the command line.
+type enrollment struct {
+	code   string
+	server string
+	force  bool
+
+	// legacy is the old backup this machine is being migrated off, when
+	// `adopt-enroll` found one. Nil for an ordinary enrollment, which is what
+	// every machine with nothing on it sends.
+	legacy *eumaeuscreds.LegacyInstall
+}
+
+// enroll claims a code and makes this machine ready to back up.
+//
+// Split out of [enrollCmd] so that `adopt-enroll` can do the same thing as its
+// last step rather than telling the operator to run a second command. What the
+// two need is identical: a machine whose bucket Eumaeus adopted is enrolled
+// exactly like one whose bucket it provisioned — the difference is entirely in
+// what happened on the server beforehand, and in the checking afterwards.
+//
+// It returns the enrollment so that a caller can check the bucket it was given
+// is the one it expected. Nothing in it is written down here beyond the token.
+func (d *deps) enroll(ctx context.Context, o enrollment) (eumaeuscreds.Enrollment, error) {
+	if err := d.refuseSecondEnrollment(o.force); err != nil {
+		return eumaeuscreds.Enrollment{}, err
 	}
 
 	// --server, then the config file, then the fleet's own server. The last of
 	// those is why enrolling a fresh machine needs nothing but the code.
-	base := *server
+	base := o.server
 	if base == "" {
 		base = d.cfg.EumaeusURL()
 	}
@@ -92,7 +118,7 @@ func enrollCmd(args []string) error {
 	// then failed to download restic would have burned it — and step 2 below
 	// proves the bucket opens, which needs restic anyway.
 	if err := d.ensureRestic(ctx); err != nil {
-		return err
+		return eumaeuscreds.Enrollment{}, err
 	}
 
 	fmt.Printf("Enrolling against %s\n", base)
@@ -103,21 +129,22 @@ func enrollCmd(args []string) error {
 		UserAgent: "sion-backup/" + version,
 	})
 	if err != nil {
-		return err
+		return eumaeuscreds.Enrollment{}, err
 	}
 
-	enrolled, err := eumaeuscreds.Claim(ctx, anon, *code, eumaeuscreds.Machine{
+	enrolled, err := eumaeuscreds.Claim(ctx, anon, o.code, eumaeuscreds.Machine{
 		Hostname:     hostname(),
 		OS:           osName(),
 		LocalAccount: localAccount(),
 		Agent:        version,
+		Legacy:       o.legacy,
 	})
 	if err != nil {
-		return err
+		return eumaeuscreds.Enrollment{}, err
 	}
 
 	if err := token.Save(d.paths.Token, enrolled.MachineToken); err != nil {
-		return err
+		return eumaeuscreds.Enrollment{}, err
 	}
 
 	fmt.Printf("Enrolled %s for %s.\n", enrolled.NodeID, enrolled.OwnerName)
@@ -126,7 +153,7 @@ func enrollCmd(args []string) error {
 	// whose bucket is briefly unreachable is still enrolled and will simply
 	// try again tonight. A failed check below is reported, not rolled back.
 	if err := d.storePlan(ctx, enrolled); err != nil {
-		return err
+		return enrolled, err
 	}
 
 	if err := checkRepository(ctx, d.restic, enrolled); err != nil {
@@ -138,7 +165,25 @@ func enrollCmd(args []string) error {
 
 	printRestoreCard(enrolled)
 
-	return nil
+	return enrolled, nil
+}
+
+// refuseSecondEnrollment stops a machine that already has a token claiming a
+// second one by accident.
+//
+// Checked before anything else and separately from [deps.enroll], because
+// `adopt-enroll` has to ask the same question at the top of its own run: it
+// reads the machine, writes a plan and opens the legacy repository before it
+// gets anywhere near a code, and finding out at the end that none of it could
+// be used would be a wasted visit to somebody's desk.
+func (d *deps) refuseSecondEnrollment(force bool) error {
+	if d.machineToken == "" || force {
+		return nil
+	}
+
+	return fmt.Errorf("this machine is already enrolled.\n\n"+
+		"Its token is in %s. Use --force to replace it — the old token stays "+
+		"valid until it is revoked in Eumaeus", d.paths.Token)
 }
 
 // storePlan records what the server said, filling in local defaults for the

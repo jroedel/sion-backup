@@ -15,6 +15,7 @@ import (
 	"bufio"
 	"context"
 	"errors"
+	"fmt"
 	"io/fs"
 	"os"
 	"os/exec"
@@ -143,6 +144,7 @@ func describe(ctx context.Context, dir, script string, layout legacybus.Layout, 
 		RepositoryURL:   fields.RepositoryURL,
 		NodeID:          fields.NodeID,
 		Targets:         fields.Targets,
+		Excludes:        fields.Excludes,
 		ExcludeFile:     fields.ExcludeFile,
 		UsesFSSnapshot:  fields.UsesFSSnapshot,
 		PackSizeMiB:     fields.PackSizeMiB,
@@ -462,4 +464,85 @@ func scheduledTask(ctx context.Context, script string) string {
 	}
 
 	return ""
+}
+
+// ExcludePatterns reads the legacy exclude file.
+//
+// The reading half of the advice `recon` prints: copy the exclude list into
+// the new configuration before the first run, or that run will back up things
+// somebody chose to leave out. Whoever wrote that list is not going to write
+// it again.
+//
+// Blank lines and comments are dropped; everything else is handed over as
+// restic itself would read it. The patterns are directory names belonging to
+// the person whose machine this is, so they go into the plan and not onto the
+// screen — the caller reports how many there were.
+//
+// A missing or unreadable file is an error rather than an empty list. An
+// empty list here means "this machine excludes nothing", which is a different
+// and much worse claim than "the file could not be read".
+func ExcludePatterns(in *legacybus.Install) ([]string, error) {
+	if in == nil || in.ExcludeFile == "" {
+		return nil, nil
+	}
+
+	f, err := os.Open(in.ExcludeFile)
+	if err != nil {
+		return nil, fmt.Errorf("legacyscan: reading the exclude list: %w", err)
+	}
+	defer f.Close()
+
+	var out []string
+
+	scanner := bufio.NewScanner(f)
+
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+
+		if line != "" && !strings.HasPrefix(line, "#") {
+			out = append(out, line)
+		}
+	}
+
+	if err := scanner.Err(); err != nil {
+		return nil, fmt.Errorf("legacyscan: reading the exclude list: %w", err)
+	}
+
+	return out, nil
+}
+
+// Credentials reads the secrets the legacy install holds, including the
+// password file when the script points at one.
+//
+// See [legacybus.Credentials] for why this is a call a caller has to make on
+// purpose rather than a field of the scan. Nothing in this package calls it;
+// `sion-backup adopt-enroll` does, once, with a person watching.
+//
+// Incomplete credentials come back with no error. A script somebody scrubbed
+// before filing it, or a password file this account cannot read, is an
+// ordinary thing to find on a machine and the caller's answer is to carry on
+// without the measurement rather than to refuse to migrate.
+func Credentials(in *legacybus.Install) (legacybus.Credentials, error) {
+	if in == nil {
+		return legacybus.Credentials{}, nil
+	}
+
+	raw, err := os.ReadFile(in.Script)
+	if err != nil {
+		return legacybus.Credentials{}, fmt.Errorf("legacyscan: reading %s: %w", in.Script, err)
+	}
+
+	c := legacybus.ParseCredentials(string(raw))
+
+	if len(c.Password) == 0 && c.PasswordFile != "" {
+		// Trailing newline stripped and nothing else: a repository password
+		// is whatever bytes are in the file, and "helpfully" trimming spaces
+		// out of one would produce a password that does not open the bucket
+		// and no explanation of why.
+		if pw, err := os.ReadFile(c.PasswordFile); err == nil {
+			c.Password = []byte(strings.TrimRight(string(pw), "\r\n"))
+		}
+	}
+
+	return c, nil
 }
