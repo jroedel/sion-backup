@@ -117,7 +117,7 @@ func (d *deps) enroll(ctx context.Context, o enrollment) (eumaeuscreds.Enrollmen
 	// fifteen minutes and can be used once, so a machine that claimed one and
 	// then failed to download restic would have burned it — and step 2 below
 	// proves the bucket opens, which needs restic anyway.
-	if err := d.ensureRestic(ctx); err != nil {
+	if err := d.fetchRestic(ctx); err != nil {
 		return eumaeuscreds.Enrollment{}, err
 	}
 

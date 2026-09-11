@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"time"
 
@@ -585,7 +586,62 @@ func (r Recon) print() {
 		fmt.Printf("  %d. %s\n", i+1, wrap(step, 5))
 	}
 
+	r.printNextCommand()
+
 	fmt.Println()
+}
+
+// printNextCommand names the one command to run after reading this.
+//
+// The plan above has said, in prose, that adopting the bucket is the decision
+// the migration turns on. Prose is where that belongs — but a report that
+// explains a decision and then leaves somebody to work out what to type is a
+// report they will act on by improvising, and the improvisation here is
+// `enroll`, which provisions a fresh bucket and starts the history at today.
+//
+// So the last thing on the screen is the command, spelled out, with the
+// --legacy-dir they had to pass carried into it.
+func (r Recon) printNextCommand() {
+	fmt.Printf("\nwhat to run next\n")
+
+	switch {
+	case r.Legacy != nil:
+		fmt.Printf("  %s\n", reconNextCommand("adopt-enroll", r.Legacy.Dir))
+		fmt.Printf("    Takes this install over: writes its plan as this machine's own and\n")
+		fmt.Printf("    prints the Eumaeus commands that ADOPT its bucket. It asks before\n")
+		fmt.Printf("    it writes anything, and changes nothing about the old install.\n")
+
+	case len(r.Blocked) > 0:
+		fmt.Printf("  %s\n", reconNextCommand("recon", ""))
+		fmt.Printf("    First. Nothing above can be acted on until the directories listed\n")
+		fmt.Printf("    under COULD NOT LOOK have been read.\n")
+
+	default:
+		fmt.Printf("  sion-backup enroll --code XXXX-XXXX\n")
+		fmt.Printf("    Nothing was found to take over, so this machine is new as far as\n")
+		fmt.Printf("    backups go. Provision a bucket in Eumaeus and issue a code first.\n")
+	}
+}
+
+// reconNextCommand builds the line to type, with sudo and the extra directory
+// where they are wanted.
+func reconNextCommand(sub, legacyDir string) string {
+	cmd := "sion-backup " + sub
+
+	// Named because these installs live where an ordinary account cannot
+	// read, and a command that has to be run twice is one somebody runs once.
+	if runtime.GOOS != "windows" {
+		cmd = "sudo " + cmd
+	}
+
+	// Carried through, because a machine that needed it to be found needs it
+	// again to be adopted, and re-deriving it from memory is how the second
+	// command finds nothing.
+	if legacyDir != "" && !slices.Contains(legacyscan.Candidates(), legacyDir) {
+		cmd += " --legacy-dir " + legacyDir
+	}
+
+	return cmd
 }
 
 // excludeSources says where a legacy install's excludes are, in both of the

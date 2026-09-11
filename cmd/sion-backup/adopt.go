@@ -691,7 +691,7 @@ func (a *adoption) measure(ctx context.Context, d *deps) {
 		return
 	}
 
-	if err := d.ensureRestic(ctx); err != nil {
+	if err := d.fetchRestic(ctx); err != nil {
 		fmt.Printf("\nThe repository was not opened: %v\n", err)
 
 		return
