@@ -35,6 +35,32 @@ type Config struct {
 	Targets    []string `toml:"targets"`
 	Excludes   []string `toml:"excludes"`
 
+	// Confirmed says the administrator has chosen what this machine backs up,
+	// so it does not have to wait for somebody at the keyboard to say it
+	// again on the set-up page.
+	//
+	// # Why this exists, and why it is not the default
+	//
+	// A plan is normally held until a person at the machine confirms it — see
+	// planbus.Plan.ConfirmedAt. That is right for the case it was built for: a
+	// laptop, a first backup measured in hours, and a folder list somebody
+	// else guessed at.
+	//
+	// It is wrong for an unattended install. A machine built from a script,
+	// with its folders written in this file by the person who administers the
+	// fleet, has had the question answered — by them, deliberately, in
+	// writing. Making it wait for a web page nobody is going to open would
+	// mean it silently never backs up, which is the failure this whole
+	// program exists to prevent.
+	//
+	// Absent means wait, because that is the safe direction: a machine that
+	// waits is visible on its own status page and in doctor, and a machine
+	// that backs up the wrong folders for a month is not.
+	//
+	// Like the rest of the plan, it is read once, when the plan is seeded.
+	// Adding it to a machine that already has a plan does nothing.
+	Confirmed bool `toml:"confirmed"`
+
 	Schedule ScheduleConfig `toml:"schedule"`
 	Update   UpdateConfig   `toml:"update"`
 	Storage  StorageConfig  `toml:"storage"`

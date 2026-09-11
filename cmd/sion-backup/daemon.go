@@ -264,7 +264,16 @@ func (d *deps) seedPlan(ctx context.Context) error {
 		return nil
 	}
 
-	seeded, err := d.plan.Seed(ctx, seed, time.Now())
+	now := time.Now()
+
+	// The clock is stamped here rather than in Config.Plan, because the
+	// composition root is where this program decides what time it is. See
+	// Config.Confirmed for why an unattended install may say this at all.
+	if d.cfg.Confirmed {
+		seed.ConfirmedAt = now
+	}
+
+	seeded, err := d.plan.Seed(ctx, seed, now)
 	if err != nil {
 		return err
 	}
@@ -272,7 +281,14 @@ func (d *deps) seedPlan(ctx context.Context) error {
 	if seeded {
 		d.log.Info("took the backup plan from the config file",
 			"node", seed.NodeID, "targets", len(seed.Targets),
+			"confirmed", d.cfg.Confirmed,
 			"note", "it is in the database now, and the file will not be read again")
+
+		if !d.cfg.Confirmed {
+			d.log.Info("the plan is waiting to be confirmed",
+				"at", d.statusPage()+"/setup",
+				"note", `an unattended install says "confirmed = true" in config.toml instead`)
+		}
 	}
 
 	return nil

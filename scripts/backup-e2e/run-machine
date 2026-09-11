@@ -250,6 +250,13 @@ repository = "${REPO_URL}"
 targets    = ["${DATA}"]
 excludes   = ["**/*.tmp"]
 
+# This machine is built from a script and its folders are written above, by
+# the thing administering it. That is exactly what an unattended install is,
+# and it is what this flag is for: without it the plan waits for somebody at a
+# keyboard to confirm it on the set-up page, and nobody is ever at this
+# keyboard. See Config.Confirmed.
+confirmed  = true
+
 [eumaeus]
 url = "http://${STUB_ADDR}"
 
@@ -334,7 +341,14 @@ fi
 
 say "First backup"
 
-if measure backup-1 as_user "$EXE" run >/tmp/run1.log 2>&1; then
+# -v, and it is load-bearing rather than cautious. `run` is a command somebody
+# watches, so it prints its own summary and keeps its internal narration off
+# their terminal -- a deliberate change, made because adopt-enroll was putting
+# slog lines through the middle of its output. The checks below read that
+# narration: whether the machine scheduled its own repository check, and how
+# big a slice it sized. Asking for it explicitly is how a harness gets what a
+# person does not want.
+if measure backup-1 as_user "$EXE" run -v >/tmp/run1.log 2>&1; then
   ok "run 1 finished"
 else
   bad "run 1 failed"
@@ -382,7 +396,7 @@ ok "changed one file, deleted one, added one, made one unreadable"
 
 say "Second backup"
 
-measure backup-2 as_user "$EXE" run >/tmp/run2.log 2>&1
+measure backup-2 as_user "$EXE" run -v >/tmp/run2.log 2>&1
 run2_status=$?
 
 snaps=$(restic_do snapshots --json 2>/dev/null | jq 'length' 2>/dev/null || echo 0)

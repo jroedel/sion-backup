@@ -461,6 +461,19 @@ holds it there.
 `sion-backup run` and the "Back up now" button are unaffected. Both are a
 person deciding, which is the thing the gate is waiting for.
 
+**An unattended install says so in `config.toml`:**
+
+```toml
+confirmed = true
+```
+
+A machine built from a script, with its folders written in that file by whoever
+administers the fleet, has had the question answered — by them, deliberately,
+in writing. Making it wait for a page nobody is going to open would mean it
+silently never backs up. Absent means wait, because that is the safe direction:
+a machine that waits says so on its own status page and in `doctor`, and a
+machine backing up the wrong folders for a month does not.
+
 ### Measuring the upload speed without writing anything
 
 The estimate on that page needs real bytes sent to the real endpoint over the
