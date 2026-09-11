@@ -187,21 +187,36 @@ history horizon already filled in and wrapped in `ssh` so they can be run from
 right there:
 
 ```sh
-ssh -t root@terraboskamp.org 'sudo -u eumaeus EUMAEUS_DATA_DIR=/var/lib/eumaeus eumaeus backup check'
-ssh -t root@terraboskamp.org "sudo -u eumaeus EUMAEUS_DATA_DIR=/var/lib/eumaeus eumaeus backup adopt -owner … -node dell3-backup -bucket bucket123 -history-since 2019-03-01 -snapshots 1412"
-ssh root@terraboskamp.org 'sudo -u eumaeus EUMAEUS_DATA_DIR=/var/lib/eumaeus eumaeus backup code dell3-backup'
+ssh -t root@terraboskamp.org 'sudo -u eumaeus \
+        EUMAEUS_DATA_DIR=/var/lib/eumaeus \
+        EUMAEUS_WASABI_ENV=/var/lib/eumaeus/.config/eumaeus/wasabi-provisioning.env \
+        eumaeus backup check'
+...
+ssh root@terraboskamp.org 'sudo -u eumaeus … eumaeus backup code -issued-by "Your Name" dell3-backup'
 ```
 
 That prefix is not decoration. `eumaeus` opens a **local** store as its service
 account, and without `-u eumaeus` and `EUMAEUS_DATA_DIR` it opens root's own,
 which is empty — and an empty store does not refuse, it answers every question
-wrongly. `ssh -t` because `adopt` reads the repository password from `/dev/tty`
-rather than from stdin, so it cannot be piped. `check` goes first because
-`adopt` needs the Wasabi provisioning key and fails without it.
+wrongly. `EUMAEUS_WASABI_ENV` is there for the same reason: the provisioning
+key is otherwise found through `HOME`, which `sudo -u` may or may not reset.
+`ssh -t` because `adopt` reads the repository password from `/dev/tty` rather
+than from stdin, so it cannot be piped. `check` goes first because `adopt`
+refuses without a usable key — better found before the bucket than after the
+password has been typed for nothing.
 
-`--ssh` names a different target, user included; `--ssh ""` prints the commands
-bare, for somebody already on the server. Then, with the code that last command
-issues:
+`--issued-by` puts your name on the enrollment code's audit row; without it the
+printed command carries a placeholder, because on the server every admin
+command runs as the service account and the environment there only ever says
+`eumaeus`. `--ssh` names a different target, user included; `--ssh ""` prints
+the commands bare, for somebody already on the server.
+
+These five admin commands are on their way to a web page — see
+[sion-backup#34](https://github.com/jroedel/sion-backup/issues/34) — so this
+form is current rather than permanent. It is written down in one place,
+`adoption.adminCommands`, so that it changes all at once.
+
+Then, with the code that last command issues:
 
 ```sh
 sudo ./sion-backup adopt-enroll --code K4TP-9QX2
