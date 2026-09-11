@@ -650,8 +650,14 @@ our part.
 | `poll_after_seconds` on §5's response. Omitted means no opinion; floored at 60 seconds and capped at a day | [eumaeus#117](https://github.com/jroedel/eumaeus/issues/117) |
 | `repository.adopted` and `repository.snapshots` on the claim and on §5, for a bucket adopted from a legacy install. Both `omitempty`, and **absence means "ask restic", not "there is nothing there"**. `created_at` on an adopted repository is the history horizon, not the row's age | [eumaeus#112](https://github.com/jroedel/eumaeus/issues/112) |
 
-Writing them up properly here, and in `openapi.yaml`, is work this repository
-owes — the client cannot consume any of the four until it is done anyway.
+Writing them up properly here is work this repository owes — the client
+cannot consume any of the four until it is done anyway.
+
+`openapi.yaml` is a different matter: it is asked to move to eumaeus in
+[eumaeus#121](https://github.com/jroedel/eumaeus/issues/121), because a
+machine-readable spec maintained by the client has no way to notice the
+server changing — these four are the proof. It stays here, and stays wrong
+in these four ways, until that is answered.
 
 ## 12. Still open
 

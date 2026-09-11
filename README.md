@@ -426,7 +426,7 @@ The contract is these documents, in the order to read them:
 |---|---|
 | [`docs/model.md`](docs/model.md) | the fleet model — people, machines, repositories, the alerting state machine, and what survives Eumaeus itself being lost. **Read first, and argue with this one.** |
 | [`docs/eumaeus-api.md`](docs/eumaeus-api.md) | the endpoint specification, and the rules a correct server has to follow |
-| [`docs/openapi.yaml`](docs/openapi.yaml) | the same endpoints, machine-readable. `make api-check` validates it and all 26 examples in it |
+| [`docs/openapi.yaml`](docs/openapi.yaml) | the same endpoints, machine-readable. `make api-check` validates it and all 26 examples in it. **Pending handover to eumaeus** ([#121](https://github.com/jroedel/eumaeus/issues/121)): a spec the client maintains has no way to notice the server changing, and it is four features behind for exactly that reason |
 | [eumaeus issues](https://github.com/jroedel/eumaeus/issues) | what this client still needs from the server. One issue per ask, on their tracker — not a document passed back and forth, which is how the last round went unanswered for a week |
 
 Seven endpoints. The installation at `https://terraboskamp.org` answers all of
