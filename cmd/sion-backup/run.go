@@ -167,7 +167,16 @@ func statusCmd(args []string) error {
 	fmt.Printf("node        %s\n", plan.NodeID)
 	fmt.Printf("repository  %s\n", plan.Repository)
 	fmt.Printf("schedule    %v%s\n", plan.Schedule.Times, pausedNote(plan.Paused))
-	fmt.Printf("next run    %s\n", plan.Schedule.Next(plan.NodeID, time.Now()).Format(time.RFC1123))
+
+	// "next run" on a machine whose scheduler is holding would be a promise
+	// nothing is going to keep — the same lie the status page used to tell,
+	// and the reason both now say this instead.
+	if plan.Confirmed() {
+		fmt.Printf("next run    %s\n", plan.Schedule.Next(plan.NodeID, time.Now()).Format(time.RFC1123))
+	} else {
+		fmt.Printf("next run    NOT SCHEDULED — nobody at this machine has chosen what\n")
+		fmt.Printf("            to back up yet. Open %s/setup\n", d.statusPage())
+	}
 	fmt.Printf("credentials %s\n", enrolledWord(d.creds.Enrolled()))
 
 	if p, running := d.backups.Running(); running {

@@ -40,7 +40,77 @@ func Migrate(ctx context.Context, db *sqldb.DB) error {
 		return fmt.Errorf("plandb: applying the schema: %w", err)
 	}
 
+	return addColumns(ctx, db)
+}
+
+// addColumns brings a plan table written by an older build up to this one.
+//
+// schema.sql is CREATE TABLE IF NOT EXISTS and therefore does nothing at all
+// to a table that already exists, so every column added after the first
+// release has to arrive here. SQLite has no ADD COLUMN IF NOT EXISTS, hence
+// the pragma.
+func addColumns(ctx context.Context, db *sqldb.DB) error {
+	have, err := columns(ctx, db, "plan")
+	if err != nil {
+		return err
+	}
+
+	for _, c := range []struct {
+		name string
+		ddl  string
+	}{
+		{"style", `ALTER TABLE plan ADD COLUMN style TEXT NOT NULL DEFAULT ''`},
+		{"confirmed_at", `ALTER TABLE plan ADD COLUMN confirmed_at TEXT NOT NULL DEFAULT ''`},
+		{"skip_larger_than_gb", `ALTER TABLE plan ADD COLUMN skip_larger_than_gb INTEGER NOT NULL DEFAULT 0`},
+		{"skip_on_metered", `ALTER TABLE plan ADD COLUMN skip_on_metered INTEGER NOT NULL DEFAULT 0`},
+	} {
+		if have[c.name] {
+			continue
+		}
+
+		if _, err := db.ExecContext(ctx, c.ddl); err != nil {
+			return fmt.Errorf("plandb: adding the %s column: %w", c.name, err)
+		}
+
+		// A plan that was already here was already running. The scheduler now
+		// refuses to start a run against an unconfirmed plan, so leaving this
+		// at the column default would stop every machine in the fleet backing
+		// up at the moment it took this build — which is the single worst
+		// thing an upgrade of this program could do.
+		//
+		// Confirmed as of when it was last edited, not as of now, because that
+		// is the honest answer: somebody chose this plan, on that day.
+		if c.name == "confirmed_at" {
+			if _, err := db.ExecContext(ctx,
+				`UPDATE plan SET confirmed_at = updated_at WHERE id = 1`); err != nil {
+				return fmt.Errorf("plandb: confirming the plan this machine already had: %w", err)
+			}
+		}
+	}
+
 	return nil
+}
+
+// columns reports which columns a table has.
+func columns(ctx context.Context, db *sqldb.DB, table string) (map[string]bool, error) {
+	rows, err := db.QueryContext(ctx, `SELECT name FROM pragma_table_info(?)`, table)
+	if err != nil {
+		return nil, fmt.Errorf("plandb: reading the %s columns: %w", table, err)
+	}
+	defer rows.Close()
+
+	out := map[string]bool{}
+
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			return nil, fmt.Errorf("plandb: reading the %s columns: %w", table, err)
+		}
+
+		out[name] = true
+	}
+
+	return out, rows.Err()
 }
 
 // Store is the SQLite implementation of planbus.Storer.
@@ -60,14 +130,15 @@ func (s *Store) Get(ctx context.Context) (planbus.Plan, error) {
 		       jitter_minutes, min_interval_secs,
 		       pack_size_mib, read_concurrency,
 		       use_fs_snapshot, allow_vss_fallback, one_file_system, paused,
-		       updated_at
+		       skip_on_metered, skip_larger_than_gb, style,
+		       confirmed_at, updated_at
 		FROM plan WHERE id = 1`
 
 	var (
 		p                        planbus.Plan
 		targets, excludes, times string
 		minInterval              int64
-		updated                  string
+		confirmed, updated       string
 	)
 
 	err := s.db.QueryRowContext(ctx, q).Scan(
@@ -75,7 +146,8 @@ func (s *Store) Get(ctx context.Context) (planbus.Plan, error) {
 		&p.Schedule.JitterMinutes, &minInterval,
 		&p.PackSizeMiB, &p.ReadConcurrency,
 		&p.UseFSSnapshot, &p.AllowVSSFallback, &p.OneFileSystem, &p.Paused,
-		&updated,
+		&p.SkipOnMetered, &p.SkipLargerThanGB, &p.Style,
+		&confirmed, &updated,
 	)
 
 	switch {
@@ -111,6 +183,16 @@ func (s *Store) Get(ctx context.Context) (planbus.Plan, error) {
 		return planbus.Plan{}, fmt.Errorf("plandb: reading updated_at: %w", err)
 	}
 
+	// Empty is the whole point rather than a missing value: it is what the
+	// column defaults to, and it means nobody at this machine has said yes to
+	// the plan yet. See planbus.Plan.ConfirmedAt.
+	if confirmed != "" {
+		p.ConfirmedAt, err = time.Parse(time.RFC3339, confirmed)
+		if err != nil {
+			return planbus.Plan{}, fmt.Errorf("plandb: reading confirmed_at: %w", err)
+		}
+	}
+
 	return p, nil
 }
 
@@ -137,8 +219,9 @@ func (s *Store) Put(ctx context.Context, p planbus.Plan) error {
 			jitter_minutes, min_interval_secs,
 			pack_size_mib, read_concurrency,
 			use_fs_snapshot, allow_vss_fallback, one_file_system, paused,
-			updated_at
-		) VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			skip_on_metered, skip_larger_than_gb, style,
+			confirmed_at, updated_at
+		) VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT (id) DO UPDATE SET
 			node_id            = excluded.node_id,
 			repository         = excluded.repository,
@@ -153,6 +236,10 @@ func (s *Store) Put(ctx context.Context, p planbus.Plan) error {
 			allow_vss_fallback = excluded.allow_vss_fallback,
 			one_file_system    = excluded.one_file_system,
 			paused             = excluded.paused,
+			skip_on_metered    = excluded.skip_on_metered,
+			skip_larger_than_gb = excluded.skip_larger_than_gb,
+			style              = excluded.style,
+			confirmed_at       = excluded.confirmed_at,
 			updated_at         = excluded.updated_at`
 
 	if _, err := s.db.ExecContext(ctx, q,
@@ -160,7 +247,8 @@ func (s *Store) Put(ctx context.Context, p planbus.Plan) error {
 		p.Schedule.JitterMinutes, int64(p.Schedule.MinInterval/time.Second),
 		p.PackSizeMiB, p.ReadConcurrency,
 		p.UseFSSnapshot, p.AllowVSSFallback, p.OneFileSystem, p.Paused,
-		p.UpdatedAt.Format(time.RFC3339),
+		p.SkipOnMetered, p.SkipLargerThanGB, p.Style,
+		rfc3339OrEmpty(p.ConfirmedAt), p.UpdatedAt.Format(time.RFC3339),
 	); err != nil {
 		return fmt.Errorf("plandb: writing the plan: %w", err)
 	}
@@ -294,3 +382,17 @@ func nonNil(s []string) []string {
 // interface check, so a signature drift is a compile error here rather than a
 // wiring error in main.
 var _ planbus.Storer = (*Store)(nil)
+
+// rfc3339OrEmpty renders a time, or the empty string for the zero one.
+//
+// The zero time has a perfectly good RFC 3339 rendering, and storing it would
+// be the bug: "0001-01-01T00:00:00Z" parses back to a real instant in the
+// distant past, and every "has this been confirmed" test in the program would
+// answer yes.
+func rfc3339OrEmpty(t time.Time) string {
+	if t.IsZero() {
+		return ""
+	}
+
+	return t.Format(time.RFC3339)
+}

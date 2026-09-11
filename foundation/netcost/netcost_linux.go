@@ -117,3 +117,12 @@ func defaultRouteFrom(r io.Reader) string {
 
 	return best
 }
+
+// supported is true here: NetworkManager is asked, and it actually knows.
+//
+// True even on a Linux machine with no NetworkManager on it, which is the
+// honest reading: what this reports is whether the build can tell, and on this
+// platform it can. A machine where the lookup then fails gets Unknown from
+// [Of], which is the same answer it would get if the network were simply
+// unplugged.
+const supported = true

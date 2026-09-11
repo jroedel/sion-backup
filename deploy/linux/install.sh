@@ -254,15 +254,14 @@ else
   note "2. Enrol, print the restore card, and give it to the owner:"
   note "     $INSTALLED enroll --code XXXX-XXXX"
 fi
-note "3. Take one backup in the foreground and watch it:"
-note "     $INSTALLED run"
-note "4. Check it, then start the service:"
-note "     $INSTALLED doctor"
-note "     systemctl --user start sion-backup"
-note "     http://127.0.0.1:7391/"
+note "3. Enrolling starts the service and opens the set-up page. NOTHING is"
+note "   backed up until somebody at this computer answers it — that is where"
+note "   the folders, the schedule and the first backup are chosen:"
+note "     http://127.0.0.1:7391/setup"
 
 if [ "$LEGACY_FOUND" -eq 1 ] && [ "$DISABLE_LEGACY" -eq 0 ]; then
-  note "5. ONLY after a verified backup, turn the old one off:"
+  note "4. ONLY after that page has produced a verified backup, turn the old"
+  note "   one off:"
   note "     sudo ./install.sh --disable-legacy"
 fi
 

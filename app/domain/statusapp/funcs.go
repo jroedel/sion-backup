@@ -23,6 +23,7 @@ var funcs = template.FuncMap{
 	"day":      day,
 	"pill":     pill,
 	"percent":  func(f float64) string { return fmt.Sprintf("%.0f%%", f*100) },
+	"rate":     humanRate,
 	"join":     strings.Join,
 	"nonzero":  func(t time.Time) bool { return !t.IsZero() },
 }
@@ -102,4 +103,26 @@ func pill(o backupbus.Outcome) string {
 	default:
 		return "bad"
 	}
+}
+
+// humanRate renders an upload speed the way somebody's internet contract does.
+//
+// Megabits per second, not mebibytes. Every connection anybody has ever been
+// sold is quoted in megabits — "50 down, 10 up" — and a page that answers a
+// question about that connection in MiB/s is asking the reader to do a
+// division before they can tell whether the number is plausible. The bytes per
+// second are the honest unit for the arithmetic and the wrong one for the
+// sentence, so the arithmetic keeps them and this converts once, here.
+func humanRate(bytesPerSecond float64) string {
+	if bytesPerSecond <= 0 {
+		return "unknown"
+	}
+
+	mbit := bytesPerSecond * 8 / 1_000_000
+
+	if mbit < 10 {
+		return fmt.Sprintf("%.1f Mbit/s", mbit)
+	}
+
+	return fmt.Sprintf("%.0f Mbit/s", mbit)
 }

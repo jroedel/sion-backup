@@ -19,11 +19,19 @@
   </dl>
 {{end}}
 
+{{if and .Configured (not .Confirmed)}}
+<p class="actions"><a class="button primary" href="/setup">Choose what to back up</a></p>
+{{end}}
+
 {{if .Configured}}
 <form method="post" action="/run" class="actions">
   <input type="hidden" name="form_token" value="{{.Token}}">
   <button class="primary" type="submit" {{if .Running}}disabled{{end}}>Back up now</button>
-  {{if nonzero .NextRun}}<span class="hint">Next scheduled run at {{clock .NextRun}}{{if .Paused}} — but backups are paused{{end}}</span>{{end}}
+  {{if .Confirmed}}
+    {{if nonzero .NextRun}}<span class="hint">Next scheduled run at {{clock .NextRun}}{{if .Paused}} — but backups are paused{{end}}</span>{{end}}
+  {{else}}
+    <span class="hint">Nothing is scheduled until the plan is confirmed on the Set up page.</span>
+  {{end}}
 </form>
 
 {{if .Rotation.Show}}

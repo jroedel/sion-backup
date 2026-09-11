@@ -9,7 +9,68 @@ work that is intended and not yet done. When something here is finished, delete
 the entry; when something here turns out to be a decision after all, move it to
 the README and say why.
 
-Last reviewed: 2026-09-10.
+Last reviewed: 2026-09-11.
+
+## The set-up page: what it left undone
+
+`/setup` is live: a newly enrolled machine holds until somebody chooses what is
+backed up, with the folders measured and the first backup timed against its own
+bucket. Four things it deliberately did not do.
+
+### The size estimate is a directory walk, not restic — NOT STARTED
+
+`foundation/dirsize` adds up file sizes. restic deduplicates and compresses
+first, so the real first backup is smaller — by a third or better on documents,
+by almost nothing on photographs. The page says so and calls the figure an
+upper bound.
+
+`restic backup --dry-run --json` gives the exact answer, applies the real
+excludes, and would remove the approximate exclude matcher in `dirsize` as
+well. It needs credentials and a round trip to the repository, which is why it
+is not on the first render of a page that has to answer immediately. The shape
+that would work: walk for the figures beside each choice, `--dry-run` behind
+the "count the folders again" button, which is already a deliberate press.
+
+### The measured upload speed is not stored — NOT STARTED
+
+It lives in `surveybus`'s memory, so a daemon restart loses it. Right for the
+page it was built for; wrong for the status page, which could usefully say
+"this connection uploads at 8 Mbit/s" beside a run that took four hours, and
+wrong for the fleet dashboard, which currently cannot tell a slow machine from
+a stalled one. `plan_meta` is where it would go, next to the repository
+measurement, which is the same shape of fact.
+
+### The probe has never run against a real bucket — THE OBVIOUS GAP
+
+`foundation/s3probe` is tested against AWS's published SigV4 vectors and
+against a fake endpoint that checks the request shape. Neither is Wasabi. The
+two things that can only be found for real:
+
+- whether the machine key actually carries `AbortMultipartUpload`. restic needs
+  it, so it should — but the production key's policy is Eumaeus's to write and
+  is not built yet (see the bucket-provisioning gap in the README). Without it
+  the probe leaves an incomplete multipart upload rather than nothing, which is
+  billed and invisible.
+- whether the region guessed out of the endpoint host is the one Wasabi wants
+  to be signed under. Wrong region is a clear refusal naming the right one, so
+  the failure is loud and costs the estimate and nothing else.
+
+`scripts/backup-e2e` already has a real bucket and real credentials. Adding one
+probe to it is the cheapest way to close this, and it belongs there rather than
+in the unit tests for the reason everything else in that harness does.
+
+### The dashboard cannot see a machine waiting to be set up — NEEDS EUMAEUS
+
+A machine that is enrolled and unconfirmed looks exactly like one that has
+never reported: no runs. That is the state this feature deliberately creates,
+so it is now a state worth being able to see — "three machines were enrolled
+last week and nobody has answered the page on two of them" is a question an
+administrator should be able to ask without visiting desks.
+
+`fleetbus.Event` carries runs, and there is no run to hang this on. It wants
+either a field on the enrolment claim or the `/machines/me` state poll that is
+already on the unimplemented list (§11 of `docs/eumaeus-api.md`). An issue on
+eumaeus, not work here.
 
 ## Self-update: the four findings
 

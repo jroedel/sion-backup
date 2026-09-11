@@ -1,0 +1,226 @@
+{{define "setup.html"}}<!doctype html>
+<html lang="en">
+<head>{{template "page-head" .}}</head>
+<body>
+{{template "page-top" .}}
+<main>
+
+{{if not .Ready}}
+
+<h1>Set up backups</h1>
+<div class="verdict warn">
+  <h1>Not ready yet</h1>
+  <p>{{.Missing}}</p>
+</div>
+
+{{else}}
+
+<h1>Set up backups</h1>
+
+{{if .Problem}}<div class="verdict bad"><h1>Not saved</h1><p>{{.Problem}}</p></div>{{end}}
+{{if .Saved}}<div class="verdict good"><h1>Saved</h1>
+  <p>Nothing is being backed up yet. Press “Start backing up” below when this looks right.</p></div>{{end}}
+
+{{if not .Plan.Confirmed}}
+<div class="verdict warn">
+  <h1>Waiting for you</h1>
+  <p>
+    This computer is enrolled and ready, and it is deliberately not backing
+    anything up until you have said what should be in it. Nothing on this page
+    takes effect until you press the button at the bottom.
+  </p>
+</div>
+{{end}}
+
+<form method="post" action="/setup" class="settings">
+  <input type="hidden" name="form_token" value="{{.Token}}">
+
+  <h2>What should be backed up</h2>
+
+  {{range .Options}}
+  <div class="choice">
+    <label>
+      <input type="radio" name="style" value="{{.Style}}" {{if eq $.Style .Style}}checked{{end}}>
+      {{.Title}}
+    </label>
+    <p class="hint">{{.Detail}}</p>
+    <p class="hint">{{range .Roots}}<code>{{.}}</code> {{end}}</p>
+    <p class="size">
+      {{if .Sizing.Measuring}}
+        counting… {{bytes .Sizing.Result.Bytes}} so far
+      {{else if .Sizing.Known}}
+        {{if .Sizing.Result.Partial}}more than {{end}}{{bytes .Sizing.Result.Bytes}}
+        in {{.Sizing.Result.Files}} files{{if .Estimate}}, about {{duration .Estimate}} to upload{{end}}
+        {{if .Sizing.Result.Unreadable}}
+          <span class="warnish">— {{.Sizing.Result.Unreadable}} folders could not be read</span>
+        {{end}}
+      {{else}}
+        not measured yet
+      {{end}}
+    </p>
+  </div>
+  {{end}}
+
+  <div class="choice">
+    <label>
+      <input type="radio" name="style" value="custom" {{if eq .Style "custom"}}checked{{end}}>
+      Or choose the folders myself
+    </label>
+    <textarea id="targets" name="targets" spellcheck="false">{{.Targets}}</textarea>
+    <p class="hint">
+      One per line. Everything inside them is included. This is also where to
+      add something that is not in your user folder at all — a second disk, or
+      a work drive.
+    </p>
+    {{if .CustomSizing.Known}}
+    <p class="size">
+      {{if .CustomSizing.Measuring}}
+        counting… {{bytes .CustomSizing.Result.Bytes}} so far
+      {{else}}
+        {{if .CustomSizing.Result.Partial}}more than {{end}}{{bytes .CustomSizing.Result.Bytes}}
+        in {{.CustomSizing.Result.Files}} files{{if .CustomEstimate}}, about {{duration .CustomEstimate}} to upload{{end}}
+        {{if .CustomSizing.Result.Unreadable}}
+          <span class="warnish">— {{.CustomSizing.Result.Unreadable}} folders could not be read</span>
+        {{end}}
+      {{end}}
+    </p>
+    <p class="hint">Measured for the list as it was last saved.</p>
+    {{end}}
+  </div>
+
+  <h2>What to leave out</h2>
+
+  <div>
+    <label><input type="checkbox" name="junk" {{if .Junk}}checked{{end}}>
+      Leave out caches, downloads and virtual machine images</label>
+    <p class="hint">
+      Large, constantly changing, and re-creatable: browser and program caches,
+      the Downloads folder, disk images, <code>node_modules</code>. Nothing in
+      here is work. The full list is on the Settings page, where you can take
+      anything back off it.
+    </p>
+  </div>
+
+  <div>
+    <label for="skip_larger_than_gb">Skip files larger than</label>
+    <input type="number" id="skip_larger_than_gb" name="skip_larger_than_gb" min="0" max="9999"
+           value="{{if .SkipLargerThanGB}}{{.SkipLargerThanGB}}{{end}}" placeholder="no limit">
+    <p class="hint">
+      In gigabytes; leave it empty for no limit. One virtual machine image or
+      disk backup can be larger than everything else put together, and it is
+      usually a copy of something that exists elsewhere.
+    </p>
+  </div>
+
+  <h2>How often</h2>
+
+  <div>
+    <label><input type="radio" name="schedule" value="hourly" {{if eq .Schedule "hourly"}}checked{{end}}>
+      Every hour</label>
+    <p class="hint">For a machine holding work that would be expensive to redo. Costs an hour at worst.</p>
+
+    <label><input type="radio" name="schedule" value="thrice-daily" {{if eq .Schedule "thrice-daily"}}checked{{end}}>
+      Three times a day — morning, after lunch, and in the evening</label>
+    <p class="hint">09:00, 13:00 and 21:00.</p>
+
+    <label><input type="radio" name="schedule" value="daily" {{if eq .Schedule "daily"}}checked{{end}}>
+      Once a day, at
+      <input type="time" name="daily_time" value="{{.DailyTime}}"></label>
+    <p class="hint">
+      Early afternoon is a better choice than the middle of the night: the
+      computer is switched on, awake and on a network then.
+    </p>
+
+    <label><input type="radio" name="schedule" value="custom" {{if eq .Schedule "custom"}}checked{{end}}>
+      At these times</label>
+    <input type="text" name="times" value="{{.Times}}" spellcheck="false" placeholder="08:30, 12:30, 17:45">
+    <p class="hint">
+      Local times, as HH:MM, separated by commas. Whatever you choose: if the
+      computer is asleep or switched off at that time, it backs up as soon as
+      it is next on rather than skipping the day.
+    </p>
+  </div>
+
+  <h2>Your connection</h2>
+
+  <div class="connection">
+    {{if .Upload.Measuring}}
+      <p>Measuring how fast this computer can upload to its backup…</p>
+      <p class="hint">
+        This sends a few megabytes to the bucket and throws them away. It takes
+        about ten seconds.
+      </p>
+    {{else if .Upload.Known}}
+      <p><strong>{{rate .Upload.Result.BytesPerSecond}}</strong> up,
+         measured {{ago .Upload.Result.MeasuredAt}} ago against your own bucket.</p>
+      {{if .HasSize}}
+      <p>
+        The first backup{{if .Chosen.Sizing.Result.Partial}} of more than{{else}} of{{end}}
+        {{bytes .Chosen.Sizing.Result.Bytes}} would take
+        <strong>about {{duration .Chosen.Estimate}}</strong> at that rate.
+        Later ones send only what has changed, and take minutes.
+      </p>
+      <p class="hint">
+        An upper bound. Everything is compressed and de-duplicated before it
+        leaves this computer, so the real figure is lower — much lower for
+        documents, barely at all for photographs and video.
+      </p>
+      {{end}}
+    {{else if .Upload.Problem}}
+      <p>The upload speed could not be measured: {{.Upload.Problem}}</p>
+      <p class="hint">
+        This does not stop anything. It only means the estimate above is
+        missing; backups work the same either way.
+      </p>
+    {{else}}
+      <p>The upload speed has not been measured yet.</p>
+    {{end}}
+  </div>
+
+  <div>
+    <label><input type="checkbox" name="skip_on_metered" {{if .SkipOnMetered}}checked{{end}}>
+      Don’t back up on a metered connection</label>
+    <p class="hint">
+      {{if .MeteredKnown}}
+        For a phone tether or a hotel connection somebody is paying for by the
+        byte. Scheduled backups wait; “Back up now” still works.
+      {{else}}
+        This computer cannot currently tell a metered connection from an
+        ordinary one, so this setting would do nothing on it. It is remembered,
+        and takes effect when it can.
+      {{end}}
+    </p>
+  </div>
+
+  <div class="actions">
+    <button class="primary" type="submit" name="action" value="confirm">Start backing up</button>
+    <button type="submit" name="action" value="save">Save, and work out the sizes again</button>
+  </div>
+
+  <p class="hint">
+    “Start backing up” saves this and begins the first backup straight away, so
+    you can watch it. Everything here can be changed afterwards.
+  </p>
+</form>
+
+<form method="post" action="/setup/speed" class="inline">
+  <input type="hidden" name="form_token" value="{{.Token}}">
+  <button type="submit">Test the upload speed again</button>
+</form>
+
+<form method="post" action="/setup/measure" class="inline">
+  <input type="hidden" name="form_token" value="{{.Token}}">
+  <button type="submit">Count the folders again</button>
+</form>
+
+{{if .Measuring}}
+<p class="hint">Still counting. Reload this page to see where it has got to.</p>
+{{end}}
+
+{{end}}
+
+</main>
+{{template "page-foot" .}}
+</body>
+</html>
+{{end}}

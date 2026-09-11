@@ -21,3 +21,6 @@ import "context"
 // TuningConfig.Metered — which is a person telling the machine something the
 // machine cannot find out, and is honest about being exactly that.
 func detect(context.Context) Cost { return Unknown }
+
+// supported is false here: see the comment on detect.
+const supported = false

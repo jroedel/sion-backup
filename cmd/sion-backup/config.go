@@ -91,11 +91,28 @@ type TuningConfig struct {
 	// foundation/netcost — so this is how somebody says what the machine
 	// does not know.
 	//
-	// It gates the weekly repository check and nothing else. Backups run
-	// whatever this says: a backup that did not happen is the failure this
-	// program exists to prevent, and no connection is expensive enough to be
-	// worth choosing that one instead.
+	// It gates the weekly repository check unconditionally, and scheduled
+	// backups only when the plan's SkipOnMetered is on — see below. Backups
+	// otherwise run whatever this says: a backup that did not happen is the
+	// failure this program exists to prevent, and no connection is expensive
+	// enough to be worth choosing that one instead.
 	Metered *bool `toml:"metered"`
+
+	// SkipOnMetered seeds the plan's own switch, which the person using the
+	// machine can then turn off on the settings page.
+	//
+	// Distinct from Metered above, and the pair is easy to misread, so: Metered
+	// is a FACT about this machine's connection that it cannot work out for
+	// itself. This is a POLICY about what to do when the connection is
+	// metered. Neither implies the other — a machine on a phone tether that
+	// must back up anyway sets the first and not the second.
+	SkipOnMetered *bool `toml:"skip_on_metered"`
+
+	// SkipLargerThanGB seeds the plan's size limit, in gigabytes. Zero and
+	// unset both mean no limit, which is why this one is not a pointer:
+	// there is nothing a "somebody decided against a limit" would do
+	// differently from "there is no limit".
+	SkipLargerThanGB int `toml:"skip_larger_than_gb"`
 }
 
 // MeteredOverride reports what the config says about the connection, and
@@ -248,6 +265,8 @@ func (c Config) Plan() (planbus.Plan, error) {
 		Schedule:         schedule,
 		PackSizeMiB:      c.Tuning.PackSizeMiB,
 		ReadConcurrency:  c.Tuning.ReadConcurrency,
+		SkipOnMetered:    boolOr(c.Tuning.SkipOnMetered, false),
+		SkipLargerThanGB: c.Tuning.SkipLargerThanGB,
 		UseFSSnapshot:    boolOr(c.Tuning.UseFSSnapshot, runtime.GOOS == "windows"),
 		AllowVSSFallback: boolOr(c.Tuning.AllowVSSFallback, true),
 		OneFileSystem:    boolOr(c.Tuning.OneFileSystem, true),

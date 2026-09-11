@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"os/exec"
 	"runtime"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -56,6 +57,16 @@ type BackupOptions struct {
 	// shares, external drives, and on Linux the pseudo-filesystems that the
 	// legacy scripts had to exclude by hand.
 	OneFileSystem bool
+
+	// ExcludeLargerThan skips files at or above a size, in bytes. Zero means
+	// no limit.
+	//
+	// It is here rather than in Excludes because it cannot be written as a
+	// pattern, and it is offered on the setup page because it is the one
+	// exclusion that catches the file nobody thought to name: a single virtual
+	// machine image or disk dump in a home directory doubles a first backup and
+	// is rebuildable from somewhere else anyway.
+	ExcludeLargerThan int64
 }
 
 // Progress is one status line from a running backup.
@@ -249,6 +260,14 @@ func backupArgs(opts BackupOptions) []string {
 
 	for _, pattern := range opts.Excludes {
 		args = append(args, "--exclude", pattern)
+	}
+
+	// In bytes, with restic's own suffix, rather than in whatever unit the
+	// caller was thinking in. restic parses "2G" as well, and a number with no
+	// unit as kibibytes -- which is the sort of default that turns a 2 GB limit
+	// into a 2 KiB one and produces a backup containing nothing.
+	if opts.ExcludeLargerThan > 0 {
+		args = append(args, "--exclude-larger-than", strconv.FormatInt(opts.ExcludeLargerThan, 10)+"B")
 	}
 
 	// Targets last, after a bare "--", so a path beginning with a dash is a

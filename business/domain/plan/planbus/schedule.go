@@ -231,3 +231,148 @@ func (s Schedule) Next(nodeID string, after time.Time) time.Time {
 
 	return time.Time{}
 }
+
+// # The four shapes a schedule comes in
+//
+// Everything below is about one question a person is asked once, on the setup
+// page: how often. The answer is stored as times, jitter and a floor, because
+// that is what the scheduler above reads — but a person does not think in
+// "13:00, 30 minutes of jitter, a six hour floor", they think "once a day,
+// after lunch". These are the translation, in both directions.
+//
+// The presets are values rather than a stored enum, deliberately. The plan
+// holds times; [Schedule.Preset] reads them back to decide which radio button
+// to fill in. So a schedule assembled by hand in config.toml, or one edited on
+// the settings page to something none of these produce, is not a broken preset
+// — it is Custom, and the page says so and leaves it alone.
+
+// Preset is one of the answers the setup page offers to "how often".
+type Preset string
+
+const (
+	// PresetHourly backs up at the top of every hour.
+	PresetHourly Preset = "hourly"
+
+	// PresetThriceDaily is morning, lunchtime and evening.
+	PresetThriceDaily Preset = "thrice-daily"
+
+	// PresetDaily is once a day at a time the person chooses.
+	PresetDaily Preset = "daily"
+
+	// PresetCustom is a list of times that is none of the above. It is not
+	// offered as a choice; it is what [Schedule.Preset] answers about a
+	// schedule somebody has written themselves.
+	PresetCustom Preset = "custom"
+)
+
+// Hourly backs up at the top of every hour.
+//
+// The jitter is ten minutes rather than thirty, and the floor thirty minutes
+// rather than six hours, and both have to move together with the times: a
+// six-hour floor would silently turn this into four runs a day, and half an
+// hour of jitter on an hourly schedule would let two adjacent slots overlap.
+//
+// It is the right answer for a machine holding work that is expensive to redo
+// — an hour of lost editing rather than a day — and the wrong one for a laptop
+// on a phone tether, which is what [Plan.SkipOnMetered] is for.
+func Hourly() Schedule {
+	times := make([]string, 0, 24)
+	for h := range 24 {
+		times = append(times, fmt.Sprintf("%02d:00", h))
+	}
+
+	return Schedule{Times: times, JitterMinutes: 10, MinInterval: 30 * time.Minute}
+}
+
+// ThriceDaily is morning, lunchtime and evening.
+//
+// 09:00 and 13:00 are inside the working day for the reason DefaultSchedule
+// gives: a work computer is switched on, awake and on a network then, which is
+// exactly when an overnight schedule fails. 21:00 is the one that catches the
+// afternoon's work on a machine that is shut at five — and if it is shut, the
+// slot is not lost, it runs when the machine is next opened.
+func ThriceDaily() Schedule {
+	return Schedule{
+		Times:         []string{"09:00", "13:00", "21:00"},
+		JitterMinutes: 20,
+		MinInterval:   2 * time.Hour,
+	}
+}
+
+// DailyAt is once a day, at the time somebody chose.
+//
+// The time is validated by the returned schedule's own Validate, not here, so
+// that a bad one is reported by the same path as every other bad schedule
+// rather than by a second one that says something different.
+func DailyAt(hhmm string) Schedule {
+	s := DefaultSchedule()
+	s.Times = []string{strings.TrimSpace(hhmm)}
+
+	return s
+}
+
+// Preset reports which of the answers above produced this schedule.
+//
+// Read back out of the times rather than stored beside them, so that there is
+// one source of truth about when a machine runs. A schedule edited on the
+// settings page to something no preset produces answers PresetCustom, which is
+// how the setup page knows to show it as it is rather than quietly rounding it
+// to the nearest button.
+func (s Schedule) Preset() Preset {
+	switch len(s.Times) {
+	case 1:
+		return PresetDaily
+
+	case 3:
+		if sameTimes(s.Times, ThriceDaily().Times) {
+			return PresetThriceDaily
+		}
+
+	case 24:
+		if sameTimes(s.Times, Hourly().Times) {
+			return PresetHourly
+		}
+	}
+
+	return PresetCustom
+}
+
+// DailyTime is the single time a once-a-day schedule runs at, for the box on
+// the setup page. Empty for any other shape.
+func (s Schedule) DailyTime() string {
+	if len(s.Times) != 1 {
+		return ""
+	}
+
+	return s.Times[0]
+}
+
+// sameTimes compares two lists of times of day for equality, ignoring order
+// and surrounding space.
+//
+// Ignoring order because the plan's times survive a round trip through a text
+// box, and "13:00, 09:00, 21:00" is the same schedule as the one this program
+// wrote — reporting it as Custom would show somebody a form that had forgotten
+// what they chose last week.
+func sameTimes(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+
+	seen := make(map[string]int, len(b))
+	for _, t := range b {
+		seen[strings.TrimSpace(t)]++
+	}
+
+	for _, t := range a {
+		key := strings.TrimSpace(t)
+
+		if seen[key] == 0 {
+			return false
+		}
+
+		seen[key]--
+	}
+
+	return true
+}
