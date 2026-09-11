@@ -18,6 +18,7 @@ import (
 	"github.com/jroedel/sion-backup/business/domain/credential/credentialbus"
 	"github.com/jroedel/sion-backup/business/domain/plan/planbus"
 	"github.com/jroedel/sion-backup/business/domain/plan/stores/plandb"
+	"github.com/jroedel/sion-backup/business/domain/survey/surveybus"
 	"github.com/jroedel/sion-backup/foundation/paths"
 	"github.com/jroedel/sion-backup/foundation/sqldb"
 )
@@ -35,6 +36,7 @@ type harness struct {
 	guard   *loopback.Guard
 	plan    *planbus.Business
 	backups *backupbus.Runner
+	survey  *surveybus.Business
 	runs    *backupdb.Store
 	started int
 }
@@ -83,10 +85,18 @@ func newHarness(t *testing.T) *harness {
 		backups: backupbus.NewRunner(runs, nil, p, slog.New(slog.NewTextHandler(io.Discard, nil))),
 	}
 
+	// A survey with no prober: the setup page renders without one, saying the
+	// speed has not been measured, and a test must never send megabytes
+	// anywhere. What it does measure is this machine's real home directory,
+	// which is why the tests below that touch /setup do not assert on sizes.
+	h.survey = surveybus.NewBusiness(slog.New(slog.NewTextHandler(io.Discard, nil)), nil)
+
 	app, err := statusapp.New(statusapp.Config{
 		Plan:        h.plan,
 		Backups:     h.backups,
 		Credentials: credentialbus.NewBusiness(stubSource{}),
+		Survey:      h.survey,
+		Background:  ctx,
 		StartRun:    func(context.Context) error { h.started++; return nil },
 		Guard:       guard,
 		Paths:       p,
@@ -159,6 +169,11 @@ func samplePlan() planbus.Plan {
 		Targets:    []string{"/home/user"},
 		Excludes:   []string{"*.iso"},
 		Schedule:   planbus.DefaultSchedule(),
+
+		// Confirmed, because every test using this describes a machine that
+		// is already backing up. The setup page's own tests are the ones that
+		// start from a plan nobody has answered for yet.
+		ConfirmedAt: time.Now().Add(-24 * time.Hour),
 	}
 }
 

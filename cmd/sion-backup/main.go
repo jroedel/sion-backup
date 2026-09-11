@@ -70,7 +70,8 @@ Commands:
 
 Run "sion-backup <command> -h" for a command's flags.
 
-The status page is at http://127.0.0.1:7391/ while the daemon is running.
+The status page is at http://127.0.0.1:7391/ while the daemon is running, and
+http://127.0.0.1:7391/setup is where a newly enrolled machine is set up.
 `
 
 func main() {
@@ -160,6 +161,13 @@ type deps struct {
 	// machine that has not been enrolled, which is a state several commands
 	// have to render rather than fail on.
 	machineToken string
+
+	// listen is the address the status page is actually being served on, set
+	// by the daemon once it knows. Empty everywhere else, where Config.Addr is
+	// the right answer — see deps.statusPage, which is why this exists: a
+	// daemon started with --addr used to print the configured port in the one
+	// log line whose whole job is to be a URL somebody can open.
+	listen string
 
 	// updated is signalled when self-update has replaced this binary, so the
 	// daemon can exit into the new one. Nil outside the daemon, where there

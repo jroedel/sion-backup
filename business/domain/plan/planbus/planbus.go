@@ -73,9 +73,63 @@ type Plan struct {
 	// otherwise reach for is uninstalling the program.
 	Paused bool
 
+	// SkipOnMetered stops SCHEDULED runs on a connection somebody is paying
+	// for by the byte. It does not stop "Back up now", and it does not stop
+	// `sion-backup run`: both of those are a person deciding.
+	//
+	// Off by default, and that default is the README's argument — a backup
+	// that did not happen is the failure this program exists to prevent, and
+	// no link is expensive enough to be worth choosing that one instead. What
+	// makes it worth offering anyway is the alternative somebody reaches for
+	// when their laptop starts a 40 GB first run on a phone tether, which is
+	// to pause backups entirely and forget.
+	//
+	// foundation/netcost can only answer this on Linux today. On Windows and
+	// macOS it returns Unknown, which is not read as metered, so this setting
+	// is honest and inert there — the setup page says so rather than implying
+	// a protection the machine cannot provide.
+	SkipOnMetered bool
+
+	// SkipLargerThanGB leaves out files at or above this size. Zero means no
+	// limit, which is the default.
+	//
+	// This is the one exclude that cannot be written as a pattern, and it is
+	// the one that most often matters: a single 80 GB virtual machine image
+	// in a home directory doubles a first backup and is restorable from
+	// nowhere useful anyway. It reaches restic as --exclude-larger-than.
+	SkipLargerThanGB int
+
+	// Style records which of the setup page's answers produced this plan, so
+	// that page can show what was chosen rather than guessing it back out of
+	// a list of paths. "" on a plan that predates the setup page, and on one
+	// assembled by adopt-enroll out of a legacy script.
+	//
+	// It is a label on the plan and never an input to a backup: Targets and
+	// Excludes are the whole truth about what gets backed up.
+	Style string
+
+	// ConfirmedAt is when somebody at this machine said yes to the plan.
+	//
+	// Zero means the plan was written FOR this machine — by enrolment, by
+	// adopt-enroll, or by config.toml — and nobody using it has looked at it
+	// yet. The scheduler will not start a run against an unconfirmed plan; see
+	// the daemon's maybeRun.
+	//
+	// This exists because the alternative is worse in both directions. A
+	// machine that starts uploading the moment it is enrolled can spend a
+	// working day saturating an office uplink with a directory nobody chose,
+	// and the person it belongs to finds out from the network, not from us. A
+	// machine that waits forever is not backing up. So it waits, loudly: the
+	// status page says so in large type, and enrolment opens the page that
+	// clears it.
+	ConfirmedAt time.Time
+
 	// UpdatedAt is when the plan last changed.
 	UpdatedAt time.Time
 }
+
+// Confirmed reports whether somebody at this machine has approved the plan.
+func (p Plan) Confirmed() bool { return !p.ConfirmedAt.IsZero() }
 
 // Validate reports a plan that would not produce a usable backup.
 //
@@ -89,6 +143,8 @@ func (p Plan) Validate() error {
 		return errors.New("planbus: the plan needs a repository URL")
 	case len(p.Targets) == 0:
 		return errors.New("planbus: the plan has no targets; a backup of nothing would report success")
+	case p.SkipLargerThanGB < 0:
+		return errors.New("planbus: the size limit cannot be negative")
 	}
 
 	return p.Schedule.Validate()
@@ -128,6 +184,31 @@ func (b *Business) Put(ctx context.Context, p Plan, now time.Time) error {
 		return err
 	}
 
+	p.UpdatedAt = now
+
+	return b.store.Put(ctx, p)
+}
+
+// Confirm records that somebody at this machine has said yes to the plan, and
+// releases the scheduler.
+//
+// Separate from Put because it is a different act. Put is "here is a new
+// plan"; this is "the plan that is already there is the right one", which is
+// what the setup page's last button means and what nothing else in the program
+// is allowed to mean. In particular neither enrolment nor config.toml may call
+// it: a plan written for a machine by somebody who is not standing at it is
+// exactly the plan this gate exists to hold.
+func (b *Business) Confirm(ctx context.Context, now time.Time) error {
+	p, err := b.store.Get(ctx)
+	if err != nil {
+		return err
+	}
+
+	if err := p.Validate(); err != nil {
+		return err
+	}
+
+	p.ConfirmedAt = now
 	p.UpdatedAt = now
 
 	return b.store.Put(ctx, p)

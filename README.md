@@ -244,6 +244,10 @@ has taken one verified backup: `install.sh --disable-legacy`, or
 `install.ps1 -DisableLegacyTask`. Two backup systems for one night is untidy;
 none is worse.
 
+An adopted machine gets the set-up page too. The folders came out of a script
+that is on its way to being deleted, and "this is what the old backup covered,
+is it still right?" is worth asking once, while somebody is standing there.
+
 To set up a machine with no backup on it — the rare case; on one that already
 backs up, `adopt-enroll` above replaces steps 1 and 2 and keeps the history:
 
@@ -251,22 +255,23 @@ backs up, `adopt-enroll` above replaces steps 1 and 2 and keeps the history:
 # 1. In Eumaeus: sign in, "Enrol a computer", choose the owner and the bucket.
 #    It shows a code, good for fifteen minutes, usable once.
 
-# 2. At the machine. This writes the one token it will keep, proves the bucket
-#    opens, and prints the owner's restore card.
+# 2. Install the service (install.sh does this for you).
+cp deploy/systemd/sion-backup.service ~/.config/systemd/user/
+systemctl --user enable sion-backup
+loginctl enable-linger "$USER"
+
+# 3. At the machine. This writes the one token it will keep, proves the bucket
+#    opens, prints the owner's restore card, starts the service, and opens the
+#    page where the person using this computer chooses what is backed up.
 #    --server is only needed to point at something other than the fleet's own
 #    server, https://terraboskamp.org.
 ./sion-backup enroll --code K4TP-9QX2
-
-# 3. Take the first backup in the foreground and watch it.
-./sion-backup run
-
-# 4. Install the service.
-cp deploy/systemd/sion-backup.service ~/.config/systemd/user/
-systemctl --user enable --now sion-backup
-loginctl enable-linger "$USER"
 ```
 
-Then open <http://127.0.0.1:7391/>.
+Nothing is backed up until that page is answered — see
+[Nothing backs up until somebody says yes](#nothing-backs-up-until-somebody-says-yes)
+below. `--no-start` and `--no-open` turn off the last two steps, for an install
+being driven from a script or over SSH.
 
 macOS and Windows have their own files in `deploy/`. The Windows one is a
 PowerShell script; run it elevated, with `-Elevated`, so Volume Shadow Copy is
@@ -402,11 +407,100 @@ protect nothing and would guarantee a sticky note on the monitor.
 
 The daemon refuses to bind anything but loopback, with no override flag.
 
+### Nothing backs up until somebody says yes
+
+Enrolment used to end with a machine that had credentials, a plan somebody else
+had written, and a scheduler that would start uploading at the next slot. That
+is wrong in two directions at once.
+
+A first backup is the largest thing this program ever does — tens of gigabytes,
+hours of an office uplink — and it was starting without the person whose
+computer it is having seen what was in it or been told how long it would take.
+And what was in it was a guess: an administrator's idea of which folders
+matter, made at a desk that is not theirs.
+
+So a plan now carries `confirmed_at`, the scheduler refuses to run against a
+plan that has none, and `enroll` finishes by starting the service and opening
+the page that clears it:
+
+```
+http://127.0.0.1:7391/setup
+```
+
+The page asks four questions and measures the answer to each:
+
+- **What to back up.** The standard document folders, or the whole user
+  folder — each with its real size, counted on this machine while you watch
+  (`foundation/dirsize`). Or a list you write yourself.
+- **What to leave out.** One checkbox for caches, downloads and disk images;
+  one box for "skip files larger than N GB", which reaches restic as
+  `--exclude-larger-than` and is the only exclusion that cannot be written as a
+  pattern.
+- **How often.** Hourly, three times a day, once a day at a time you pick, or
+  your own list. The times, the jitter and the minimum interval move together:
+  an hourly schedule with the default six-hour floor would silently run four
+  times a day.
+- **Your connection.** Measured against this machine's own bucket, with the
+  first backup timed from it, and a button to measure again.
+
+There is no third "whole machine" option, deliberately. The daemon runs as the
+signed-in user and cannot read other accounts or most of the operating system,
+so what that choice would actually produce is a run that reports files missing
+every night forever. A work computer's operating system is reinstalled rather
+than restored, and a whole-machine backup taken from inside a running system is
+not a bootable one anyway. Somebody who wants `/etc` in the list can put `/etc`
+in the list.
+
+**The upgrade path is the dangerous part of this, and it is tested.** Every
+machine in the fleet has a plan that predates the column. If the migration left
+those unconfirmed, taking this release would stop the whole fleet backing up,
+on the same day, silently. `plandb.addColumns` backfills them from
+`updated_at`, and `TestAMachineThatWasAlreadyBackingUpKeepsBackingUp` is what
+holds it there.
+
+`sion-backup run` and the "Back up now" button are unaffected. Both are a
+person deciding, which is the thing the gate is waiting for.
+
+### Measuring the upload speed without writing anything
+
+The estimate on that page needs real bytes sent to the real endpoint over the
+real path, or it is measuring something else — and a browser speed test is no
+use, because these connections are asymmetric and it is the upload this program
+spends.
+
+But nothing in this system may delete backup data (§5.4 of
+[`docs/model.md`](docs/model.md)), so an ordinary `PUT` would leave a junk
+object in somebody's bucket that no credential here could ever remove. So
+`foundation/s3probe` starts a multipart upload, sends one timed part, and
+aborts it:
+
+```
+POST   /bucket/key?uploads            begin
+PUT    /bucket/key?partNumber=2&...   the bytes, timed
+DELETE /bucket/key?uploadId=...       abort
+```
+
+An aborted multipart upload has no object at the end of it and no parts left
+behind. It uses `PutObject` and `AbortMultipartUpload` and nothing else — both
+of which restic itself requires, because that is how minio-go uploads a pack
+file and cleans up after a failed one. The part is sized from an untimed
+warm-up to take about eight seconds, clamped between 8 and 64 MiB.
+
+The SigV4 signing is written out by hand in `foundation/s3probe/sigv4.go`
+rather than pulling in an AWS SDK for three requests. It is checked against the
+worked example AWS publishes — canonical request hash, signing key and
+signature, all three.
+
 ### The user edits the settings, the administrator does not
 
 Folders, excludes, times and the pause switch are on the status page, because
 the person using the machine is the only one who knows that the work they care
 about now lives in a folder that did not exist when it was set up.
+
+There are two pages over the same plan, on purpose. `/setup` asks the four
+questions in plain words with the sizes measured; `/settings` is the plan as it
+is stored, for editing one exclude pattern or one tuning number without walking
+through the questions again.
 
 The node ID and the repository URL are *not* on that page. Getting either wrong
 silently detaches a computer from its own backup history, so changing them
@@ -435,7 +529,7 @@ cmd/sion-backup/     the composition root: wiring, subcommands, and the only
                      place that loads a credential
 
 app/                 delivery. Knows about HTTP; knows nothing about restic.
-  domain/statusapp/    the localhost page
+  domain/statusapp/    the localhost pages: status, set-up, settings
   sdk/loopback/        CSRF and DNS-rebinding defence
   sdk/page/            shared chrome and the one stylesheet
 
@@ -444,11 +538,16 @@ business/            the rules. Knows nothing about HTTP.
   domain/plan/         what to back up and when; the scheduler
   domain/credential/   the three secrets: fetched, used, wiped
   domain/fleet/        reporting, including "eventually, from a plane"
+  domain/survey/       what this machine could back up, how big it is, and
+                       how fast it can upload — the setup page's numbers
 
 foundation/          technical leaves. Know nothing about backups.
   paths/               where everything lives, per platform
   restic/              the subprocess, its JSON, its exit codes, and the
                        pinned binary it installs and upgrades itself
+  dirsize/             how big a folder is, said to be an estimate
+  s3probe/             SigV4, and an upload that is never completed
+  netcost/             is somebody paying for these bytes
   secrets/             DPAPI / Keychain / Secret Service / file
   sqldb/               one SQLite connection, held open
   eumaeusapi/          HTTP to the server
@@ -463,7 +562,9 @@ Two rules earn their keep:
   domain does not know the fleet reporter exists; the composition root converts
   a `Run` into an `Event`. This is also why `backupbus.Run` is handed a
   `restic.Repository` with the credentials already in it: secret handling
-  happens in exactly one function.
+  happens in exactly one function. `surveybus` measures the upload speed
+  through a `Prober` closure for the same reason — probing needs the S3 keys,
+  and the package that renders a page must never be handed one.
 
 ### Your data is not in this repository, and cannot be
 
@@ -614,6 +715,25 @@ intended and not yet done is in [`docs/todo.md`](docs/todo.md).
   ([jroedel/eumaeus#114](https://github.com/jroedel/eumaeus/issues/114)), and an
   absent `agent` block is what means "fall back to the release's own sums" —
   so this gap closes as soon as `selfupdate.Source` is wired to it.
+- **The setup page's sizes are an estimate, and say so.** `foundation/dirsize`
+  walks the folders and adds up file sizes; restic deduplicates and compresses
+  before anything leaves the machine, so the real first backup is smaller — by
+  a third or better on documents, by almost nothing on photographs. Its exclude
+  matching is also an approximation of restic's, deliberately: the authority on
+  what is excluded is restic, at backup time, and a second implementation of
+  that language would disagree with the first in a way that shows up as missing
+  files. A `restic backup --dry-run` would give the exact figure and needs
+  credentials and a round trip; it is not wired up.
+- **The measured upload speed is not stored.** It lives in the daemon's memory,
+  so a restart loses it and the setup page measures again. That is right for
+  the page it was built for and wrong for the status page, which could usefully
+  say "this connection uploads at 8 Mbit/s" next to a run that took four hours.
+- **`skip_on_metered` does nothing on Windows or macOS.** It is offered because
+  the alternative somebody reaches for on a phone tether is pausing backups
+  entirely and forgetting, but `foundation/netcost` can only answer on Linux.
+  Both pages say so beside the switch rather than implying a protection the
+  machine will not give. Same gap as the weekly check's, tracked in
+  [`docs/todo.md`](docs/todo.md).
 - **No restore UI.** Restores are `restic restore` at a command line, with the
   password out of Eumaeus. That is the right place for a rare, high-stakes,
   supervised operation to start; a button would be worse.

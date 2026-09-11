@@ -26,10 +26,11 @@ func backupOptions(plan planbus.Plan) restic.BackupOptions {
 		// confident prune and a nervous one.
 		Tags: []string{"sion-backup"},
 
-		Host:             hostname(),
-		UseFSSnapshot:    plan.UseFSSnapshot,
-		AllowVSSFallback: plan.AllowVSSFallback,
-		OneFileSystem:    plan.OneFileSystem,
+		Host:              hostname(),
+		UseFSSnapshot:     plan.UseFSSnapshot,
+		AllowVSSFallback:  plan.AllowVSSFallback,
+		OneFileSystem:     plan.OneFileSystem,
+		ExcludeLargerThan: int64(plan.SkipLargerThanGB) << 30,
 	}
 }
 

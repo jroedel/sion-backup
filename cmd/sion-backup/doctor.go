@@ -122,6 +122,16 @@ func doctorCmd(args []string) error {
 			return "", errors.New("backups are PAUSED; turn them back on at the status page")
 		}
 
+		// A failure rather than a note, because from here it is
+		// indistinguishable from a machine that has simply stopped: the
+		// scheduler will never start a run, and nothing else on this page
+		// would say why. It is the ordinary state of a machine enrolled ten
+		// minutes ago, and a bad one for a machine enrolled last month.
+		if !plan.Confirmed() {
+			return "", fmt.Errorf("nobody at this machine has chosen what to back up "+
+				"yet, so nothing is scheduled. Open %s/setup", d.statusPage())
+		}
+
 		return fmt.Sprintf("%s → %s, %d target(s), at %v",
 			plan.NodeID, plan.Repository, len(plan.Targets), plan.Schedule.Times), nil
 	})

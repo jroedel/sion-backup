@@ -42,6 +42,7 @@ import (
 	"github.com/jroedel/sion-backup/business/domain/backup/backupbus"
 	"github.com/jroedel/sion-backup/business/domain/credential/credentialbus"
 	"github.com/jroedel/sion-backup/business/domain/plan/planbus"
+	"github.com/jroedel/sion-backup/business/domain/survey/surveybus"
 	"github.com/jroedel/sion-backup/foundation/paths"
 )
 
@@ -59,6 +60,25 @@ type Config struct {
 	// Credentials is consulted only for the sentence it can print about how
 	// credentials are handled. This app never obtains one.
 	Credentials *credentialbus.Business
+
+	// Survey is what this machine could back up, how big it is, and how fast
+	// it can upload. The setup page is built out of it.
+	Survey *surveybus.Business
+
+	// Background is the daemon's context, for work a request starts and does
+	// not wait for: counting a home directory, measuring the connection.
+	//
+	// A request's own context is the wrong one and the bug is silent. A walk
+	// tied to it is cancelled the moment the page it was started from
+	// finishes rendering, and what the next refresh sees is a measurement that
+	// has mysteriously restarted from zero.
+	Background context.Context
+
+	// MeteredKnown reports whether this platform can tell a metered
+	// connection from an unmetered one. See foundation/netcost: Linux can,
+	// Windows and macOS cannot yet. The setup page says so beside the
+	// checkbox rather than offering a protection the machine will not give.
+	MeteredKnown bool
 
 	// StartRun begins a backup now.
 	//
@@ -103,6 +123,14 @@ func New(cfg Config) (*Server, error) {
 		return nil, errors.New("statusapp: no loopback guard; the page must not be served without one")
 	}
 
+	if cfg.Survey == nil {
+		return nil, errors.New("statusapp: no survey; the setup page cannot be built without one")
+	}
+
+	if cfg.Background == nil {
+		return nil, errors.New("statusapp: no background context for the work a request starts")
+	}
+
 	pages, err := template.New("layout.html").
 		Funcs(funcs).
 		ParseFS(page.FS, "templates/chrome.html")
@@ -123,6 +151,10 @@ func New(cfg Config) (*Server, error) {
 	mux.HandleFunc("GET /{$}", s.status)
 	mux.HandleFunc("GET /settings", s.settings)
 	mux.HandleFunc("POST /settings", s.saveSettings)
+	mux.HandleFunc("GET /setup", s.setup)
+	mux.HandleFunc("POST /setup", s.saveSetup)
+	mux.HandleFunc("POST /setup/speed", s.retestSpeed)
+	mux.HandleFunc("POST /setup/measure", s.remeasure)
 	mux.HandleFunc("POST /run", s.runNow)
 
 	s.handler = mux
@@ -168,6 +200,7 @@ type statusView struct {
 	chrome
 
 	Configured  bool
+	Confirmed   bool
 	Paused      bool
 	Verdict     verdict
 	Running     bool
@@ -226,6 +259,7 @@ func (s *Server) status(w http.ResponseWriter, r *http.Request) {
 	}
 
 	view.Configured = true
+	view.Confirmed = plan.Confirmed()
 	view.Paused = plan.Paused
 	view.NodeID = plan.NodeID
 	view.Repository = plan.Repository
@@ -288,6 +322,16 @@ func verdictFor(plan planbus.Plan, last backupbus.Run, hasLast, running bool, no
 		return verdict{"good", "Backing up now", "This page refreshes itself while it runs."}
 	}
 
+	// Before the pause check and before the history: a machine nobody has set
+	// up has no history to be stale, and saying "backups have stopped" about
+	// one that has not started yet sends somebody looking for a fault. See
+	// planbus.Plan.ConfirmedAt for why it waits at all.
+	if !plan.Confirmed() {
+		return verdict{"warn", "Waiting for you to say what to back up",
+			"This computer is enrolled and ready. It is deliberately not backing " +
+				"anything up until somebody using it has chosen what should be in it."}
+	}
+
 	if plan.Paused {
 		return verdict{"warn", "Backups are paused",
 			"Nothing is being backed up. Turn them back on in Settings."}
@@ -338,6 +382,9 @@ type settingsView struct {
 	Times    string
 	Saved    bool
 	Problem  string
+
+	// MeteredKnown reports whether this platform can tell. See Config.
+	MeteredKnown bool
 }
 
 func (s *Server) settings(w http.ResponseWriter, r *http.Request) {
@@ -366,6 +413,8 @@ func (s *Server) renderSettings(w http.ResponseWriter, r *http.Request,
 		Times:    strings.Join(plan.Schedule.Times, ", "),
 		Saved:    saved,
 		Problem:  problem,
+
+		MeteredKnown: s.cfg.MeteredKnown,
 	}
 
 	view.NodeID = plan.NodeID
@@ -393,6 +442,20 @@ func (s *Server) saveSettings(w http.ResponseWriter, r *http.Request) {
 	plan.Excludes = lines(r.PostFormValue("excludes"))
 	plan.Schedule.Times = splitTimes(r.PostFormValue("times"))
 	plan.Paused = r.PostFormValue("paused") == "on"
+	plan.SkipOnMetered = r.PostFormValue("skip_on_metered") == "on"
+
+	// An empty box is "no limit" rather than an error, and a bad one leaves
+	// the stored value alone — the same shape as the two tuning numbers below,
+	// which have always behaved this way.
+	switch raw := strings.TrimSpace(r.PostFormValue("skip_larger_than_gb")); {
+	case raw == "":
+		plan.SkipLargerThanGB = 0
+
+	default:
+		if n, err := strconv.Atoi(raw); err == nil && n >= 0 {
+			plan.SkipLargerThanGB = n
+		}
+	}
 
 	if n, err := strconv.Atoi(r.PostFormValue("read_concurrency")); err == nil {
 		plan.ReadConcurrency = n
@@ -440,6 +503,7 @@ func (s *Server) runNow(w http.ResponseWriter, r *http.Request) {
 func (s *Server) chromeFor(title, current string) chrome {
 	links := []page.Link{
 		{Href: "/", Label: "Status"},
+		{Href: "/setup", Label: "Set up"},
 		{Href: "/settings", Label: "Settings"},
 	}
 

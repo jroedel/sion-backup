@@ -13,6 +13,12 @@
 # deliberate: the person using the machine edits their own excludes on the
 # status page, and a re-read at every reboot would silently undo them.
 #
+# A plan seeded from this file is a SUGGESTION, not a decision. Nothing is
+# backed up until somebody at the machine has confirmed it at
+# http://127.0.0.1:7391/setup, which is the page enrolment opens. What this
+# file buys is that the boxes on that page are already filled in with an
+# administrator's answer -- not that the question is skipped.
+#
 # THE DEPLOYMENT SETTINGS -- [eumaeus]
 # Where this machine gets its credentials, and where it reports.
 #
@@ -119,6 +125,13 @@ excludes = [
 [schedule]
 # Local times of day, as HH:MM.
 #
+# The set-up page offers four shapes -- hourly, three times a day, once a day,
+# or your own list -- and writes the times, the jitter and the floor together.
+# Writing them here by hand is the fourth of those. Mind the floor below: a
+# list of twenty-four times under a six-hour minimum interval runs four times a
+# day and looks like a bug.
+#
+#
 # 13:00 rather than an overnight slot, because a work computer is switched on,
 # awake and on a network in the middle of the working day -- which is exactly
 # when an overnight schedule fails. If the machine is asleep at this time it
@@ -168,6 +181,31 @@ allow_vss_fallback = true
 # Do not follow mounts: network shares, external drives, and on Linux the
 # pseudo-filesystems the old scripts had to exclude by hand.
 one_file_system = true
+
+# Skip files at or above this many gigabytes. Unset or 0 means no limit.
+#
+# The one exclusion that cannot be written as a pattern, and often the one that
+# matters most: a single virtual machine image or disk dump in a home directory
+# can double a first backup, and it is rebuildable from somewhere else anyway.
+# Reaches restic as --exclude-larger-than.
+# skip_larger_than_gb = 2
+
+# Do not start SCHEDULED runs on a connection somebody is paying for by the
+# byte. "Back up now" and "sion-backup run" are unaffected: both are a person
+# deciding.
+#
+# Off by default, and that default is an argument rather than an oversight -- a
+# backup that did not happen is the failure this program exists to prevent. What
+# makes it worth offering is the alternative somebody reaches for when their
+# laptop starts a 40 GB first run on a phone tether, which is to pause backups
+# entirely and forget.
+#
+# It needs `metered` above, or a Linux machine: on Windows and macOS this
+# program cannot yet tell, and an unknown connection is not read as metered.
+# Note the pair: `metered` is a FACT about the connection this machine is on,
+# and this is a POLICY about what to do when it is metered. Neither implies the
+# other.
+# skip_on_metered = false
 
 [eumaeus]
 # Where the credential escrow and the fleet dashboard live.

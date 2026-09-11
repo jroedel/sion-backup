@@ -78,3 +78,13 @@ func (c Cost) Metered() bool { return c == Metered }
 // is not installed" and "NetworkManager did not answer" that it would not also
 // do with "cannot tell".
 func Of(ctx context.Context) Cost { return detect(ctx) }
+
+// Known reports whether this platform can answer the question at all.
+//
+// Separate from [Of] because the two answer different questions and a page
+// needs both. Of says "is this connection metered", and its Unknown is a fact
+// about this moment — NetworkManager was busy, there is no default route. This
+// says "could this machine ever tell", which is a fact about the build, and it
+// is what lets the settings page write "this computer cannot tell" beside a
+// switch instead of quietly offering a protection it will never provide.
+func Known() bool { return supported }

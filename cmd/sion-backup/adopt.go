@@ -75,6 +75,8 @@ Flags:
                 root@ the server's own host; "" to print them bare)
   --server      a different Eumaeus URL (default %q)
   --force       enrol again on a machine that already has a token
+  --no-start    do not start the service after a successful claim
+  --no-open     do not open a browser after a successful claim
 `, DefaultEumaeusURL)
 
 func adoptEnrollCmd(args []string) error {
@@ -89,6 +91,8 @@ func adoptEnrollCmd(args []string) error {
 	sshHost := fs.String("ssh", "", "run the Eumaeus commands through this host (default: the server's own)")
 	issuedBy := fs.String("issued-by", "", "your name, for the enrollment code's audit row")
 	force := fs.Bool("force", false, "enrol again on a machine that already has a token")
+	noStart := fs.Bool("no-start", false, "do not start the service afterwards")
+	noOpen := fs.Bool("no-open", false, "do not open a browser afterwards")
 	verbose := fs.Bool("v", false, "verbose logging")
 
 	if err := fs.Parse(args); err != nil {
@@ -179,6 +183,11 @@ func adoptEnrollCmd(args []string) error {
 	}
 
 	a.verify(ctx, d, enrolled)
+
+	// After verify, deliberately. What verify prints is the one thing on this
+	// screen that can mean "stop" — a bucket that is not the legacy one — and
+	// it must not be pushed up the terminal by a paragraph about a web page.
+	handoff(ctx, d, !*noStart, !*noOpen)
 
 	return nil
 }
@@ -931,15 +940,22 @@ func (a adoption) verify(ctx context.Context, d *deps, e eumaeuscreds.Enrollment
 
 // adoptRemaining is what is left after a machine is enrolled, in the order it
 // has to happen. The last step is last for a reason and says so.
+//
+// The middle of it has moved to the setup page, which is what the handoff below
+// opens: the folders this command read out of the legacy script are shown
+// there as the suggestion they are, with their sizes measured, and confirming
+// them is what starts the first backup. An adopted machine still gets that
+// page. The list came out of a script that is on its way to being deleted, and
+// "this is what the old backup covered, is it still right?" is a question worth
+// asking once, while somebody is standing here.
 const adoptRemaining = `
 what remains
-  1. sion-backup run
-     The first backup, in the foreground, where you can watch it. Against an
-     adopted repository this is an ordinary incremental run, not a re-upload.
+  1. On the page this command is about to open: check the folders it took out
+     of the legacy script, and press the button. That takes the first backup.
+     Against an adopted repository it is an ordinary incremental run, not a
+     re-upload.
 
-  2. Install the service — see the README for this platform.
-
-  3. LAST, and only once step 1 has produced a verified backup: turn off the
+  2. LAST, and only once step 1 has produced a verified backup: turn off the
      legacy schedule. install.sh --disable-legacy, or install.ps1
      -DisableLegacyTask. Until then both are running, which is untidy and
      harmless; neither running is the failure worth avoiding.

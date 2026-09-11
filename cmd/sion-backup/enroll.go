@@ -36,14 +36,24 @@ What this does:
   3. Prints the owner's restore card, which lets them recover their own files
      with nothing but a downloaded restic binary. Print it and put it somewhere
      safe; it is not shown again.
+  4. Starts the background service and opens the page where the person using
+     this computer chooses what is backed up.
+
+Nothing is backed up until that page is answered, and that is deliberate. A
+first backup is the largest thing this program ever does — tens of gigabytes,
+hours of somebody's uplink — and it should not begin against a list of folders
+an administrator guessed at, without the person whose computer it is having
+seen it.
 
 The S3 keys and the repository password are NOT stored here. Every backup
 fetches them from Eumaeus, uses them, and discards them.
 
 Flags:
-  --code    the enrollment code from Eumaeus (required)
-  --server  a different Eumaeus URL (default %q)
-  --force   replace the token on a machine that is already enrolled
+  --code      the enrollment code from Eumaeus (required)
+  --server    a different Eumaeus URL (default %q)
+  --force     replace the token on a machine that is already enrolled
+  --no-start  do not start the service afterwards
+  --no-open   do not open a browser afterwards
 `, DefaultEumaeusURL)
 
 func enrollCmd(args []string) error {
@@ -53,6 +63,8 @@ func enrollCmd(args []string) error {
 	code := fs.String("code", "", "enrollment code from Eumaeus")
 	server := fs.String("server", "", "Eumaeus base URL")
 	force := fs.Bool("force", false, "replace an existing enrollment")
+	noStart := fs.Bool("no-start", false, "do not start the service afterwards")
+	noOpen := fs.Bool("no-open", false, "do not open a browser afterwards")
 	verbose := fs.Bool("v", false, "verbose logging")
 
 	if err := fs.Parse(args); err != nil {
@@ -74,9 +86,13 @@ func enrollCmd(args []string) error {
 	}
 	defer d.close()
 
-	_, err = d.enroll(ctx, enrollment{code: *code, server: *server, force: *force})
+	if _, err := d.enroll(ctx, enrollment{code: *code, server: *server, force: *force}); err != nil {
+		return err
+	}
 
-	return err
+	handoff(ctx, d, !*noStart, !*noOpen)
+
+	return nil
 }
 
 // enrollment is one claim, as asked for on the command line.
@@ -211,9 +227,9 @@ func (d *deps) storePlan(ctx context.Context, e eumaeuscreds.Enrollment) error {
 	}
 
 	if len(plan.Targets) == 0 {
-		fmt.Printf("\nNo folders are set to be backed up yet. Add them at "+
-			"http://%s/settings once the service is running.\n", d.cfg.Addr())
-
+		// Not a problem to report: it is the ordinary state of a machine that
+		// has just been enrolled, and the page the handoff opens is where it
+		// is answered. Saying so here would read as a fault.
 		return nil
 	}
 

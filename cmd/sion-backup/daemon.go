@@ -19,7 +19,7 @@ import (
 	"github.com/jroedel/sion-backup/business/domain/diag/diagbus"
 	"github.com/jroedel/sion-backup/business/domain/fleet/fleetbus"
 	"github.com/jroedel/sion-backup/business/domain/plan/planbus"
-	"github.com/jroedel/sion-backup/foundation/netcost"
+	"github.com/jroedel/sion-backup/business/domain/survey/surveybus"
 	"github.com/jroedel/sion-backup/foundation/restic"
 	"github.com/jroedel/sion-backup/foundation/selfupdate"
 	"github.com/jroedel/sion-backup/foundation/web"
@@ -96,6 +96,8 @@ func daemonCmd(args []string) error {
 		return err
 	}
 
+	d.listen = listen
+
 	// Seed the plan from config.toml, if this machine has none yet.
 	if err := d.seedPlan(ctx); err != nil {
 		return err
@@ -106,10 +108,18 @@ func daemonCmd(args []string) error {
 		return err
 	}
 
+	// A local rather than a field on deps: nothing outside this function uses
+	// it, and every other command exits long before background work would
+	// finish.
+	survey := surveybus.NewBusiness(d.log, d.probeUpload)
+
 	app, err := statusapp.New(statusapp.Config{
 		Plan:                    d.plan,
 		Backups:                 d.backups,
 		Credentials:             d.creds,
+		Survey:                  survey,
+		Background:              ctx,
+		MeteredKnown:            meteredKnown(d.cfg),
 		StartRun:                d.startRun(ctx),
 		Guard:                   guard,
 		Paths:                   d.paths,
@@ -304,8 +314,35 @@ func (d *deps) maybeRun(ctx context.Context) {
 		return
 	}
 
+	// The gate. A plan nobody at this machine has said yes to does not run —
+	// see planbus.Plan.ConfirmedAt, and app/domain/statusapp's setup page,
+	// which is the only thing that clears it.
+	//
+	// Once per hour rather than on every tick: this is checked every minute,
+	// and a line a minute would bury everything else in the log of a machine
+	// somebody has not got round to setting up.
+	if !plan.Confirmed() {
+		d.sayWaiting()
+
+		return
+	}
+
 	if _, running := d.backups.Running(); running {
 		return
+	}
+
+	// Deliberately after the running check and before the schedule: a run that
+	// is already going is not stopped by the connection changing under it, and
+	// asking the operating system about the network on every tick of a machine
+	// that has nothing due would be a wake-up a minute for nothing.
+	if plan.SkipOnMetered {
+		if metered, saidBy := d.metered(ctx); metered {
+			d.log.Debug("not starting a scheduled backup on a metered connection",
+				"said_by", saidBy,
+				"note", `"Back up now" and "sion-backup run" are unaffected`)
+
+			return
+		}
 	}
 
 	var lastRun time.Time
@@ -630,15 +667,12 @@ func (d *deps) checkRepository(ctx context.Context, plan planbus.Plan, set crede
 	// system, where Unknown is not metered: see foundation/netcost. Two thirds
 	// of this fleet cannot tell, and reading Unknown as metered would mean no
 	// Windows or Mac ever verified anything.
-	metered, configured := d.cfg.Tuning.MeteredOverride()
-
-	if !configured {
-		metered = netcost.Of(ctx).Metered()
-	}
-
-	if metered {
-		d.log.Info("skipping the repository check on a metered connection",
-			"said_by", map[bool]string{true: "config.toml", false: "the operating system"}[configured])
+	//
+	// Unconditional, unlike the scheduler's skip above: this one is not a
+	// setting. Re-reading pack data is the optional, large work netcost exists
+	// for, and it is never worth somebody's phone bill.
+	if metered, saidBy := d.metered(ctx); metered {
+		d.log.Info("skipping the repository check on a metered connection", "said_by", saidBy)
 
 		record(planbus.Integrity{SkippedReason: "metered connection"})
 

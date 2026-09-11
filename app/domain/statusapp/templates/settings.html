@@ -7,6 +7,13 @@
 
 <h1>Settings</h1>
 
+<p class="hint">
+  This is the whole plan, as it is stored. <a href="/setup">The set-up page</a>
+  asks the same questions in plainer words, with the sizes measured and the
+  first backup timed; this one is where to edit a single exclude pattern or a
+  tuning number without going through it.
+</p>
+
 {{if .Saved}}<div class="verdict good"><h1>Saved</h1><p>The next run will use these.</p></div>{{end}}
 {{if .Problem}}<div class="verdict bad"><h1>Not saved</h1><p>{{.Problem}}</p></div>{{end}}
 
@@ -51,6 +58,30 @@
     <label for="pack_size_mib">Upload chunk size (MiB)</label>
     <input type="number" id="pack_size_mib" name="pack_size_mib" min="0" max="128" value="{{.Plan.PackSizeMiB}}">
     <p class="hint">16 is right for most connections. 32 does fewer round trips on a fast one. 0 leaves it to restic.</p>
+  </div>
+
+  <div>
+    <label for="skip_larger_than_gb">Skip files larger than (GB)</label>
+    <input type="number" id="skip_larger_than_gb" name="skip_larger_than_gb" min="0" max="9999"
+           value="{{if .Plan.SkipLargerThanGB}}{{.Plan.SkipLargerThanGB}}{{end}}" placeholder="no limit">
+    <p class="hint">
+      Empty for no limit. This is the one exclusion that cannot be written as a
+      pattern: it catches the virtual machine image nobody thought to name.
+    </p>
+  </div>
+
+  <div>
+    <label><input type="checkbox" name="skip_on_metered" {{if .Plan.SkipOnMetered}}checked{{end}}>
+      Don’t back up on a metered connection</label>
+    <p class="hint">
+      {{if .MeteredKnown}}
+        Scheduled runs wait while this computer is on a connection somebody is
+        paying for by the byte. “Back up now” still works.
+      {{else}}
+        This computer cannot yet tell a metered connection from an ordinary
+        one, so this does nothing on it today. It is remembered.
+      {{end}}
+    </p>
   </div>
 
   <div>

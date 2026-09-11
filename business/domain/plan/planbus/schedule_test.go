@@ -186,3 +186,139 @@ func TestValidate(t *testing.T) {
 		}
 	}
 }
+
+// TestThePresetsAreValidAndDoNotFightTheirOwnFloor.
+//
+// The floor and the times have to move together. An hourly schedule with the
+// default six-hour minimum interval would silently run four times a day, and
+// the person who chose "every hour" would have no way of telling from the
+// page: the times would say every hour and the history would say four.
+func TestThePresetsAreValidAndDoNotFightTheirOwnFloor(t *testing.T) {
+	for _, c := range []struct {
+		name  string
+		s     planbus.Schedule
+		times int
+	}{
+		{"hourly", planbus.Hourly(), 24},
+		{"three times a day", planbus.ThriceDaily(), 3},
+		{"once a day", planbus.DailyAt("07:30"), 1},
+		{"the default", planbus.DefaultSchedule(), 1},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			if err := c.s.Validate(); err != nil {
+				t.Fatalf("the preset is not a valid schedule: %v", err)
+			}
+
+			if len(c.s.Times) != c.times {
+				t.Errorf("%d times, want %d", len(c.s.Times), c.times)
+			}
+
+			// The tightest gap between two consecutive slots, jitter and all,
+			// has to be bigger than the floor, or slots are dropped.
+			gap := 24 * time.Hour / time.Duration(len(c.s.Times))
+
+			if c.s.MinInterval >= gap {
+				t.Errorf("the floor is %s and the slots are %s apart: this schedule "+
+					"would silently skip runs", c.s.MinInterval, gap)
+			}
+		})
+	}
+}
+
+// TestEveryPresetSlotActuallyFires walks a machine through three days a minute
+// at a time — which is what the daemon's own ticker does — and checks that each
+// preset produces the number of runs the person who chose it expects.
+//
+// The first day is discarded. A machine that has not backed up for two days is
+// due the moment it is switched on, by design, so day one carries a catch-up
+// run that belongs to the day before it and would make the arithmetic read
+// like an off-by-one.
+func TestEveryPresetSlotActuallyFires(t *testing.T) {
+	for _, c := range []struct {
+		name string
+		s    planbus.Schedule
+		want int
+	}{
+		{"hourly", planbus.Hourly(), 24},
+		{"three times a day", planbus.ThriceDaily(), 3},
+		{"once a day", planbus.DailyAt("13:00"), 1},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			start := time.Date(2026, 3, 10, 0, 0, 0, 0, time.UTC)
+			counting := start.Add(24 * time.Hour)
+			last := start.Add(-48 * time.Hour)
+
+			runs := 0
+
+			for at := start; at.Before(start.Add(72 * time.Hour)); at = at.Add(time.Minute) {
+				if !c.s.Due("a-machine", at, last) {
+					continue
+				}
+
+				last = at
+
+				if !at.Before(counting) {
+					runs++
+				}
+			}
+
+			if want := c.want * 2; runs != want {
+				t.Errorf("%d runs over two days, want %d", runs, want)
+			}
+		})
+	}
+}
+
+// TestThePresetIsReadBackOutOfTheTimes covers the round trip the setup page
+// depends on: the plan stores times, and the page has to fill in the radio
+// button that produced them.
+func TestThePresetIsReadBackOutOfTheTimes(t *testing.T) {
+	for _, c := range []struct {
+		name string
+		s    planbus.Schedule
+		want planbus.Preset
+	}{
+		{"hourly", planbus.Hourly(), planbus.PresetHourly},
+		{"three times a day", planbus.ThriceDaily(), planbus.PresetThriceDaily},
+		{"once a day", planbus.DailyAt("07:30"), planbus.PresetDaily},
+		{
+			// The times survive a trip through a text box, and come back in
+			// whatever order somebody typed them. Reporting that as Custom
+			// would show them a form that had forgotten last week's choice.
+			name: "the same three times, reordered and with stray space",
+			s:    planbus.Schedule{Times: []string{" 21:00", "13:00 ", "09:00"}},
+			want: planbus.PresetThriceDaily,
+		},
+		{
+			name: "three times that are not the preset's",
+			s:    planbus.Schedule{Times: []string{"06:00", "12:00", "18:00"}},
+			want: planbus.PresetCustom,
+		},
+		{
+			name: "twenty-four times that are not every hour",
+			s:    planbus.Schedule{Times: append(planbus.Hourly().Times[:23], "23:30")},
+			want: planbus.PresetCustom,
+		},
+		{
+			name: "two times",
+			s:    planbus.Schedule{Times: []string{"09:00", "21:00"}},
+			want: planbus.PresetCustom,
+		},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			if got := c.s.Preset(); got != c.want {
+				t.Errorf("planbus.Preset() = %q, want %q", got, c.want)
+			}
+		})
+	}
+}
+
+func TestTheDailyTimeIsOnlyAnAnswerForADailySchedule(t *testing.T) {
+	if got := planbus.DailyAt("07:30").DailyTime(); got != "07:30" {
+		t.Errorf("DailyTime() = %q, want 07:30", got)
+	}
+
+	if got := planbus.ThriceDaily().DailyTime(); got != "" {
+		t.Errorf("DailyTime() on a three-a-day schedule = %q, want empty", got)
+	}
+}

@@ -150,3 +150,66 @@ footer {
   color: var(--muted);
   font-size: 0.85rem;
 }
+
+/* The setup page.
+ *
+ * One page with four questions on it, each of which changes the answer to
+ * another, so the choices need to sit far enough apart to be read as choices
+ * and close enough together to be compared. */
+
+.choice {
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  padding: 0.8rem 0.9rem;
+  background: var(--panel);
+}
+.choice label { font-weight: 550; }
+.choice .hint { margin-top: 0.3rem; }
+.choice textarea { margin-top: 0.5rem; }
+
+/* The measured size, which is the number somebody is actually choosing on.
+ * Tabular figures so it does not jump about as it counts up. */
+.size {
+  margin: 0.5rem 0 0;
+  font-variant-numeric: tabular-nums;
+}
+
+.warnish { color: var(--warn); }
+
+.connection {
+  border-left: 3px solid var(--line);
+  padding-left: 0.9rem;
+}
+.connection p { margin: 0 0 0.4rem; }
+
+/* The two "measure it again" buttons sit outside the main form, because HTML
+ * has no nested forms and they must not carry the plan with them. */
+form.inline { display: inline-block; margin: 0 0.4rem 0 0; }
+
+/* A link that has to look like the button beside it: on the status page the
+ * primary action for an unconfigured machine is going somewhere, not posting
+ * something. */
+a.button {
+  display: inline-block;
+  text-decoration: none;
+  font: inherit;
+  padding: 0.45rem 1rem;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: var(--panel);
+  color: var(--fg);
+}
+a.button.primary { background: var(--fg); color: var(--bg); border-color: var(--fg); }
+
+input[type=time] {
+  padding: 0.35rem 0.45rem;
+  font: inherit;
+  color: var(--fg);
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 4px;
+}
+
+/* Radio and checkbox labels are inline questions, not field headings, so they
+ * do not take the block layout the rule above gives every other label. */
+label > input[type=radio], label > input[type=checkbox] { margin-right: 0.35rem; }
