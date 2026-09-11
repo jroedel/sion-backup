@@ -187,12 +187,21 @@ history horizon already filled in and wrapped in `ssh` so they can be run from
 right there:
 
 ```sh
-ssh -t terraboskamp.org "eumaeus backup adopt -owner … -node dell3-backup   -bucket bucket123 -history-since 2019-03-01 -snapshots 1412"
-ssh terraboskamp.org 'eumaeus backup code dell3-backup'
+ssh -t root@terraboskamp.org 'sudo -u eumaeus EUMAEUS_DATA_DIR=/var/lib/eumaeus eumaeus backup check'
+ssh -t root@terraboskamp.org "sudo -u eumaeus EUMAEUS_DATA_DIR=/var/lib/eumaeus eumaeus backup adopt -owner … -node dell3-backup -bucket bucket123 -history-since 2019-03-01 -snapshots 1412"
+ssh root@terraboskamp.org 'sudo -u eumaeus EUMAEUS_DATA_DIR=/var/lib/eumaeus eumaeus backup code dell3-backup'
 ```
 
-`--ssh` names a different host; `--ssh ""` prints them bare. Then, with the
-code that second command issues:
+That prefix is not decoration. `eumaeus` opens a **local** store as its service
+account, and without `-u eumaeus` and `EUMAEUS_DATA_DIR` it opens root's own,
+which is empty — and an empty store does not refuse, it answers every question
+wrongly. `ssh -t` because `adopt` reads the repository password from `/dev/tty`
+rather than from stdin, so it cannot be piped. `check` goes first because
+`adopt` needs the Wasabi provisioning key and fails without it.
+
+`--ssh` names a different target, user included; `--ssh ""` prints the commands
+bare, for somebody already on the server. Then, with the code that last command
+issues:
 
 ```sh
 sudo ./sion-backup adopt-enroll --code K4TP-9QX2

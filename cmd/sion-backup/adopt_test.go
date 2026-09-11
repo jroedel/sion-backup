@@ -237,8 +237,10 @@ func TestSSHTargetComesFromTheServerTheMachineTalksTo(t *testing.T) {
 		url      string
 		want     string
 	}{
-		{"", "https://terraboskamp.org", "terraboskamp.org"},
-		{"", "https://terraboskamp.org:8443/", "terraboskamp.org"},
+		// root, because that is what operator access to this server is and
+		// because the `deploy` user cannot read the fleet store.
+		{"", "https://terraboskamp.org", "root@terraboskamp.org"},
+		{"", "https://terraboskamp.org:8443/", "root@terraboskamp.org"},
 		{"admin@backup.example.org", "https://terraboskamp.org", "admin@backup.example.org"},
 
 		// A loopback server is a test, or the machine you are already sitting
