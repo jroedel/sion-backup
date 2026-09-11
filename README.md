@@ -418,7 +418,7 @@ be read. That is theirs.
 
 ---
 
-## The Eumaeus side does not exist yet
+## The Eumaeus side
 
 The contract is these documents, in the order to read them:
 
@@ -426,11 +426,11 @@ The contract is these documents, in the order to read them:
 |---|---|
 | [`docs/model.md`](docs/model.md) | the fleet model — people, machines, repositories, the alerting state machine, and what survives Eumaeus itself being lost. **Read first, and argue with this one.** |
 | [`docs/eumaeus-api.md`](docs/eumaeus-api.md) | the endpoint specification, and the rules a correct server has to follow |
-| [`docs/openapi.yaml`](docs/openapi.yaml) | the same endpoints, machine-readable. `make api-check` validates it and all 29 examples in it |
+| [`docs/openapi.yaml`](docs/openapi.yaml) | the same endpoints, machine-readable. `make api-check` validates it and all 26 examples in it |
 | [eumaeus issues](https://github.com/jroedel/eumaeus/issues) | what this client still needs from the server. One issue per ask, on their tracker — not a document passed back and forth, which is how the last round went unanswered for a week |
 
-Six endpoints. The installation at `https://terraboskamp.org` now answers
-under this base path; the client speaks the first, third and fourth of them:
+Seven endpoints. The installation at `https://terraboskamp.org` answers all of
+them; the client speaks the first, third, fourth and seventh:
 
 ```
 POST /api/backup/v1/enrollments/claim           code → machine token + credentials
@@ -439,11 +439,14 @@ GET  /api/backup/v1/machines/me/credentials     the secrets, audited
 POST /api/backup/v1/runs                        a run event
 POST /api/backup/v1/machines/me/rotation-request  the owner asks for a fresh bucket
 POST /api/backup/v1/machines/me/card-issued     the owner's card was printed
+POST /api/backup/v1/diagnostics                 an install that failed, token or not
 ```
 
-§11 of the API spec lists what is done on this side and what is not.
+§11 of the API spec lists what is done on this side and what is not —
+including four things the server now does that the specification has not caught
+up with.
 
-One rule shapes all six: **the server owns the facts, the machine reports what
+One rule shapes all seven: **the server owns the facts, the machine reports what
 it did.** Eumaeus provisions the bucket, generates the repository password,
 mints both S3 keys and decides when a machine is overdue. The machine caches
 none of it: every run fetches its credentials and discards them.
@@ -464,9 +467,12 @@ intended and not yet done is in [`docs/todo.md`](docs/todo.md).
   way to hold one back from part of the fleet or recall one already out. What
   stands in for it is a release gate: the release is published as a draft, the
   previously published version is upgraded to it on a real machine, and it is
-  only un-drafted if that machine comes back. The real answer is Eumaeus —
-  `selfupdate.Source` is the seam, [jroedel/eumaeus#114](https://github.com/jroedel/eumaeus/issues/114)
-  the ask.
+  only un-drafted if that machine comes back. **The real answer now exists on
+  the server** — `GET /machines/me` carries an `agent` block naming the version
+  and the per-platform hash, with `-version none` as the kill switch
+  ([jroedel/eumaeus#114](https://github.com/jroedel/eumaeus/issues/114)). The
+  remaining gap is ours: `selfupdate.Source` is the seam and nothing implements
+  it against Eumaeus yet.
 - **A rolled-back machine is protected, but only from the release after the
   one that taught it how.** A new version now starts on probation: if it will
   not stay running it is replaced with the previous one and never installed
@@ -540,9 +546,10 @@ intended and not yet done is in [`docs/todo.md`](docs/todo.md).
   `SHA256SUMS`, and runs it once before installing it — but the binary and the
   hash that vouches for it are published by the same workflow to the same
   host, so the hash proves the download arrived intact and nothing more.
-  [jroedel/eumaeus#114](https://github.com/jroedel/eumaeus/issues/114) asks
-  Eumaeus to name the expected version and hash instead; `selfupdate.Source`
-  is the seam that goes through.
+  Eumaeus now names the expected version and hash itself
+  ([jroedel/eumaeus#114](https://github.com/jroedel/eumaeus/issues/114)), and an
+  absent `agent` block is what means "fall back to the release's own sums" —
+  so this gap closes as soon as `selfupdate.Source` is wired to it.
 - **No restore UI.** Restores are `restic restore` at a command line, with the
   password out of Eumaeus. That is the right place for a rare, high-stakes,
   supervised operation to start; a button would be worse.

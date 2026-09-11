@@ -62,7 +62,9 @@ ask. It also removes finding 4 and the rate-limit ceiling in one move, because
 Eumaeus already tells the machine its own repository password and is therefore
 already trusted more than GitHub is.
 
-Blocked on jroedel/eumaeus#114.
+No longer blocked: the `agent` block is live on the server, so this is ours
+to build. An absent block means "verify against the release's own sums",
+which is the state the fleet is in until `Source` is wired up.
 
 ### 3. The smoke test cannot catch the likeliest brick — NOT STARTED, AND NOW WORTH LESS
 

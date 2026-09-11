@@ -7,12 +7,15 @@
 // that never got as far as being enrolled. See jroedel/eumaeus#113 for the
 // endpoint this expects and the rules it is written against.
 //
-// # The endpoint does not exist yet
+// # The endpoint is live
 //
-// Until it does, every send comes back 404 and the reports stay on disk, which
-// is the correct behaviour and needs no flag: diagfile caps and ages them out,
-// and the day the server grows the endpoint the backlog goes with the next
-// run.
+// It answers at terraboskamp.org, with 202 for a report stored and for one
+// deduplicated away — which this client cannot tell apart and should not.
+// Reports from before it existed flushed with the first run after.
+//
+// A send that fails is still not an error worth surfacing: the report stays on
+// disk and diagfile caps and ages them out, which is what an offline machine
+// and a server restart both need.
 package eumaeusdiag
 
 import (

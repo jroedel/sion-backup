@@ -81,8 +81,9 @@ Three limits worth knowing:
 an hour of it existing. A bad tag pushed at 15:00 is on the whole fleet by the
 next morning, and the only way to stop it is to un-publish the release and
 hope. The package comment already names Eumaeus as the intended answer and
-`Source` as the seam; [jroedel/eumaeus#114](https://github.com/jroedel/eumaeus/issues/114)
-is the ask. Until then,
+`Source` as the seam; the server half is live
+([jroedel/eumaeus#114](https://github.com/jroedel/eumaeus/issues/114)) and
+nothing consumes it yet. Until then,
 the draft-then-gate ordering in the release workflow is the substitute: a
 release that fails the gate is never published, so `/latest` never returns it.
 

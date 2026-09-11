@@ -621,6 +621,7 @@ Done, in this repository:
 | `run_uuid` on both phases, stored so a late report keeps its identity | `backupbus.Run`, `backupdb`, `cmd/.../events.go` |
 | `seeding` and `repository_url` on run events | `backupbus.Runner.Seeding`, `fleetbus.Event` |
 | A rejected event dropped rather than resent forever | `fleetbus.ErrRejected`, `fleetbus.Flush` |
+| Install failures and panics, queued on disk and sent with or without a token | `business/domain/diag`, `eumaeusdiag` |
 
 Still to do:
 
@@ -631,6 +632,26 @@ Still to do:
 | Hourly poll of §5, for `paused_until` and retirement | new, in the daemon | medium |
 | `POST /machines/me/card-issued` after printing | `cmd/sion-backup/enroll.go` | trivial |
 | Show "backups available since" from `repository.created_at` | `statusapp` | trivial |
+| `selfupdate.Source` against the `agent` block, replacing the GitHub fallback | `foundation/selfupdate` | medium |
+| Honour `poll_after_seconds` once the poll exists | daemon | trivial |
+| Take the seeding flag from `repository.adopted` rather than local history | `backupbus`, `cmd/.../events.go` | small |
+
+### 11.1 Live on the server, not yet specified above
+
+Four things `terraboskamp.org` does that this document does not describe. They
+are recorded here so the gap is visible rather than discovered; each links to
+the issue where the server side is set out, and none of them is guesswork on
+our part.
+
+| What | Issue |
+|---|---|
+| `POST /diagnostics` — §5's install failures and panics, accepted with or without a machine token, `202` always, deduplicated on `(install_id, kind)` | [eumaeus#113](https://github.com/jroedel/eumaeus/issues/113) |
+| An `agent` block on §5's response, naming the version, an optional `minimum`, and a per-platform URL and SHA-256. **Absent when nobody has decided**, which is not the same as an empty version | [eumaeus#114](https://github.com/jroedel/eumaeus/issues/114) |
+| `poll_after_seconds` on §5's response. Omitted means no opinion; floored at 60 seconds and capped at a day | [eumaeus#117](https://github.com/jroedel/eumaeus/issues/117) |
+| `repository.adopted` and `repository.snapshots` on the claim and on §5, for a bucket adopted from a legacy install. Both `omitempty`, and **absence means "ask restic", not "there is nothing there"**. `created_at` on an adopted repository is the history horizon, not the row's age | [eumaeus#112](https://github.com/jroedel/eumaeus/issues/112) |
+
+Writing them up properly here, and in `openapi.yaml`, is work this repository
+owes — the client cannot consume any of the four until it is done anyway.
 
 ## 12. Still open
 

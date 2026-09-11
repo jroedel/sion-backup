@@ -287,7 +287,7 @@ Write-Host "     machine keeps its files:"
 Write-Host "       $InstallDir\sion-backup.exe paths"
 if ($legacy) {
 Write-Host "     If this machine's existing bucket is being adopted, that has to"
-Write-Host "     be set up on the server FIRST - jroedel/eumaeus#112."
+Write-Host "     be done on the server FIRST: eumaeus backup adopt -node <id> -bucket <b>"
 }
 Write-Host "  2. In Eumaeus, choose 'Enrol a computer', pick the owner and the"
 Write-Host "     bucket, and bring the code over. It lasts fifteen minutes:"
