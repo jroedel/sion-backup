@@ -53,11 +53,6 @@ sion-backup.log
 /sion-backup
 /sion-backup-*
 /dist/
-.venv-api/
-
-# Generated from docs/openapi.yaml by `make api-docs`. Regenerate rather than
-# commit it, so it can never disagree with the spec it was rendered from.
-docs/api.html
 *.exe
 *.test
 *.out

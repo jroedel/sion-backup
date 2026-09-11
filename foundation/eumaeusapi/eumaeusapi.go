@@ -9,9 +9,10 @@
 // # The server side
 //
 // Eumaeus serves these endpoints under APIPrefix; docs/eumaeus-api.md is the
-// contract and openapi.yaml is its machine-readable form. Not all six exist
-// yet on either side, and that is fine: an endpoint neither has implemented
-// answers 404, which `sion-backup doctor` reports as clearly as a wrong token.
+// contract, and its machine-readable form is openapi.yaml in the eumaeus
+// repository, beside the handlers. Not all six exist yet on either side, and
+// that is fine: an endpoint neither has implemented answers 404, which
+// `sion-backup doctor` reports as clearly as a wrong token.
 package eumaeusapi
 
 import (

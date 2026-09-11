@@ -2,7 +2,9 @@
 
 **Status: for implementation.** Written against the settled fleet model in
 [`model.md`](model.md); read that first for *why* any of this is shaped the way
-it is. The machine-readable form is [`openapi.yaml`](openapi.yaml).
+it is. The machine-readable form is
+[`openapi.yaml`](https://github.com/jroedel/eumaeus/blob/main/docs/openapi.yaml),
+which lives in eumaeus beside the handlers it describes.
 
 Audience: whoever implements these endpoints in
 [eumaeus](https://github.com/jroedel/eumaeus).
@@ -741,13 +743,19 @@ cannot consume any of them until it is done anyway. `repository.adopted` and
 `repository.snapshots` were the fourth of these and are now written up, in
 §4.1, because `adopt-enroll` consumes them.
 
-`openapi.yaml` is a different matter: it is asked to move to eumaeus in
-[eumaeus#121](https://github.com/jroedel/eumaeus/issues/121), because a
-machine-readable spec maintained by the client has no way to notice the
-server changing — these four are the proof. It stays here, and stays wrong
-in all four ways, including §4.1 which this document now describes and that
-file still does not, until that is answered; sion-backup#29 is the checklist
-of what this repository deletes when it is.
+`openapi.yaml` was a different matter and is now settled: it moved to eumaeus
+in [eumaeus#121](https://github.com/jroedel/eumaeus/issues/121), because a
+machine-readable spec maintained by the client has no way to notice the server
+changing — these were the proof. All four drift items went in with it, along
+with four more corrections that came out of reading it against the handlers,
+and `Server.Endpoints()` there is now compared against the document in both
+directions by a test. Paths and methods only; every field and sentence below
+that is still hand-maintained, and is now hand-maintained in one repository
+rather than two.
+
+This document stays here. Half of it is this client's own reasoning and status
+— §11 and §11.1 — and it has a reason to live on this side that a
+machine-readable file does not.
 
 ## 12. Still open
 

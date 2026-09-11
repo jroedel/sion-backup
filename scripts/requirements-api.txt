@@ -1,5 +1,0 @@
-# Only for `make api-check`. Nothing in the Go build needs Python.
-openapi-spec-validator==0.7.2
-jsonschema==4.25.1
-rfc3339-validator==0.1.4
-PyYAML==6.0.3
