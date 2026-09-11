@@ -29,9 +29,9 @@ Usage:
 
 `+"`recon`"+` reports what is on this machine. This is the command that acts on it.
 It takes the plan out of the legacy install — what it backs up, what it leaves
-out, how it is tuned — writes it as this machine's own, and prints exactly what
-somebody with an Eumaeus admin terminal has to do so that the bucket with two
-years of history in it is ADOPTED rather than replaced.
+out, how it is tuned — writes it as this machine's own, and prints the two
+Eumaeus commands that ADOPT the bucket with two years of history in it rather
+than replacing it, filled in and wrapped in ssh so they can be run from here.
 
 Run it as root, or with sudo, when you can. These installs commonly live in
 /home/restic, which an ordinary account cannot read, and a migration that could
@@ -55,10 +55,10 @@ install has taken one verified backup. Two backup systems for one night is
 untidy; none is worse.
 
 No credential is printed, written down, or sent anywhere. The repository
-password stays in the legacy script, and an administrator types it into Eumaeus
-from there. --measure opens the legacy repository to count its snapshots, which
-needs those credentials: they are read into memory for that one command and go
-no further.
+password stays in the legacy script, and whoever runs the adopt command types it
+at that command's prompt, from there. --measure opens the legacy repository to
+count its snapshots, which needs those credentials: they are read into memory
+for that one command and go no further.
 
 The Eumaeus commands are printed as ssh lines against the fleet's server, so
 they can be run from here without a second terminal. --ssh names a different
@@ -742,7 +742,7 @@ func (a adoption) verify(ctx context.Context, d *deps, e eumaeuscreds.Enrollment
 		fmt.Printf("  eumaeus says   adopted")
 
 		if e.RepositorySnapshots > 0 {
-			fmt.Printf(", %d snapshots", e.RepositorySnapshots)
+			fmt.Printf(", %s", plural(e.RepositorySnapshots, "snapshot"))
 		}
 
 		if !e.RepositoryCreatedAt.IsZero() {
