@@ -89,6 +89,12 @@ type Install struct {
 	ExcludeFile  string `json:"exclude_file,omitempty"`
 	ExcludeCount int    `json:"exclude_count,omitempty"`
 
+	// Excludes are the patterns written on the backup command itself, as
+	// opposed to the ones in ExcludeFile. On Linux these are the
+	// pseudo-filesystems — /dev, /proc, /sys — and a migration that carried
+	// over the file and not these would back up /proc on the first night.
+	Excludes []string `json:"excludes,omitempty"`
+
 	// UsesFSSnapshot records --use-fs-snapshot in the script. On Windows the
 	// legacy install had it from the start, and losing it in the migration
 	// would be a quiet regression on exactly the machines that need it.
@@ -111,6 +117,7 @@ type Fields struct {
 	RepositoryURL   string
 	NodeID          string
 	Targets         []string
+	Excludes        []string
 	ExcludeFile     string
 	PasswordFile    string
 	UsesFSSnapshot  bool
@@ -177,6 +184,10 @@ func Parse(script string) Fields {
 	f.ExcludeFile = expand(excludeFile(script), vars)
 	f.Targets = targets(script)
 
+	for _, pattern := range excludes(script) {
+		f.Excludes = append(f.Excludes, expand(pattern, vars))
+	}
+
 	return f
 }
 
@@ -213,6 +224,57 @@ func excludeFile(script string) string {
 
 // backupLine finds the restic backup command, which is where the targets are.
 var backupLine = regexp.MustCompile(`(?m)^.*restic(?:\.exe)?["']?\s+.*\bbackup\b.*$`)
+
+// excludeArg matches --exclude with its value, in either form the scripts use
+// and never --exclude-file: the character after "exclude" has to be a space
+// or an equals sign, and "-file" is neither.
+var excludeArg = regexp.MustCompile(`--exclude(?:=|\s+)("[^"]*"|\S+)`)
+
+// excludes pulls the patterns written on the backup command itself.
+//
+// These matter as much as the exclude file does and are easier to lose. The
+// 1.1 Linux script excludes the pseudo-filesystems in a brace expansion:
+//
+//	--exclude={/dev,/media,/mnt,/proc,/run,/sys,/tmp,/var/tmp}
+//
+// A migration that carried over excludes.txt and not that line would spend
+// its first night backing up /proc.
+//
+// Read from the backup command rather than from the whole script, for the
+// same reason targets are: a commented-out line from a previous version of
+// the install is not what this machine runs.
+func excludes(script string) []string {
+	line := backupLine.FindString(script)
+	if line == "" {
+		return nil
+	}
+
+	var out []string
+
+	for _, m := range excludeArg.FindAllStringSubmatch(line, -1) {
+		value := strings.Trim(m[1], `"'`)
+
+		// A brace expansion is one argument to the regular expression and
+		// several excludes to the shell.
+		if inner, ok := strings.CutPrefix(value, "{"); ok {
+			if inner, ok := strings.CutSuffix(inner, "}"); ok {
+				for _, part := range strings.Split(inner, ",") {
+					if part = strings.TrimSpace(part); part != "" {
+						out = append(out, part)
+					}
+				}
+
+				continue
+			}
+		}
+
+		if value != "" {
+			out = append(out, value)
+		}
+	}
+
+	return out
+}
 
 // optionWithValue matches the flags whose argument must not be mistaken for a
 // target path.
@@ -296,4 +358,79 @@ func Version(layout Layout, script, dir string) string {
 			return "0.2"
 		}
 	}
+}
+
+// Credentials are the secrets a legacy script carries in plain text.
+//
+// # Why this is a function of its own
+//
+// [Fields] deliberately records only that credentials are there
+// ([Fields.HasCredentials]) and never what they are, because everything that
+// reads Fields prints it — `recon` renders the whole struct, and `--json`
+// hands it to an installer. A report that could accidentally contain an S3
+// key is a report somebody will paste into a ticket.
+//
+// So reading them out is a separate call that a caller has to decide to make.
+// There is exactly one: `sion-backup adopt-enroll`, which opens the legacy
+// repository to count what is in it, after the person at the machine has said
+// to. It holds them in memory for the length of one `restic snapshots` and
+// never prints them, never writes them, and never sends them anywhere.
+//
+// The password itself is still the administrator's to type into Eumaeus, from
+// the file this names. Nothing here shortens that walk.
+type Credentials struct {
+	AccessKeyID     []byte
+	SecretAccessKey []byte
+
+	// Password is the repository password as written in the script. Empty
+	// when the script points at a PasswordFile instead, which the Windows
+	// install did — reading that file is the caller's to do, because it is a
+	// second path that may need a second set of permissions.
+	Password     []byte
+	PasswordFile string
+}
+
+// Complete reports whether these could open a repository as they stand.
+func (c Credentials) Complete() bool {
+	return len(c.AccessKeyID) > 0 && len(c.SecretAccessKey) > 0 && len(c.Password) > 0
+}
+
+// ParseCredentials reads the secrets out of a legacy backup script.
+//
+// A scrubbed value — the run of x's somebody wrote in before filing a copy of
+// the script — is treated as absent, the same way [Parse] treats it. It is
+// not a credential and an operator sent looking for the bucket with it would
+// get an authentication error rather than an explanation.
+func ParseCredentials(script string) Credentials {
+	var (
+		c    Credentials
+		vars = map[string]string{}
+	)
+
+	for _, m := range assignment.FindAllStringSubmatch(script, -1) {
+		name, value := m[1], strings.TrimSpace(m[2])
+		vars[name] = value
+
+		if value == "" || placeholder.MatchString(value) {
+			continue
+		}
+
+		switch name {
+		case "AWS_ACCESS_KEY_ID":
+			c.AccessKeyID = []byte(value)
+
+		case "AWS_SECRET_ACCESS_KEY":
+			c.SecretAccessKey = []byte(value)
+
+		case "RESTIC_PASSWORD":
+			c.Password = []byte(value)
+
+		case "RESTIC_PASSWORD_FILE":
+			c.PasswordFile = value
+		}
+	}
+
+	c.PasswordFile = expand(c.PasswordFile, vars)
+
+	return c
 }

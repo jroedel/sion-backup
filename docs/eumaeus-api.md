@@ -235,7 +235,9 @@ to start backing up. **The only unauthenticated endpoint.**
     "provider": "wasabi",
     "region": "us-central-1",
     "bucket": "example-node-bucket",
-    "created_at": "2026-09-09T10:04:00+02:00"
+    "created_at": "2026-09-09T10:04:00+02:00",
+    "adopted": true,
+    "snapshots": 1412
   },
   "credentials_version": 1,
   "credentials": {
@@ -249,6 +251,34 @@ to start backing up. **The only unauthenticated endpoint.**
 The `machine` key writes and may delete only under `locks/`. The `restore` key
 is read-only and is what gets printed on the owner's card
 ([`model.md`](model.md) §6.4) — the client needs both.
+
+### 4.1 An adopted repository
+
+`adopted` and `snapshots` describe a bucket taken over from a legacy install
+rather than provisioned empty — [eumaeus#112](https://github.com/jroedel/eumaeus/issues/112),
+`eumaeus backup adopt`. The same two fields appear on `repository` in §5, so a
+machine adopted before they shipped picks them up on its next poll.
+
+| Field | Notes |
+|---|---|
+| `adopted` | `omitempty`. **Absence means "ask restic", not "there is nothing there"** |
+| `snapshots` | `omitempty`. What restic reported at adoption, recorded by hand with `-snapshots`. The repository remains the authority on what it contains |
+| `created_at` | On an adopted repository this is the **history horizon** — 2019, say — and not when the row in Eumaeus was made. It is what "backups available since …" should read |
+
+The client reads all three in `sion-backup adopt-enroll`, which claims the code
+and then checks that the repository it was handed is the legacy machine's own.
+That check is the point: `provision` typed where `adopt` was meant returns a
+perfectly good empty bucket, and every step after it succeeds. So the client
+treats a missing `adopted` as no answer rather than as a denial, and asks
+restic for the snapshot count either way.
+
+Two additions to the claim are asked for in
+[eumaeus#123](https://github.com/jroedel/eumaeus/issues/123), both optional and
+neither blocking: refusing a claim whose code points at a different repository
+from the one the machine has been writing to — which moves that check to before
+the code is spent — and filling in a missing history horizon from what the
+machine measured. Until then the check is late, and the recovery is a second
+code and `adopt-enroll --force`.
 
 ### Responses
 
@@ -622,6 +652,8 @@ Done, in this repository:
 | `seeding` and `repository_url` on run events | `backupbus.Runner.Seeding`, `fleetbus.Event` |
 | A rejected event dropped rather than resent forever | `fleetbus.ErrRejected`, `fleetbus.Flush` |
 | Install failures and panics, queued on disk and sent with or without a token | `business/domain/diag`, `eumaeusdiag` |
+| `repository.adopted`, `repository.snapshots` and the history horizon on the claim (§4.1) | `eumaeuscreds.Enrollment` |
+| Taking a legacy install over: the plan assembled from it, the Eumaeus commands printed, the adopted bucket checked afterwards | `cmd/sion-backup/adopt.go` |
 
 Still to do:
 
@@ -634,13 +666,13 @@ Still to do:
 | Show "backups available since" from `repository.created_at` | `statusapp` | trivial |
 | `selfupdate.Source` against the `agent` block, replacing the GitHub fallback | `foundation/selfupdate` | medium |
 | Honour `poll_after_seconds` once the poll exists | daemon | trivial |
-| Take the seeding flag from `repository.adopted` rather than local history | `backupbus`, `cmd/.../events.go` | small |
+| Take the seeding flag from `repository.adopted` rather than local history. **Live now, not hypothetical:** every machine `adopt-enroll` migrates has no local history, so its first run reports `seeding: true` against a repository holding years of snapshots, and §7's cutover guard waits on it | `backupbus`, `cmd/.../events.go` | small |
 
 ### 11.1 Live on the server, not yet specified above
 
-Four things `terraboskamp.org` does that this document does not describe. They
-are recorded here so the gap is visible rather than discovered; each links to
-the issue where the server side is set out, and none of them is guesswork on
+Three things `terraboskamp.org` does that this document does not describe.
+They are recorded here so the gap is visible rather than discovered; each links
+to the issue where the server side is set out, and none of them is guesswork on
 our part.
 
 | What | Issue |
@@ -648,16 +680,18 @@ our part.
 | `POST /diagnostics` — §5's install failures and panics, accepted with or without a machine token, `202` always, deduplicated on `(install_id, kind)` | [eumaeus#113](https://github.com/jroedel/eumaeus/issues/113) |
 | An `agent` block on §5's response, naming the version, an optional `minimum`, and a per-platform URL and SHA-256. **Absent when nobody has decided**, which is not the same as an empty version | [eumaeus#114](https://github.com/jroedel/eumaeus/issues/114) |
 | `poll_after_seconds` on §5's response. Omitted means no opinion; floored at 60 seconds and capped at a day | [eumaeus#117](https://github.com/jroedel/eumaeus/issues/117) |
-| `repository.adopted` and `repository.snapshots` on the claim and on §5, for a bucket adopted from a legacy install. Both `omitempty`, and **absence means "ask restic", not "there is nothing there"**. `created_at` on an adopted repository is the history horizon, not the row's age | [eumaeus#112](https://github.com/jroedel/eumaeus/issues/112) |
 
 Writing them up properly here is work this repository owes — the client
-cannot consume any of the four until it is done anyway.
+cannot consume any of them until it is done anyway. `repository.adopted` and
+`repository.snapshots` were the fourth of these and are now written up, in
+§4.1, because `adopt-enroll` consumes them.
 
 `openapi.yaml` is a different matter: it is asked to move to eumaeus in
 [eumaeus#121](https://github.com/jroedel/eumaeus/issues/121), because a
 machine-readable spec maintained by the client has no way to notice the
 server changing — these four are the proof. It stays here, and stays wrong
-in these four ways, until that is answered; sion-backup#29 is the checklist
+in all four ways, including §4.1 which this document now describes and that
+file still does not, until that is answered; sion-backup#29 is the checklist
 of what this repository deletes when it is.
 
 ## 12. Still open

@@ -48,8 +48,17 @@ func main() {
 		keyID    = flag.String("key-id", "", "S3 access key id")
 		secret   = flag.String("secret", "", "S3 secret access key")
 		nodeID   = flag.String("node", "gate-machine", "node id to enrol as")
-		journal  = flag.String("journal", "", "append every request to this file, as JSON lines")
-		ready    = flag.String("ready", "", "touch this file once listening")
+
+		// The two fields a bucket adopted from a legacy install carries.
+		// Off by default, which is also what an unadopted machine looks
+		// like — and what every machine adopted before Eumaeus grew these
+		// fields still looks like, which is why the client treats their
+		// absence as "ask restic" rather than as a denial.
+		adopted   = flag.Bool("adopted", false, "answer the claim as an adopted repository")
+		snapshots = flag.Int("snapshots", 0, "snapshots the adopted repository already holds")
+		since     = flag.String("history-since", "", "history horizon, as 2006-01-02")
+		journal   = flag.String("journal", "", "append every request to this file, as JSON lines")
+		ready     = flag.String("ready", "", "touch this file once listening")
 	)
 
 	flag.Parse()
@@ -69,12 +78,15 @@ func main() {
 	}
 
 	s := &server{
-		repo:     *repoURL,
-		password: pw,
-		keyID:    *keyID,
-		secret:   *secret,
-		node:     *nodeID,
-		journal:  *journal,
+		repo:      *repoURL,
+		password:  pw,
+		keyID:     *keyID,
+		secret:    *secret,
+		node:      *nodeID,
+		journal:   *journal,
+		adopted:   *adopted,
+		snapshots: *snapshots,
+		since:     *since,
 	}
 
 	mux := http.NewServeMux()
@@ -113,6 +125,12 @@ type server struct {
 	secret   string
 	node     string
 	journal  string
+
+	// adopted, snapshots and since describe a repository taken over from a
+	// legacy install rather than provisioned empty. See the -adopted flag.
+	adopted   bool
+	snapshots int
+	since     string
 
 	mu sync.Mutex
 }
@@ -175,12 +193,7 @@ func (s *server) claim(w http.ResponseWriter, r *http.Request) {
 			"email": "gate@example.invalid",
 		},
 		"warn_after_hours": 48,
-		"repository": map[string]string{
-			"url":      s.repo,
-			"provider": "wasabi",
-			"region":   "test",
-			"bucket":   "test",
-		},
+		"repository":       s.repository(),
 		"credentials": map[string]any{
 			"restic_password": s.password,
 			"machine":         keyPair{s.keyID, s.secret},
@@ -193,6 +206,35 @@ func (s *server) claim(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, resp)
+}
+
+// repository is the claim's repository block.
+//
+// The adoption fields are omitted rather than sent as false and zero, which is
+// what the real server does and what the client depends on: absence means "ask
+// restic", and a hard `"adopted": false` would be a denial the server is not
+// in a position to make.
+func (s *server) repository() map[string]any {
+	out := map[string]any{
+		"url":      s.repo,
+		"provider": "wasabi",
+		"region":   "test",
+		"bucket":   "test",
+	}
+
+	if s.adopted {
+		out["adopted"] = true
+	}
+
+	if s.snapshots > 0 {
+		out["snapshots"] = s.snapshots
+	}
+
+	if s.since != "" {
+		out["created_at"] = s.since + "T00:00:00Z"
+	}
+
+	return out
 }
 
 func (s *server) credentials(w http.ResponseWriter, r *http.Request) {

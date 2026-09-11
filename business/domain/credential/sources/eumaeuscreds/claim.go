@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"time"
 
 	"github.com/jroedel/sion-backup/foundation/eumaeusapi"
 )
@@ -65,6 +66,18 @@ type claimResponse struct {
 		Provider string `json:"provider"`
 		Region   string `json:"region"`
 		Bucket   string `json:"bucket"`
+
+		// CreatedAt is when the history starts, which on an adopted
+		// repository is years before the row in Eumaeus was made. See
+		// docs/eumaeus-api.md §4.
+		CreatedAt time.Time `json:"created_at"`
+
+		// Adopted and Snapshots describe a bucket taken over from a legacy
+		// install rather than provisioned empty. Both are omitted rather
+		// than zeroed when the server has nothing to say, and their absence
+		// means "ask restic" — not "there is nothing there".
+		Adopted   bool `json:"adopted"`
+		Snapshots int  `json:"snapshots"`
 	} `json:"repository"`
 
 	Credentials struct {
@@ -91,6 +104,20 @@ type Enrollment struct {
 	RepositoryProvider string
 	RepositoryRegion   string
 	RepositoryBucket   string
+
+	// RepositoryCreatedAt is the history horizon: the date the owner's page
+	// means by "backups available since". Zero when the server said nothing.
+	RepositoryCreatedAt time.Time
+
+	// RepositoryAdopted and RepositorySnapshots say that this bucket was
+	// taken over from a legacy install, and how much was already in it.
+	//
+	// False and zero are not "a fresh bucket" — they are "the server did not
+	// say", which is the state every machine adopted before Eumaeus grew
+	// these fields is in. `adopt-enroll` treats them as a claim to check
+	// rather than an answer, and asks restic either way.
+	RepositoryAdopted   bool
+	RepositorySnapshots int
 
 	ResticPassword string
 
@@ -162,10 +189,14 @@ func Claim(ctx context.Context, client *eumaeusapi.Client, code string, m Machin
 		RepositoryProvider: got.Repository.Provider,
 		RepositoryRegion:   got.Repository.Region,
 		RepositoryBucket:   got.Repository.Bucket,
-		ResticPassword:     got.Credentials.ResticPassword,
-		MachineKeyID:       got.Credentials.Machine.AccessKeyID,
-		MachineKeySecret:   got.Credentials.Machine.SecretAccessKey,
-		RestoreKeyID:       got.Credentials.Restore.AccessKeyID,
-		RestoreKeySecret:   got.Credentials.Restore.SecretAccessKey,
+
+		RepositoryCreatedAt: got.Repository.CreatedAt,
+		RepositoryAdopted:   got.Repository.Adopted,
+		RepositorySnapshots: got.Repository.Snapshots,
+		ResticPassword:      got.Credentials.ResticPassword,
+		MachineKeyID:        got.Credentials.Machine.AccessKeyID,
+		MachineKeySecret:    got.Credentials.Machine.SecretAccessKey,
+		RestoreKeyID:        got.Credentials.Restore.AccessKeyID,
+		RestoreKeySecret:    got.Credentials.Restore.SecretAccessKey,
 	}, nil
 }

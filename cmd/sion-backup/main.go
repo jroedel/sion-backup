@@ -58,6 +58,8 @@ Commands:
   run        Take one backup now, in the foreground
   status     Print the last few runs
   enroll     Fetch this machine's credentials from Eumaeus and store them
+  adopt-enroll
+             Take over the backup already running here, keeping its bucket
   doctor     Check everything a backup needs, and say what is wrong
   recon      Report what is already on this machine, including the old scripts
   restic     Install or check the pinned restic this fleet runs
@@ -116,6 +118,8 @@ func run() error {
 		return statusCmd(args)
 	case "enroll":
 		return enrollCmd(args)
+	case "adopt-enroll":
+		return adoptEnrollCmd(args)
 	case "doctor":
 		return doctorCmd(args)
 	case "recon":

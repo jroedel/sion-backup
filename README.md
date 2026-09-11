@@ -173,6 +173,29 @@ plain text, and this says which file they are in and leaves them there. If the
 install is somewhere the notes never mentioned — they were done by hand —
 point at it with `--legacy-dir`.
 
+`recon` reports. `adopt-enroll` is what acts on the report:
+
+```sh
+sudo ./sion-backup adopt-enroll          # asks before it writes anything
+```
+
+It takes the plan out of the legacy install — the targets, both halves of the
+exclude list, the per-machine tuning, VSS on Windows — writes it as this
+machine's own, opens the old repository to count what is in it, and prints the
+two Eumaeus commands to run, with the bucket name and node ID already filled
+in. Then an administrator adopts the bucket and issues a code, and the same
+command finishes the job:
+
+```sh
+sudo ./sion-backup adopt-enroll --code K4TP-9QX2
+```
+
+which claims the code **and then checks that the bucket handed back is the
+legacy one**. That check is the reason the command exists. `provision` typed
+where `adopt` was meant hands back a working, empty bucket: every step after
+it succeeds, the dashboard goes green, and two years of history sit in a bucket
+nothing points at until somebody needs a file from 2024.
+
 The installers run it for you and stop before doing anything irreversible:
 
 ```sh
@@ -185,7 +208,8 @@ has taken one verified backup: `install.sh --disable-legacy`, or
 `install.ps1 -DisableLegacyTask`. Two backup systems for one night is untidy;
 none is worse.
 
-To set up a machine:
+To set up a machine with no backup on it — the rare case; on one that already
+backs up, `adopt-enroll` above replaces steps 1 and 2 and keeps the history:
 
 ```sh
 # 1. In Eumaeus: sign in, "Enrol a computer", choose the owner and the bucket.
@@ -221,6 +245,10 @@ sion-backup daemon     the scheduler and the status page (what the service runs)
 sion-backup run        one backup now, in the foreground
 sion-backup status     the last few runs, as a table
 sion-backup enroll     fetch this machine's credentials and prove they work
+sion-backup adopt-enroll
+                       take over the backup already running here, keeping its
+                       bucket and its history
+sion-backup recon      what is already on this machine, including the old scripts
 sion-backup doctor     check everything a backup needs, and say what is wrong
 sion-backup paths      where this program keeps its files
 ```

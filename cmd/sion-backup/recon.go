@@ -146,15 +146,7 @@ func reconCmd(args []string) error {
 	ctx, cancel := signalContext()
 	defer cancel()
 
-	var extra []string
-
-	for _, dir := range strings.Split(*legacyDir, ",") {
-		if dir = strings.TrimSpace(dir); dir != "" {
-			extra = append(extra, dir)
-		}
-	}
-
-	r := gather(ctx, extra...)
+	r := gather(ctx, splitList(*legacyDir)...)
 
 	if *asJSON {
 		out, err := json.MarshalIndent(r, "", "  ")
@@ -369,12 +361,14 @@ func plan(r Recon) []string {
 			"NOT PROVEN NEW: nothing was found, but this account could not read %s — "+
 				"and a home directory belonging to another account is exactly where "+
 				"these installs live. Re-run as %s before concluding anything.",
-			strings.Join(r.Blocked, ", "), elevated()))
+			strings.Join(r.Blocked, ", "), elevated("recon")))
 
 		out = append(out,
 			"If it really is new: provision a bucket in Eumaeus, issue a code, and "+
-				"run \"sion-backup enroll --code ...\". If it is not, adopting the old "+
-				"bucket is the decision that has to be made first, and enrolling fixes it.")
+				"run \"sion-backup enroll --code ...\". If it is not, \"sion-backup "+
+				"adopt-enroll\" run as "+elevated("adopt-enroll")+" is what takes the old "+
+				"install over, and it refuses to migrate a machine it was not allowed "+
+				"to look at.")
 
 		return out
 	}
@@ -397,7 +391,9 @@ func plan(r Recon) []string {
 		out = append(out, fmt.Sprintf(
 			"It writes to %s. Decide before enrolling: have Eumaeus ADOPT this bucket "+
 				"(keeps the history, no re-upload) or provision a new one (starts from "+
-				"nothing, and the first backup uploads everything).", l.RepositoryURL))
+				"nothing, and the first backup uploads everything). \"sion-backup "+
+				"adopt-enroll\" does the first of those: it assembles the plan from what "+
+				"is here and prints the Eumaeus commands to run, filled in.", l.RepositoryURL))
 	}
 
 	if l.HasCredentials {
@@ -416,11 +412,11 @@ func plan(r Recon) []string {
 				"the name somebody recognises.", l.NodeID))
 	}
 
-	if l.ExcludeCount > 0 {
+	if l.ExcludeCount > 0 || len(l.Excludes) > 0 {
 		out = append(out, fmt.Sprintf(
-			"Its exclude list has %d entries, in %s. Copy them into the new config before "+
-				"the first run, or the first backup will include things somebody chose to "+
-				"leave out.", l.ExcludeCount, l.ExcludeFile))
+			"It excludes %s. \"sion-backup adopt-enroll\" copies both into the new plan; "+
+				"by hand, the first backup will otherwise include things somebody chose to "+
+				"leave out.", excludeSources(l)))
 	}
 
 	if l.UsesFSSnapshot {
@@ -546,8 +542,8 @@ func (r Recon) print() {
 			fmt.Printf("  targets        %s\n", strings.Join(l.Targets, " "))
 		}
 
-		if l.ExcludeFile != "" {
-			fmt.Printf("  excludes       %d entries in %s\n", l.ExcludeCount, l.ExcludeFile)
+		if l.ExcludeFile != "" || len(l.Excludes) > 0 {
+			fmt.Printf("  excludes       %s\n", excludeSources(l))
 		}
 
 		if l.UsesFSSnapshot {
@@ -571,7 +567,7 @@ func (r Recon) print() {
 			fmt.Printf("  %s (permission denied)\n", dir)
 		}
 
-		fmt.Printf("  Re-run as %s. Until then \"none found\" above means\n", elevated())
+		fmt.Printf("  Re-run as %s. Until then \"none found\" above means\n", elevated("recon"))
 		fmt.Printf("  \"nothing found where this account can see\".\n")
 	}
 
@@ -592,13 +588,42 @@ func (r Recon) print() {
 	fmt.Println()
 }
 
-// elevated names what to re-run as, in this platform's words.
-func elevated() string {
+// excludeSources says where a legacy install's excludes are, in both of the
+// places they live.
+//
+// Two places, because the Linux script keeps the pseudo-filesystems on the
+// command line and everything else in a file, and a report that mentioned only
+// the file would send somebody to copy half a list.
+func excludeSources(l *legacybus.Install) string {
+	var parts []string
+
+	if len(l.Excludes) > 0 {
+		parts = append(parts, fmt.Sprintf("%d in the script", len(l.Excludes)))
+	}
+
+	if l.ExcludeFile != "" {
+		parts = append(parts, fmt.Sprintf("%d in %s", l.ExcludeCount, l.ExcludeFile))
+	}
+
+	if len(parts) == 0 {
+		return "none"
+	}
+
+	return strings.Join(parts, ", ")
+}
+
+// elevated names what to re-run as, in this platform's words, and names the
+// command while it is at it.
+//
+// The command matters: this sentence is printed by `recon` and by
+// `adopt-enroll`, and "re-run as root: sudo sion-backup recon" in the middle of
+// a migration sends somebody back to the report they have already read.
+func elevated(cmd string) string {
 	if runtime.GOOS == "windows" {
 		return "Administrator"
 	}
 
-	return "root: sudo sion-backup recon"
+	return "root: sudo sion-backup " + cmd
 }
 
 // answer renders a yes/no with the reason beside it, which is the form a

@@ -148,6 +148,8 @@ if [ "$LEGACY_FOUND" -eq 1 ] && [ "$ASSUME_YES" -eq 0 ]; then
   note "Read the plan above. Nothing below touches the legacy install, its"
   note "bucket or its credentials — but decide the bucket question BEFORE"
   note "enrolling, because enrolling is what fixes the answer."
+  note "\"sion-backup adopt-enroll\" is the command that decides it in the"
+  note "direction that keeps the history; it is step 1 below."
   printf '\n  Continue? [y/N] '
   read -r answer
 
@@ -239,13 +241,19 @@ fi
 STEP="done"
 
 say "Next"
-note "1. In Eumaeus: choose the owner and the bucket, and issue a code."
 if [ "$LEGACY_FOUND" -eq 1 ]; then
-  note "   If this machine's existing bucket is being adopted, that has to be"
-  note "   done on the server FIRST: eumaeus backup adopt -node <id> -bucket <b>"
+  note "1. Take the old install over. This writes its plan as this machine's"
+  note "   own and prints the Eumaeus commands to run, filled in:"
+  note "     sudo $INSTALLED adopt-enroll $RECON_ARGS"
+  note "2. Run those on the server — adopt, NOT provision — then come back with"
+  note "   the code it issues. This checks that the bucket handed back is the"
+  note "   legacy one, and prints the restore card for the owner:"
+  note "     sudo $INSTALLED adopt-enroll --code XXXX-XXXX"
+else
+  note "1. In Eumaeus: choose the owner and the bucket, and issue a code."
+  note "2. Enrol, print the restore card, and give it to the owner:"
+  note "     $INSTALLED enroll --code XXXX-XXXX"
 fi
-note "2. Enrol, print the restore card, and give it to the owner:"
-note "     $INSTALLED enroll --code XXXX-XXXX"
 note "3. Take one backup in the foreground and watch it:"
 note "     $INSTALLED run"
 note "4. Check it, then start the service:"
