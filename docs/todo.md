@@ -57,11 +57,12 @@ only un-drafted if that machine comes back. That stops a bad release being
 *published*. It does nothing about one that already was.
 
 The real fix is the Eumaeus source — `selfupdate.Source` is the seam, and
-`docs/eumaeus-requests.md` §5.2 is the ask. It also removes finding 4 and the
-rate-limit ceiling in one move, because Eumaeus already tells the machine its
-own repository password and is therefore already trusted more than GitHub is.
+[jroedel/eumaeus#114](https://github.com/jroedel/eumaeus/issues/114) is the
+ask. It also removes finding 4 and the rate-limit ceiling in one move, because
+Eumaeus already tells the machine its own repository password and is therefore
+already trusted more than GitHub is.
 
-Blocked on the Eumaeus side of §5.2.
+Blocked on jroedel/eumaeus#114.
 
 ### 3. The smoke test cannot catch the likeliest brick — NOT STARTED, AND NOW WORTH LESS
 

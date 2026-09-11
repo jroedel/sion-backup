@@ -242,7 +242,7 @@ say "Next"
 note "1. In Eumaeus: choose the owner and the bucket, and issue a code."
 if [ "$LEGACY_FOUND" -eq 1 ]; then
   note "   If this machine's existing bucket is being adopted, that has to be"
-  note "   set up on the server FIRST — see docs/eumaeus-requests.md §5.3."
+  note "   set up on the server FIRST — see jroedel/eumaeus#112."
 fi
 note "2. Enrol, print the restore card, and give it to the owner:"
 note "     $INSTALLED enroll --code XXXX-XXXX"

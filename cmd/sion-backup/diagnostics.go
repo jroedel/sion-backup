@@ -55,7 +55,7 @@ func diagnostics(log *slog.Logger) *diagbus.Business {
 
 	// Anonymous when there is no token, and that is the interesting case: an
 	// install that failed before enrollment has no token and is exactly the
-	// report somebody needs. See docs/eumaeus-requests.md §5.1.
+	// report somebody needs. See jroedel/eumaeus#113.
 	tok, _ := token.Load(p.Token)
 
 	client, err := eumaeusapi.New(eumaeusapi.Config{

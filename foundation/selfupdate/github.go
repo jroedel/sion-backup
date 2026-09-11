@@ -19,8 +19,8 @@ const DefaultRepository = "jroedel/sion-backup"
 // It is the fallback source, and the weaker one: the binary and the
 // SHA256SUMS that vouches for it are published by the same workflow to the
 // same host, so a hash from there proves the download arrived intact and
-// nothing more. See the package comment, and docs/eumaeus-requests.md §5.2
-// for the ask that replaces it.
+// nothing more. See the package comment, and jroedel/eumaeus#114 for the
+// ask that replaces it.
 //
 // # Rate limits
 //

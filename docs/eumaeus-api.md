@@ -504,7 +504,7 @@ future client adding a sixth value must not blank a dashboard.
 | Status | When |
 |---|---|
 | `200`, `204` | Recorded |
-| `400` | Malformed. **The client marks the run reported and logs loudly** — a request the server calls malformed will not become well-formed by being resent. This is why `400` may never mean "the server could not store it": see [`eumaeus-followup.md`](eumaeus-followup.md) §1 |
+| `400` | Malformed. **The client marks the run reported and logs loudly** — a request the server calls malformed will not become well-formed by being resent. This is why `400` may never mean "the server could not store it": see [jroedel/eumaeus#115](https://github.com/jroedel/eumaeus/issues/115) |
 | `401` | Terminal |
 
 ---

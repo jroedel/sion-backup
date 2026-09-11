@@ -4,8 +4,8 @@
 //
 // Authenticated when this machine has a token and anonymous when it does not,
 // which is the whole point: the reports most worth having come from an install
-// that never got as far as being enrolled. See docs/eumaeus-requests.md §5.1
-// for the endpoint this expects and the rules it is written against.
+// that never got as far as being enrolled. See jroedel/eumaeus#113 for the
+// endpoint this expects and the rules it is written against.
 //
 // # The endpoint does not exist yet
 //

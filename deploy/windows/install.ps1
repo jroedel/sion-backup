@@ -82,7 +82,7 @@ $Script:PriorVersion = ''
 # The failures worth hearing about are the ones nobody will type up: an
 # install that fell over at nine in the evening on somebody's laptop, which
 # will fall over the same way on the next machine unless it is seen. Sending
-# needs no token -- see docs/eumaeus-requests.md 5.1.
+# needs no token -- see jroedel/eumaeus#113.
 function Report-Failure {
   param([string] $Detail)
 
@@ -287,7 +287,7 @@ Write-Host "     machine keeps its files:"
 Write-Host "       $InstallDir\sion-backup.exe paths"
 if ($legacy) {
 Write-Host "     If this machine's existing bucket is being adopted, that has to"
-Write-Host "     be set up on the server FIRST - docs/eumaeus-requests.md 5.3."
+Write-Host "     be set up on the server FIRST - jroedel/eumaeus#112."
 }
 Write-Host "  2. In Eumaeus, choose 'Enrol a computer', pick the owner and the"
 Write-Host "     bucket, and bring the code over. It lasts fifteen minutes:"

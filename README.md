@@ -427,8 +427,7 @@ The contract is these documents, in the order to read them:
 | [`docs/model.md`](docs/model.md) | the fleet model — people, machines, repositories, the alerting state machine, and what survives Eumaeus itself being lost. **Read first, and argue with this one.** |
 | [`docs/eumaeus-api.md`](docs/eumaeus-api.md) | the endpoint specification, and the rules a correct server has to follow |
 | [`docs/openapi.yaml`](docs/openapi.yaml) | the same endpoints, machine-readable. `make api-check` validates it and all 29 examples in it |
-| [`docs/eumaeus-requests.md`](docs/eumaeus-requests.md) | what this client needs from the server, and the behaviours it now depends on — the document to hand to whoever works on Eumaeus |
-| [`docs/eumaeus-followup.md`](docs/eumaeus-followup.md) | the reply to Eumaeus's answers of 2026-09-10: what changed here because of them, what they did not see, and what is still open |
+| [eumaeus issues](https://github.com/jroedel/eumaeus/issues) | what this client still needs from the server. One issue per ask, on their tracker — not a document passed back and forth, which is how the last round went unanswered for a week |
 
 Six endpoints. The installation at `https://terraboskamp.org` now answers
 under this base path; the client speaks the first, third and fourth of them:
@@ -466,7 +465,8 @@ intended and not yet done is in [`docs/todo.md`](docs/todo.md).
   stands in for it is a release gate: the release is published as a draft, the
   previously published version is upgraded to it on a real machine, and it is
   only un-drafted if that machine comes back. The real answer is Eumaeus —
-  `selfupdate.Source` is the seam, `docs/eumaeus-requests.md` §5.2 the ask.
+  `selfupdate.Source` is the seam, [jroedel/eumaeus#114](https://github.com/jroedel/eumaeus/issues/114)
+  the ask.
 - **A rolled-back machine is protected, but only from the release after the
   one that taught it how.** A new version now starts on probation: if it will
   not stay running it is replaced with the previous one and never installed
@@ -540,9 +540,9 @@ intended and not yet done is in [`docs/todo.md`](docs/todo.md).
   `SHA256SUMS`, and runs it once before installing it — but the binary and the
   hash that vouches for it are published by the same workflow to the same
   host, so the hash proves the download arrived intact and nothing more.
-  [`docs/eumaeus-requests.md`](docs/eumaeus-requests.md) §5.2 asks Eumaeus to
-  name the expected version and hash instead; `selfupdate.Source` is the seam
-  that goes through.
+  [jroedel/eumaeus#114](https://github.com/jroedel/eumaeus/issues/114) asks
+  Eumaeus to name the expected version and hash instead; `selfupdate.Source`
+  is the seam that goes through.
 - **No restore UI.** Restores are `restic restore` at a command line, with the
   password out of Eumaeus. That is the right place for a rare, high-stakes,
   supervised operation to start; a button would be worse.
