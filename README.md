@@ -182,19 +182,31 @@ sudo ./sion-backup adopt-enroll          # asks before it writes anything
 It takes the plan out of the legacy install — the targets, both halves of the
 exclude list, the per-machine tuning, VSS on Windows — writes it as this
 machine's own, opens the old repository to count what is in it, and prints the
-two Eumaeus commands to run, with the bucket name and node ID already filled
-in. Then an administrator adopts the bucket and issues a code, and the same
-command finishes the job:
+two Eumaeus commands to run, with the bucket name, node ID, snapshot count and
+history horizon already filled in and wrapped in `ssh` so they can be run from
+right there:
+
+```sh
+ssh -t terraboskamp.org "eumaeus backup adopt -owner … -node dell3-backup   -bucket bucket123 -history-since 2019-03-01 -snapshots 1412"
+ssh terraboskamp.org 'eumaeus backup code dell3-backup'
+```
+
+`--ssh` names a different host; `--ssh ""` prints them bare. Then, with the
+code that second command issues:
 
 ```sh
 sudo ./sion-backup adopt-enroll --code K4TP-9QX2
 ```
 
-which claims the code **and then checks that the bucket handed back is the
-legacy one**. That check is the reason the command exists. `provision` typed
-where `adopt` was meant hands back a working, empty bucket: every step after
-it succeeds, the dashboard goes green, and two years of history sit in a bucket
-nothing points at until somebody needs a file from 2024.
+The claim tells Eumaeus which bucket this machine has actually been writing to,
+and a code that enrols it against a different one is **refused without being
+consumed** — adopt the right bucket and present the same code again. After a
+successful claim it checks again from this end, against the repository itself.
+
+That check is the reason the command exists. `provision` typed where `adopt`
+was meant hands back a working, empty bucket: every step after it succeeds, the
+dashboard goes green, and two years of history sit in a bucket nothing points
+at until somebody needs a file from 2024.
 
 The installers run it for you and stop before doing anything irreversible:
 

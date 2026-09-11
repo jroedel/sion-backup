@@ -84,6 +84,11 @@ type enrollment struct {
 	code   string
 	server string
 	force  bool
+
+	// legacy is the old backup this machine is being migrated off, when
+	// `adopt-enroll` found one. Nil for an ordinary enrollment, which is what
+	// every machine with nothing on it sends.
+	legacy *eumaeuscreds.LegacyInstall
 }
 
 // enroll claims a code and makes this machine ready to back up.
@@ -132,6 +137,7 @@ func (d *deps) enroll(ctx context.Context, o enrollment) (eumaeuscreds.Enrollmen
 		OS:           osName(),
 		LocalAccount: localAccount(),
 		Agent:        version,
+		Legacy:       o.legacy,
 	})
 	if err != nil {
 		return eumaeuscreds.Enrollment{}, err

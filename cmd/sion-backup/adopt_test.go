@@ -6,6 +6,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/jroedel/sion-backup/business/domain/legacy/legacybus"
 )
@@ -223,5 +224,61 @@ func TestExcludeSummarySaysWhereTheyCameFrom(t *testing.T) {
 		if !strings.Contains(got, want) {
 			t.Errorf("summary %q does not contain %q", got, want)
 		}
+	}
+}
+
+// TestSSHTargetComesFromTheServerTheMachineTalksTo. The Eumaeus commands are
+// printed to be run somewhere else, and printing them bare means somebody
+// retypes them into a second terminal — the same transcription this command
+// exists to remove.
+func TestSSHTargetComesFromTheServerTheMachineTalksTo(t *testing.T) {
+	for _, tc := range []struct {
+		override string
+		url      string
+		want     string
+	}{
+		{"", "https://terraboskamp.org", "terraboskamp.org"},
+		{"", "https://terraboskamp.org:8443/", "terraboskamp.org"},
+		{"admin@backup.example.org", "https://terraboskamp.org", "admin@backup.example.org"},
+
+		// A loopback server is a test, or the machine you are already sitting
+		// at. Neither wants an ssh line in front of the command.
+		{"", "http://127.0.0.1:8088", ""},
+		{"", "http://localhost:8088", ""},
+		{"", "", ""},
+	} {
+		if got := sshTarget(tc.override, tc.url); got != tc.want {
+			t.Errorf("sshTarget(%q, %q) = %q, want %q", tc.override, tc.url, got, tc.want)
+		}
+	}
+}
+
+// TestTheClaimSaysWhereTheMachineWritesEvenWhenItCouldNotLook.
+//
+// The repository URL is read out of the script and costs nothing, so it goes
+// whether or not the repository opened — it is what lets Eumaeus refuse a code
+// pointing at the wrong bucket. The count does not: a zero sent as a fact
+// would be a claim that the old repository is empty.
+func TestTheClaimSaysWhereTheMachineWritesEvenWhenItCouldNotLook(t *testing.T) {
+	a := adoption{install: &legacybus.Install{
+		RepositoryURL: "s3:https://s3.example.com/bucket123",
+	}}
+
+	got := a.legacy()
+
+	if got.RepositoryURL != "s3:https://s3.example.com/bucket123" {
+		t.Errorf("repository url = %q", got.RepositoryURL)
+	}
+
+	if got.Snapshots != 0 || !got.OldestSnapshot.IsZero() {
+		t.Errorf("an unmeasured repository reported %d snapshots from %v",
+			got.Snapshots, got.OldestSnapshot)
+	}
+
+	a.snapshots, a.oldest = 1412, time.Date(2019, 3, 1, 0, 0, 0, 0, time.UTC)
+
+	if got := a.legacy(); got.Snapshots != 1412 || !got.OldestSnapshot.Equal(a.oldest) {
+		t.Errorf("a measured repository reported %d snapshots from %v",
+			got.Snapshots, got.OldestSnapshot)
 	}
 }

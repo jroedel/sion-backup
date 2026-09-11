@@ -24,6 +24,27 @@ var ErrCodeUsed = errors.New("eumaeuscreds: that enrollment code has already bee
 // ErrCodeUnknown reports a code that does not exist or has expired.
 var ErrCodeUnknown = errors.New("eumaeuscreds: that enrollment code is not valid, or has expired")
 
+// legacyRepositoryField is what Eumaeus names in the one refusal an adopting
+// client has to recognise, rather than merely print. See [RepositoryMismatch].
+const legacyRepositoryField = "legacy.repository_url"
+
+// RepositoryMismatch reports a claim refused because the code enrols this
+// machine against a repository it is not the one writing to.
+//
+// Worth telling apart from every other refusal for one reason: the code has
+// NOT been consumed. Whoever is standing at the machine can have the bucket
+// adopted properly and present the same code again, and a client that let this
+// read like an ordinary failure would send them for a second one — or, worse,
+// let them conclude the machine is fine to enrol against the new bucket.
+//
+// The sentence itself is the server's and names both repositories; it is
+// printed as it stands.
+func RepositoryMismatch(err error) bool {
+	var refused *eumaeusapi.BadRequest
+
+	return errors.As(err, &refused) && refused.Field == legacyRepositoryField
+}
+
 // Machine is what the client tells the server about itself when it enrols.
 type Machine struct {
 	Hostname string `json:"hostname"`
@@ -35,6 +56,45 @@ type Machine struct {
 	LocalAccount string `json:"local_account"`
 
 	Agent string `json:"agent"`
+
+	// Legacy is the old backup this machine is being migrated off, when there
+	// is one and the client was able to look at it. See [LegacyInstall].
+	Legacy *LegacyInstall `json:"legacy,omitempty"`
+}
+
+// LegacyInstall is what the machine says about the backup already running on
+// it, sent with the claim.
+//
+// It exists for one failure nothing else catches. `provision` typed where
+// `adopt` was meant returns a working, empty bucket: the claim succeeds, the
+// first backup succeeds, the dashboard goes green, and years of snapshots sit
+// in a bucket nothing points at. Both buckets are real, so only the machine
+// that has been writing to one of them nightly can tell the difference — and
+// the claim is the last moment at which saying so is free.
+//
+// Every field is optional and the whole block is omitted by a client that
+// found nothing. The server uses it for exactly two things: refusing a claim
+// whose RepositoryURL is not the repository the code enrols this machine
+// against, without consuming the code, and filling in the history of a bucket
+// that was adopted without one.
+type LegacyInstall struct {
+	// RepositoryURL is where the legacy script writes.
+	//
+	// Omitted rather than guessed at. A client that found an install and
+	// could not read its repository says nothing here, because "I do not
+	// know" must not reach the server as "somewhere else" — a machine with an
+	// unreadable legacy install has to be able to enrol.
+	//
+	// Eumaeus compares it after trimming space and trailing slashes and
+	// otherwise exactly: case is significant in a bucket name.
+	RepositoryURL string `json:"repository_url,omitempty"`
+
+	// Snapshots and OldestSnapshot are what restic reported when this client
+	// opened the legacy repository. They only ever widen what the server
+	// knows: a figure an administrator typed at adoption is never replaced,
+	// and a provisioned repository takes neither.
+	Snapshots      int       `json:"snapshots,omitempty"`
+	OldestSnapshot time.Time `json:"oldest_snapshot,omitzero"`
 }
 
 // claimRequest is the wire form.

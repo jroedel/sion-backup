@@ -2,11 +2,13 @@ package main
 
 import (
 	"bufio"
+	"cmp"
 	"context"
 	"errors"
 	"flag"
 	"fmt"
 	"io"
+	"net/url"
 	"os"
 	"strings"
 	"time"
@@ -41,7 +43,8 @@ It takes two visits, because the step in the middle is not ours:
   1. Here, with no code. Reads the legacy install, writes the plan, opens the
      legacy repository to count what is in it, and prints the two Eumaeus
      commands to run, filled in.
-  2. In Eumaeus, by an administrator: adopt the bucket, then issue a code.
+  2. In Eumaeus: adopt the bucket, then issue a code. Both are printed as ssh
+     commands against the fleet's server, so they can be run from right here.
   3. Here again, with --code. Claims the code, and then CHECKS that the bucket
      handed back is the legacy one and not a fresh one — which is the mistake
      this command exists to catch, while somebody is still standing here.
@@ -57,11 +60,17 @@ from there. --measure opens the legacy repository to count its snapshots, which
 needs those credentials: they are read into memory for that one command and go
 no further.
 
+The Eumaeus commands are printed as ssh lines against the fleet's server, so
+they can be run from here without a second terminal. --ssh names a different
+host; --ssh "" prints them bare.
+
 Flags:
   --code        the enrollment code, once the bucket has been adopted
   --yes         do not ask before writing the plan
   --legacy-dir  also look here for the old install (comma-separated)
   --measure     open the legacy repository and count its snapshots (default true)
+  --ssh         run the Eumaeus commands through this host (default: the
+                server's own; "" to print them bare)
   --server      a different Eumaeus URL (default %q)
   --force       enrol again on a machine that already has a token
 `, DefaultEumaeusURL)
@@ -75,6 +84,7 @@ func adoptEnrollCmd(args []string) error {
 	legacyDir := fs.String("legacy-dir", "", "also look here for the old install (comma-separated)")
 	measure := fs.Bool("measure", true, "open the legacy repository and count its snapshots")
 	server := fs.String("server", "", "Eumaeus base URL")
+	sshHost := fs.String("ssh", "", "run the Eumaeus commands through this host (default: the server's own)")
 	force := fs.Bool("force", false, "enrol again on a machine that already has a token")
 	verbose := fs.Bool("v", false, "verbose logging")
 
@@ -108,8 +118,10 @@ func adoptEnrollCmd(args []string) error {
 		return err
 	}
 
+	a.ssh = sshTarget(*sshHost, cmp.Or(*server, d.cfg.EumaeusURL()))
+
 	a.describe()
-	a.plannedHere(d, *measure && *code == "")
+	a.plannedHere(d, *measure)
 
 	if *code == "" {
 		fmt.Print(adoptFirst)
@@ -136,24 +148,76 @@ func adoptEnrollCmd(args []string) error {
 		return err
 	}
 
-	if *code == "" {
-		if *measure {
-			a.measure(ctx, d)
-		}
+	// Before the claim, deliberately, and not only on the visit that has no
+	// code. The count and the horizon travel with the claim, and so does the
+	// repository URL that lets Eumaeus refuse a code pointing at the wrong
+	// bucket while it is still unspent — which is the whole reason the check
+	// moved to the server. A listing is seconds against a fifteen-minute
+	// code.
+	if *measure {
+		a.measure(ctx, d)
+	}
 
+	if *code == "" {
 		a.serverSteps()
 
 		return nil
 	}
 
-	enrolled, err := d.enroll(ctx, enrollment{code: *code, server: *server, force: *force})
+	enrolled, err := d.enroll(ctx, enrollment{
+		code:   *code,
+		server: *server,
+		force:  *force,
+		legacy: a.legacy(),
+	})
 	if err != nil {
-		return err
+		return a.explainRefusal(err)
 	}
 
 	a.verify(ctx, d, enrolled)
 
 	return nil
+}
+
+// legacy is what the claim tells Eumaeus about the backup already here.
+//
+// The repository URL goes whether or not it could be opened, because it is
+// read out of the script and costs nothing; the count and the horizon go only
+// when restic actually answered. A zero count sent as a fact would be a claim
+// that the old repository is empty.
+func (a adoption) legacy() *eumaeuscreds.LegacyInstall {
+	out := eumaeuscreds.LegacyInstall{RepositoryURL: a.install.RepositoryURL}
+
+	if a.snapshots > 0 {
+		out.Snapshots = a.snapshots
+		out.OldestSnapshot = a.oldest
+	}
+
+	return &out
+}
+
+// explainRefusal adds what the server's sentence cannot say for itself.
+//
+// Eumaeus writes one good sentence naming both repositories, and it is
+// returned as it stands. What it does not say — because it is a fact about
+// this command rather than about the request — is that the visit is not
+// wasted: the code is still good, and the same one works once the right
+// bucket is adopted.
+func (a adoption) explainRefusal(err error) error {
+	if !eumaeuscreds.RepositoryMismatch(err) {
+		return err
+	}
+
+	// Wrapped rather than printed, so that the server's sentence comes first
+	// and this follows it on one stream. A note explaining a refusal, printed
+	// before the refusal, reads as a warning about something that has not
+	// happened yet.
+	return fmt.Errorf("%w\n\n"+
+		"The code was NOT used. Have the bucket this machine is already writing to\n"+
+		"adopted — the commands are above, or run this command again without --code\n"+
+		"to print them — and then present the SAME code here.\n\n"+
+		"The plan written above stays. Nothing else on this machine changed, and the\n"+
+		"legacy backup is still running", err)
 }
 
 // adoptFirst is what has to be true before a code is worth asking for. Printed
@@ -162,8 +226,8 @@ func adoptEnrollCmd(args []string) error {
 const adoptFirst = `
 what happens after that
   The two Eumaeus commands to run are printed once the plan is written, with
-  this machine's bucket and node ID already filled in. Somebody with an admin
-  terminal runs them; the second issues a code. Come back here with it:
+  this machine's bucket and node ID already filled in and wrapped in ssh so
+  they can be run from here. The second issues a code. Then:
 
       sion-backup adopt-enroll --code <the code>
 
@@ -201,6 +265,42 @@ type adoption struct {
 	// an empty repository and is never reported as one.
 	snapshots int
 	oldest    time.Time
+
+	// ssh is the host to run the Eumaeus commands on, or empty to print them
+	// bare. See [sshTarget].
+	ssh string
+}
+
+// sshTarget is the host the Eumaeus commands should be run on.
+//
+// They are printed to be run somewhere else, and "somewhere else" is over SSH
+// for everybody who has ever run them. Printing them bare means whoever is at
+// the machine retypes them into a second terminal, which is the same
+// transcription this command exists to remove — so the server's own host, out
+// of the URL this machine already talks to, is the default.
+//
+// --ssh names a different host; --ssh "" prints them bare, which is what a
+// loopback test server wants and what somebody sitting at the server does.
+func sshTarget(override, serverURL string) string {
+	if override != "" {
+		return override
+	}
+
+	u, err := url.Parse(serverURL)
+	if err != nil {
+		return ""
+	}
+
+	host := u.Hostname()
+
+	// A loopback server is either a test or the machine you are already on.
+	// Neither wants an ssh line in front of the command.
+	switch host {
+	case "", "localhost", "127.0.0.1", "::1":
+		return ""
+	}
+
+	return host
 }
 
 // assemble turns a recon report into a migration, or explains why it cannot.
@@ -538,7 +638,11 @@ func count(snaps []restic.Snapshot) (int, time.Time) {
 // transcribing a bucket name off a screen into a shell, and a mistyped bucket
 // name does not fail — it provisions a second one.
 func (a adoption) serverSteps() {
-	fmt.Printf("\nwhat has to happen in Eumaeus, by somebody with an admin terminal\n\n")
+	if a.ssh != "" {
+		fmt.Printf("\nwhat has to happen in Eumaeus — run these from here\n\n")
+	} else {
+		fmt.Printf("\nwhat has to happen in Eumaeus, by somebody with an admin terminal\n\n")
+	}
 
 	node := a.plan.NodeID
 	bucket := a.bucket
@@ -547,15 +651,31 @@ func (a adoption) serverSteps() {
 		bucket = "<BUCKET — could not be read out of " + a.install.RepositoryURL + ">"
 	}
 
-	fmt.Printf("    eumaeus backup adopt -owner <OWNER EMAIL> -node %s \\\n", node)
-	fmt.Printf("      -bucket %s", bucket)
+	adopt := "eumaeus backup adopt -owner <OWNER EMAIL> -node " + node + " \\\n" +
+		"      -bucket " + bucket
 
 	if a.snapshots > 0 {
-		fmt.Printf(" \\\n      -history-since %s -snapshots %d",
+		adopt += fmt.Sprintf(" \\\n      -history-since %s -snapshots %d",
 			a.oldest.Format("2006-01-02"), a.snapshots)
 	}
 
-	fmt.Printf("\n    eumaeus backup code %s\n", node)
+	switch a.ssh {
+	case "":
+		fmt.Printf("    %s\n", adopt)
+		fmt.Printf("    eumaeus backup code %s\n", node)
+
+	default:
+		// -t on the first, because `adopt` asks for the repository password
+		// at a prompt and a prompt needs a terminal. Not on the second: it
+		// prints a code to be copied, and a pseudo-terminal puts carriage
+		// returns through the middle of that.
+		//
+		// Double quotes rather than single, so that the backslash-newlines
+		// inside the command are continuations of the line being typed here
+		// rather than characters sent to the far end.
+		fmt.Printf("    ssh -t %s \"%s\"\n", a.ssh, adopt)
+		fmt.Printf("    ssh %s 'eumaeus backup code %s'\n", a.ssh, node)
+	}
 
 	fmt.Printf("\n  adopt, not provision. `provision` makes a new empty bucket, and the\n")
 	fmt.Printf("  first backup from here would then upload everything and leave the\n")

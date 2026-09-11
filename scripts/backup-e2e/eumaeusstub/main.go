@@ -36,6 +36,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"strings"
 	"sync"
 	"time"
 )
@@ -185,6 +186,24 @@ func (s *server) claim(w http.ResponseWriter, r *http.Request) {
 	s.record("claim", body)
 	log.Printf("eumaeusstub: claim from %v", body["hostname"])
 
+	if where := legacyRepository(body); where != "" && !sameRepository(where, s.repo) {
+		// The refusal that exists for one mistake: a code that enrols this
+		// machine against a bucket it has not been writing to. Answered here
+		// so the client's half of it can be exercised without the real
+		// server. The code is not consumed, which in a stub means nothing at
+		// all is consumed.
+		log.Printf("eumaeusstub: refusing a claim from a machine writing to %s", where)
+
+		writeJSON(w, http.StatusUnprocessableEntity, map[string]any{
+			"error": "this machine backs up to " + where + ", and that code enrols it " +
+				"against " + s.repo + ". The code has not been used: adopt the bucket the " +
+				"machine is already writing to, then present it again",
+			"field": "legacy.repository_url",
+		})
+
+		return
+	}
+
 	resp := map[string]any{
 		"machine_token": "gate-token-" + s.node,
 		"node_id":       s.node,
@@ -206,6 +225,33 @@ func (s *server) claim(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, resp)
+}
+
+// legacyRepository reads where the claiming machine says it has been backing
+// up. Absent is not a mismatch: a client that found an install and could not
+// open its repository says nothing here, and "I do not know" must not be read
+// as "somewhere else".
+func legacyRepository(body map[string]any) string {
+	legacy, ok := body["legacy"].(map[string]any)
+	if !ok {
+		return ""
+	}
+
+	where, _ := legacy["repository_url"].(string)
+
+	return where
+}
+
+// sameRepository compares two repository URLs the way the contract says to:
+// surrounding space and trailing slashes ignored, case significant, because a
+// provider where Bucket123 and bucket123 are two buckets is a provider where
+// folding case accepts a claim against the wrong one.
+func sameRepository(a, b string) bool {
+	trim := func(s string) string {
+		return strings.TrimRight(strings.TrimSpace(s), "/")
+	}
+
+	return trim(a) == trim(b)
 }
 
 // repository is the claim's repository block.
