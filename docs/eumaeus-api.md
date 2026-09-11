@@ -657,7 +657,8 @@ cannot consume any of the four until it is done anyway.
 [eumaeus#121](https://github.com/jroedel/eumaeus/issues/121), because a
 machine-readable spec maintained by the client has no way to notice the
 server changing — these four are the proof. It stays here, and stays wrong
-in these four ways, until that is answered.
+in these four ways, until that is answered; sion-backup#29 is the checklist
+of what this repository deletes when it is.
 
 ## 12. Still open
 
