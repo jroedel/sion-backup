@@ -79,7 +79,7 @@ func daemonCmd(args []string) error {
 		return errUpdated
 	}
 
-	d, err := wire(ctx, *verbose)
+	d, err := wireDaemon(ctx, *verbose)
 	if err != nil {
 		return err
 	}

@@ -188,6 +188,25 @@ func (d *deps) close() {
 // the machine token, and the credentials it fetches live in memory for the
 // length of one backup.
 func wire(ctx context.Context, verbose bool) (*deps, error) {
+	return wireLogging(ctx, verbose, slog.LevelWarn)
+}
+
+// wireDaemon is wire for the one command whose log is a record rather than an
+// interruption.
+//
+// Everything else here is a person at a terminal reading formatted output, and
+// a slog line in the middle of it is not a log — it is a paragraph break with
+// timestamps in it. `sion-backup adopt-enroll` printed two of them between
+// "The plan is written" and the next sentence, which is how this was found.
+//
+// The information in those lines is not lost: the commands that wait on
+// something worth mentioning say so themselves, in their own voice. See
+// deps.fetchRestic.
+func wireDaemon(ctx context.Context, verbose bool) (*deps, error) {
+	return wireLogging(ctx, verbose, slog.LevelInfo)
+}
+
+func wireLogging(ctx context.Context, verbose bool, base slog.Level) (*deps, error) {
 	p, err := paths.Resolve()
 	if err != nil {
 		return nil, err
@@ -197,8 +216,10 @@ func wire(ctx context.Context, verbose bool) (*deps, error) {
 		return nil, err
 	}
 
-	level := slog.LevelInfo
+	level := base
 	if verbose {
+		// -v is the escape hatch, and it still reaches everything: a command
+		// that will not say why it is failing is worse than a noisy one.
 		level = slog.LevelDebug
 	}
 

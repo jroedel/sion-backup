@@ -171,6 +171,14 @@ func describe(ctx context.Context, dir, script string, layout legacybus.Layout, 
 	return found
 }
 
+// Candidates are the directories a scan looks in without being told to.
+//
+// Exported so that a caller printing "run this next" can tell whether the
+// install it found needs --legacy-dir repeating on that command, or whether it
+// sits somewhere the next scan will look anyway. A flag printed needlessly is
+// one somebody learns to drop, including on the machine where it mattered.
+func Candidates() []string { return candidates() }
+
 // candidates are the directories a legacy install could be in.
 //
 // The install notes named one place per version and people followed them

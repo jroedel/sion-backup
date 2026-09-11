@@ -61,16 +61,18 @@ count its snapshots, which needs those credentials: they are read into memory
 for that one command and go no further.
 
 The Eumaeus commands are printed as ssh lines against the fleet's server, so
-they can be run from here without a second terminal. --ssh names a different
-host; --ssh "" prints them bare.
+they can be run from here without a second terminal, and with the sudo prefix
+its CLI needs to open the fleet's store rather than root's empty one. --ssh
+names a different target, user included; --ssh "" prints them bare, for
+somebody already on the server.
 
 Flags:
   --code        the enrollment code, once the bucket has been adopted
   --yes         do not ask before writing the plan
   --legacy-dir  also look here for the old install (comma-separated)
   --measure     open the legacy repository and count its snapshots (default true)
-  --ssh         run the Eumaeus commands through this host (default: the
-                server's own; "" to print them bare)
+  --ssh         run the Eumaeus commands through this target (default:
+                root@ the server's own host; "" to print them bare)
   --server      a different Eumaeus URL (default %q)
   --force       enrol again on a machine that already has a token
 `, DefaultEumaeusURL)
@@ -85,6 +87,7 @@ func adoptEnrollCmd(args []string) error {
 	measure := fs.Bool("measure", true, "open the legacy repository and count its snapshots")
 	server := fs.String("server", "", "Eumaeus base URL")
 	sshHost := fs.String("ssh", "", "run the Eumaeus commands through this host (default: the server's own)")
+	issuedBy := fs.String("issued-by", "", "your name, for the enrollment code's audit row")
 	force := fs.Bool("force", false, "enrol again on a machine that already has a token")
 	verbose := fs.Bool("v", false, "verbose logging")
 
@@ -119,6 +122,7 @@ func adoptEnrollCmd(args []string) error {
 	}
 
 	a.ssh = sshTarget(*sshHost, cmp.Or(*server, d.cfg.EumaeusURL()))
+	a.issuedBy = cmp.Or(*issuedBy, unnamedIssuer)
 
 	a.describe()
 	a.plannedHere(d, *measure)
@@ -269,9 +273,124 @@ type adoption struct {
 	// ssh is the host to run the Eumaeus commands on, or empty to print them
 	// bare. See [sshTarget].
 	ssh string
+
+	// issuedBy is the name that goes on the enrollment code's audit row.
+	// unnamedIssuer when nobody said, which leaves a placeholder in the
+	// printed command rather than inventing an answer.
+	issuedBy string
 }
 
-// sshTarget is the host the Eumaeus commands should be run on.
+// unnamedIssuer is what the printed command carries when --issued-by was not
+// given.
+//
+// A placeholder rather than this machine's local account, which is a name for
+// whoever is logged in here and not for whoever is handing out a credential.
+// Eumaeus made -issued-by required precisely because the value was being
+// inferred and was wrong on every row; inferring it one layer earlier would be
+// the same mistake with a different default.
+const unnamedIssuer = "<YOUR NAME>"
+
+// How Eumaeus's admin commands have to be invoked on the server.
+//
+// Three facts, none of them ours, all three load-bearing:
+//
+//   - Operator access is as root, by key. Eumaeus's own scripts all use
+//     `ssh root@$host`, and its cloud-init sets PermitRootLogin
+//     prohibit-password. The `deploy` user exists and is the wrong one: its
+//     only privilege is one install script, and it is deliberately in no
+//     group that can read the fleet store.
+//
+//   - The CLI opens a LOCAL store, as the service account, with the data
+//     directory named. Run without `-u eumaeus` and EUMAEUS_DATA_DIR, it
+//     opens root's own store, which is empty — and an empty store does not
+//     refuse, it answers every question wrongly and plausibly. Eumaeus's
+//     scripts say exactly that, in a comment, which is how we know it is a
+//     mistake somebody has already made.
+//
+//   - `backup adopt` reads the repository password from /dev/tty rather than
+//     from stdin, on purpose, so it cannot be piped and needs a real
+//     terminal. Hence `ssh -t` for that one.
+//
+// Read out of the eumaeus repository rather than measured against the server.
+// If the deployment moves, this goes stale quietly — which is the cost of
+// printing a command somebody pastes, and worth it against the cost of
+// printing one that silently addresses an empty database.
+const (
+	// eumaeusSSHUser is who to log in as. --ssh overrides the whole target.
+	eumaeusSSHUser = "root"
+
+	// eumaeusRun is the prefix every admin subcommand needs, ssh or no ssh.
+	//
+	// EUMAEUS_WASABI_ENV is here for the same reason EUMAEUS_DATA_DIR is, and
+	// was missing until Eumaeus said so. Without it the provisioning key is
+	// located through os.UserConfigDir, which reads HOME — and whether
+	// `sudo -u` resets HOME to the target account's is a sudoers setting
+	// rather than a constant. `backup check` catches it, which is why that
+	// runs first: otherwise it surfaces inside `adopt`, after the repository
+	// password has already been typed.
+	eumaeusRun = "sudo -u eumaeus \\\n" +
+		"        EUMAEUS_DATA_DIR=/var/lib/eumaeus \\\n" +
+		"        EUMAEUS_WASABI_ENV=/var/lib/eumaeus/.config/eumaeus/wasabi-provisioning.env \\\n" +
+		"        eumaeus"
+)
+
+// adminCommand is one Eumaeus command an adoption needs.
+type adminCommand struct {
+	// args is everything after the `eumaeus` binary name.
+	args string
+
+	// tty says it has to reach a terminal on the far end, which decides
+	// whether the ssh line gets -t.
+	tty bool
+}
+
+// adminCommands is every Eumaeus command an adoption needs, in order, and the
+// only place in this program where any of them is written down.
+//
+// One place on purpose. Eumaeus has decided that `check`, `provision`,
+// `adopt`, `teardown` and `code` are moving to a web page and the
+// command-line forms will be withdrawn — the provisioning key is going into a
+// vault held in the serve process's memory, which a short-lived CLI cannot
+// reach. They are not gone yet and this form is supported until the page
+// lands, but when it changes it changes all at once, and they asked that this
+// be one edit rather than five. sion-backup#34 carries the notice;
+// `docs/backup-fleet.md`, "Running it: every admin command runs on the
+// server", is the section to quote, and `docs/fleet-admin-decisions.md` is
+// where the status of that decision lives.
+func (a adoption) adminCommands(issuedBy string) []adminCommand {
+	node := a.plan.NodeID
+
+	bucket := a.bucket
+	if bucket == "" {
+		bucket = "<BUCKET — could not be read out of " + a.install.RepositoryURL + ">"
+	}
+
+	adopt := "backup adopt -owner <OWNER EMAIL> -node " + node + " \\\n" +
+		"        -bucket " + bucket
+
+	if a.snapshots > 0 {
+		adopt += fmt.Sprintf(" \\\n        -history-since %s -snapshots %d",
+			a.oldest.Format("2006-01-02"), a.snapshots)
+	}
+
+	return []adminCommand{
+		// First, because `adopt` refuses without a usable provisioning key
+		// and finding that out afterwards means having typed a repository
+		// password for nothing.
+		{args: "backup check", tty: true},
+
+		// A terminal because the repository password is read from /dev/tty
+		// rather than from stdin, deliberately, so that it cannot be piped
+		// and cannot reach shell history.
+		{args: adopt, tty: true},
+
+		// No terminal: this one prints a code to be copied, and a
+		// pseudo-terminal puts carriage returns through the middle of it.
+		{args: `backup code -issued-by "` + issuedBy + `" ` + node},
+	}
+}
+
+// sshTarget is where the Eumaeus commands should be run.
 //
 // They are printed to be run somewhere else, and "somewhere else" is over SSH
 // for everybody who has ever run them. Printing them bare means whoever is at
@@ -279,8 +398,10 @@ type adoption struct {
 // transcription this command exists to remove — so the server's own host, out
 // of the URL this machine already talks to, is the default.
 //
-// --ssh names a different host; --ssh "" prints them bare, which is what a
-// loopback test server wants and what somebody sitting at the server does.
+// --ssh names a different target, user included; --ssh "" prints the commands
+// bare, which is what a loopback test server wants and what somebody already
+// sitting on the server wants. The sudo prefix is not part of this: it is
+// needed whether or not there is an ssh in front of it.
 func sshTarget(override, serverURL string) string {
 	if override != "" {
 		return override
@@ -300,7 +421,7 @@ func sshTarget(override, serverURL string) string {
 		return ""
 	}
 
-	return host
+	return eumaeusSSHUser + "@" + host
 }
 
 // assemble turns a recon report into a migration, or explains why it cannot.
@@ -570,7 +691,7 @@ func (a *adoption) measure(ctx context.Context, d *deps) {
 		return
 	}
 
-	if err := d.ensureRestic(ctx); err != nil {
+	if err := d.fetchRestic(ctx); err != nil {
 		fmt.Printf("\nThe repository was not opened: %v\n", err)
 
 		return
@@ -644,46 +765,48 @@ func (a adoption) serverSteps() {
 		fmt.Printf("\nwhat has to happen in Eumaeus, by somebody with an admin terminal\n\n")
 	}
 
-	node := a.plan.NodeID
-	bucket := a.bucket
+	for _, c := range a.adminCommands(a.issuedBy) {
+		// Single quotes, so the backslash-newlines inside a command reach the
+		// far end and are joined by the shell there — which is the form
+		// Eumaeus documents, and the one to quote rather than re-derive.
+		switch {
+		case a.ssh == "":
+			fmt.Printf("    %s %s\n\n", eumaeusRun, c.args)
 
-	if bucket == "" {
-		bucket = "<BUCKET — could not be read out of " + a.install.RepositoryURL + ">"
+		case c.tty:
+			fmt.Printf("    ssh -t %s '%s %s'\n\n", a.ssh, eumaeusRun, c.args)
+
+		default:
+			fmt.Printf("    ssh %s '%s %s'\n\n", a.ssh, eumaeusRun, c.args)
+		}
 	}
 
-	adopt := "eumaeus backup adopt -owner <OWNER EMAIL> -node " + node + " \\\n" +
-		"      -bucket " + bucket
+	fmt.Printf("  `backup check` first, because `adopt` refuses without a usable Wasabi\n")
+	fmt.Printf("  provisioning key — better found before the bucket than after the\n")
+	fmt.Printf("  repository password has been typed into adopt for nothing.\n")
 
-	if a.snapshots > 0 {
-		adopt += fmt.Sprintf(" \\\n      -history-since %s -snapshots %d",
-			a.oldest.Format("2006-01-02"), a.snapshots)
-	}
+	fmt.Printf("\n  The sudo prefix is not decoration. The CLI opens a LOCAL store as the\n")
+	fmt.Printf("  service account: without -u eumaeus and EUMAEUS_DATA_DIR it opens\n")
+	fmt.Printf("  root's own, which is empty — and an empty store does not refuse, it\n")
+	fmt.Printf("  answers every question wrongly. EUMAEUS_WASABI_ENV is there for the\n")
+	fmt.Printf("  same reason: the key is otherwise found through HOME, which sudo may\n")
+	fmt.Printf("  or may not reset.\n")
 
-	switch a.ssh {
-	case "":
-		fmt.Printf("    %s\n", adopt)
-		fmt.Printf("    eumaeus backup code %s\n", node)
-
-	default:
-		// -t on the first, because `adopt` asks for the repository password
-		// at a prompt and a prompt needs a terminal. Not on the second: it
-		// prints a code to be copied, and a pseudo-terminal puts carriage
-		// returns through the middle of that.
-		//
-		// Double quotes rather than single, so that the backslash-newlines
-		// inside the command are continuations of the line being typed here
-		// rather than characters sent to the far end.
-		fmt.Printf("    ssh -t %s \"%s\"\n", a.ssh, adopt)
-		fmt.Printf("    ssh %s 'eumaeus backup code %s'\n", a.ssh, node)
+	if a.issuedBy == unnamedIssuer {
+		fmt.Printf("\n  -issued-by is required and is not guessable on the server: every\n")
+		fmt.Printf("  admin command runs as the service account, so the environment there\n")
+		fmt.Printf("  only ever says \"eumaeus\". Put your own name in, or pass\n")
+		fmt.Printf("  --issued-by to have it filled in here.\n")
 	}
 
 	fmt.Printf("\n  adopt, not provision. `provision` makes a new empty bucket, and the\n")
 	fmt.Printf("  first backup from here would then upload everything and leave the\n")
 	fmt.Printf("  history attached to nothing.\n")
 
-	fmt.Printf("\n  The repository password is typed at that command's prompt, never\n")
-	fmt.Printf("  passed as a flag — a password in a flag is a password in shell\n")
-	fmt.Printf("  history. It is in %s.\n", passwordLocation(a.install))
+	fmt.Printf("\n  The repository password is typed at adopt's prompt, never passed as a\n")
+	fmt.Printf("  flag — a password in a flag is a password in shell history. It reads\n")
+	fmt.Printf("  /dev/tty rather than stdin, which is why that line has ssh -t and why\n")
+	fmt.Printf("  it cannot be piped. It is in %s.\n", passwordLocation(a.install))
 
 	if a.snapshots == 0 {
 		fmt.Printf("\n  -history-since and -snapshots are left off because this machine did\n")

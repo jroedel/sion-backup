@@ -72,6 +72,30 @@ func resticCmd(args []string) error {
 	return nil
 }
 
+// fetchRestic is ensureRestic for a command with somebody watching it.
+//
+// It says, in the command's own voice, that a download is about to happen and
+// roughly how long it will be — because the alternative is twenty megabytes of
+// silence in the middle of a page of formatted output, and the person at the
+// machine cannot tell that from a hang.
+//
+// This exists because the log used to do it. A foreground command's logger is
+// now quiet (see wireDaemon), which removed a genuine piece of information
+// along with the noise; this is that information put back where it belongs.
+func (d *deps) fetchRestic(ctx context.Context) error {
+	// Only when something really is going to be fetched. "Fetching restic"
+	// followed instantly by nothing teaches people to ignore the line.
+	if d.restic.Managed() {
+		if v, err := d.restic.InstalledVersion(ctx); err != nil || v != restic.PinnedVersion {
+			fmt.Printf("\nFetching restic %s — about 20 MB, once, verified against the hash\n",
+				restic.PinnedVersion)
+			fmt.Printf("compiled into this binary. Nothing else on this machine is touched.\n")
+		}
+	}
+
+	return d.ensureRestic(ctx)
+}
+
 // ensureRestic makes sure the pinned restic is on this machine before
 // something needs it.
 //
