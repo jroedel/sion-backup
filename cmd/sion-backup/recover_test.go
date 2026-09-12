@@ -156,17 +156,19 @@ func TestADeEnrolledMachineIsNotRepaired(t *testing.T) {
 	}
 }
 
-// TestAnOlderServerIsNotAFailure.
+// TestAMachineWithNoRepositoryIsNotGivenOne.
 //
-// A fleet mid-upgrade has machines talking to a Eumaeus that predates the
-// endpoint. Nothing is repaired and nothing is broken.
-func TestAnOlderServerIsNotAFailure(t *testing.T) {
-	d, ctx := machineFor(t, &server{err: machinebus.ErrUnsupported})
+// The server knows this machine and has no repository for it. There is nothing
+// to recover and nothing this machine may invent: a repository is provisioned
+// in Eumaeus, never here. Writing a plan with a made-up URL would be the worst
+// answer available — it would look repaired and back up to nowhere.
+func TestAMachineWithNoRepositoryIsNotGivenOne(t *testing.T) {
+	d, ctx := machineFor(t, &server{err: machinebus.ErrNoRepository})
 
 	d.recoverPlan(ctx)
 
 	if _, err := d.plan.Get(ctx); !errors.Is(err, planbus.ErrNoPlan) {
-		t.Error("a plan was invented for a server that could not answer")
+		t.Error("a plan was invented for a machine the server has no repository for")
 	}
 }
 

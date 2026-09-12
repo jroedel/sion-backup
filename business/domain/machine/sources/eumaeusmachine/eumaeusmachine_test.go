@@ -82,22 +82,27 @@ func TestARefusedTokenIsDeEnrolment(t *testing.T) {
 	}
 }
 
-// TestA404IsReadAsTheServerAndNotAsRetirement.
+// TestA404IsAMachineWithNoRepository, which is what the specification says it
+// is and not what a 404 usually means.
 //
-// The endpoint answers 404 both for a Eumaeus too old to serve it and for one
-// that has forgotten this machine, and the client cannot tell them apart. It
-// has to guess in the direction where being wrong is cheap: a repair that does
-// not happen, rather than a machine concluding it has been retired because its
-// server is a version behind.
-func TestA404IsReadAsTheServerAndNotAsRetirement(t *testing.T) {
+// "The token is good and the machine has no repository. An enrolled machine
+// always has one, so this is a repository removed from underneath a machine
+// rather than an ordinary answer." Reading it as a server too old to answer —
+// the reflex, and what this client did first — would turn a repository that
+// has gone missing into a shrug in a log.
+//
+// It is not de-enrolment either: retirement and revocation refuse at
+// authentication with 401 (jroedel/eumaeus#116).
+func TestA404IsAMachineWithNoRepository(t *testing.T) {
 	s := source(t, func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNotFound)
+		w.Write([]byte(`{"error": "this machine has no repository"}`))
 	})
 
 	_, err := s.State(context.Background())
 
-	if !errors.Is(err, machinebus.ErrUnsupported) {
-		t.Errorf("got %v, want ErrUnsupported", err)
+	if !errors.Is(err, machinebus.ErrNoRepository) {
+		t.Errorf("got %v, want ErrNoRepository", err)
 	}
 
 	if errors.Is(err, machinebus.ErrNotEnrolled) {
