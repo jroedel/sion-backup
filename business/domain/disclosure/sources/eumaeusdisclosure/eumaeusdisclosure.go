@@ -54,6 +54,7 @@ type payload struct {
 		CredentialsVersion int       `json:"credentials_version"`
 		ByMachine          bool      `json:"by_machine"`
 		Describe           string    `json:"describe"`
+		Detail             string    `json:"detail"`
 		PrevHash           string    `json:"prev_hash"`
 		Hash               string    `json:"hash"`
 	} `json:"entries"`
@@ -126,6 +127,7 @@ func (s *Source) List(ctx context.Context, limit int) (disclosurebus.Log, error)
 			CredentialsVersion: e.CredentialsVersion,
 			ByMachine:          e.ByMachine,
 			Describe:           e.Describe,
+			Detail:             e.Detail,
 			PrevHash:           e.PrevHash,
 			Hash:               e.Hash,
 		})

@@ -81,7 +81,49 @@ const (
 	// KindExported is a person copying it somewhere else, so that losing the
 	// server does not lose the only way to read these backups.
 	KindExported Kind = "exported"
+
+	// KindKeysGranted is storage credentials able to reach the bucket being
+	// created.
+	//
+	// The three kinds below are about the BUCKET rather than the password, and
+	// the server is explicit that they are not equally grave: an S3 key
+	// reaches the stored files and can be revoked in a second, where the
+	// password makes them readable and can never be changed. The page keeps
+	// them apart for that reason and says so.
+	KindKeysGranted Kind = "keys-granted"
+
+	// KindKeysRetired is storage credentials being withdrawn. Recorded
+	// because without it the log would imply an old key still works.
+	KindKeysRetired Kind = "keys-retired"
+
+	// KindKeysForeign is a credential found at the storage provider that
+	// Eumaeus did not create.
+	//
+	// The gravest entry in the log, and the only one that is an observation
+	// rather than an act: somebody other than that server can reach the
+	// stored files. It cannot say who, when, or whether they ever did — the
+	// provider does not record it and the server never sees a request to the
+	// bucket. [Entry.Actor] is empty for exactly that reason and must not be
+	// filled in by anything here.
+	KindKeysForeign Kind = "keys-foreign"
 )
+
+// AboutBucket reports whether this kind concerns the storage credentials that
+// reach the files rather than the password that makes them readable.
+//
+// Checked by kind rather than by [Entry.ByMachine], because these went to
+// neither the owner's computer nor a person — they are the server acting on
+// the bucket, and filing them under either of the other two headings would put
+// the most serious line on the page under a sentence saying somebody read a
+// password.
+//
+// An unrecognised kind is deliberately NOT bucket business. A kind invented
+// later falls back to ByMachine, which the server sets for exactly that
+// purpose, and lands somewhere defensible rather than in a section whose
+// heading would be a guess.
+func (k Kind) AboutBucket() bool {
+	return k == KindKeysGranted || k == KindKeysRetired || k == KindKeysForeign
+}
 
 // Known reports whether this is a kind this build has heard of.
 //
@@ -92,7 +134,8 @@ const (
 // somebody's password.
 func (k Kind) Known() bool {
 	switch k {
-	case KindMinted, KindAdopted, KindEnrolled, KindFetched, KindRevealed, KindExported:
+	case KindMinted, KindAdopted, KindEnrolled, KindFetched, KindRevealed, KindExported,
+		KindKeysGranted, KindKeysRetired, KindKeysForeign:
 		return true
 	default:
 		return false
@@ -120,6 +163,14 @@ type Entry struct {
 	// Describe is the sentence to show, written on the server for somebody who
 	// has never heard of restic.
 	Describe string
+
+	// Detail is what the kind needs naming, and empty for the kinds that need
+	// nothing: the storage access key IDs for the three keys- kinds.
+	//
+	// Key IDs, never secrets. One is printed on the owner's own restore card,
+	// and naming it is what makes a foreign key something an administrator can
+	// act on rather than merely worry about.
+	Detail string
 
 	PrevHash string
 	Hash     string
@@ -227,14 +278,28 @@ type Report struct {
 	// first. This is what the whole log is printed for.
 	People []Entry
 
-	// Machines is the rest: this computer collecting the password to run a
-	// backup.
+	// Machines is this computer collecting the password to run a backup.
 	Machines []Entry
 
-	// PeopleCount and MachineCount count the returned entries, not the whole
-	// chain. Where Entries is capped they are lower bounds, and Capped says so.
+	// Keys is the storage credentials that reach the bucket: granted,
+	// retired, and found. Separate from both of the above because they are
+	// access to the files rather than to what makes the files readable, and
+	// presenting the two as equally grave would be wrong in whichever
+	// direction the reader resolved it.
+	Keys []Entry
+
+	// Foreign is the subset of Keys that Eumaeus did not create. Its own
+	// field because it is the one thing on this page that should interrupt
+	// somebody: it says a credential outside this system can reach the
+	// owner's files.
+	Foreign []Entry
+
+	// PeopleCount, MachineCount and KeyCount count the returned entries, not
+	// the whole chain. Where Entries is capped they are lower bounds, and
+	// Capped says so.
 	PeopleCount  int
 	MachineCount int
+	KeyCount     int
 
 	// Capped is whether the server had more entries than it returned.
 	Capped bool
@@ -329,14 +394,23 @@ func split(log Log) Report {
 	r := Report{Log: log}
 
 	for _, e := range log.Entries {
-		if e.ByMachine {
+		switch {
+		case e.Kind.AboutBucket():
+			r.Keys = append(r.Keys, e)
+
+			if e.Kind == KindKeysForeign {
+				r.Foreign = append(r.Foreign, e)
+			}
+
+		case e.ByMachine:
 			r.Machines = append(r.Machines, e)
-		} else {
+
+		default:
 			r.People = append(r.People, e)
 		}
 	}
 
-	r.PeopleCount, r.MachineCount = len(r.People), len(r.Machines)
+	r.PeopleCount, r.MachineCount, r.KeyCount = len(r.People), len(r.Machines), len(r.Keys)
 	r.Capped = int64(len(log.Entries)) < log.Count
 
 	return r
