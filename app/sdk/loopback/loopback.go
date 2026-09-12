@@ -25,7 +25,8 @@
 //	                     — closes DNS rebinding, because the browser sends
 //	                       the attacker's hostname in Host
 //	Sec-Fetch-Site       must be same-origin or none, on unsafe methods
-//	Origin               must match, on unsafe methods
+//	Origin               must match, on unsafe methods, and an opaque one is
+//	                       accepted only where Sec-Fetch-Site vouches for it
 //	form token           must be present, on unsafe methods
 //
 // The token alone would be enough against classic CSRF, and is kept because
@@ -156,7 +157,9 @@ func (g *Guard) checkUnsafe(r *http.Request) error {
 	// "none" means the user typed the URL or used a bookmark; "same-origin"
 	// means a page from this server. Anything else is another site's page
 	// talking to us, which is the attack.
-	switch site := r.Header.Get("Sec-Fetch-Site"); site {
+	site := r.Header.Get("Sec-Fetch-Site")
+
+	switch site {
 	case "", "none", "same-origin":
 		// Empty is allowed: curl and older clients send nothing, and the token
 		// below still has to be right.
@@ -164,7 +167,33 @@ func (g *Guard) checkUnsafe(r *http.Request) error {
 		return fmt.Errorf("a request from %s cannot change this machine's backup settings", site)
 	}
 
-	if origin := r.Header.Get("Origin"); origin != "" {
+	switch origin := r.Header.Get("Origin"); {
+	case origin == "":
+		// Not sent. curl does not, and corporate middleboxes strip it. The
+		// token below still has to be right.
+
+	case origin == "null":
+		// An opaque origin, which a browser can produce for a page that is
+		// perfectly ordinary: the Fetch standard serialises the Origin of an
+		// unsafe request as "null" when the page's referrer policy is
+		// no-referrer, and Firefox implements it. This server sent that header
+		// until it was found, so no form on it could be submitted from Firefox
+		// at all — see foundation/web.SecureHeaders.
+		//
+		// That is fixed at the source, and this stays because the header is
+		// not the only way to arrive here and a config page nobody can save is
+		// a worse failure than the one being defended against. It is accepted
+		// only when the browser has separately said the request came from this
+		// server's own page. The other thing that produces a null origin is a
+		// sandboxed iframe on somebody else's site, and that arrives as
+		// Sec-Fetch-Site: cross-site, which was already refused above — so
+		// "same-origin" or "none", stated, and not merely absent.
+		if site != "same-origin" && site != "none" {
+			return fmt.Errorf("a request that will not say where it is from cannot " +
+				"change this machine's backup settings")
+		}
+
+	default:
 		u, err := url.Parse(origin)
 		if err != nil || !g.hostAllowed(u.Host) {
 			return fmt.Errorf("a request from %s cannot change this machine's backup settings", origin)

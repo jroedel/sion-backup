@@ -36,8 +36,8 @@ const probeTimeout = 3 * time.Minute
 func (d *deps) probeUpload(ctx context.Context) (s3probe.Result, error) {
 	set, err := d.creds.ForRun(ctx)
 	if err != nil {
-		return s3probe.Result{}, fmt.Errorf("this machine's credentials could not be "+
-			"fetched, so there was nothing to measure against: %w", err)
+		return s3probe.Result{}, fmt.Errorf("the credentials for this machine "+
+			"could not be fetched: %w", err)
 	}
 	defer set.Wipe()
 

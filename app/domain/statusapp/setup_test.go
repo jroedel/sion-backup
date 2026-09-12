@@ -377,3 +377,213 @@ func TestAStyleThatIsNotOnThePageIsRefused(t *testing.T) {
 		t.Error("a style that is not on the page was accepted and confirmed")
 	}
 }
+
+// checkedStyle reports which "what should be backed up" radio the page has
+// selected, which is the only part of this that somebody actually sees.
+func checkedStyle(t *testing.T, body string) string {
+	t.Helper()
+
+	for _, style := range []string{"personal", "home", "custom"} {
+		if strings.Contains(body, `name="style" value="`+style+`" checked`) {
+			return style
+		}
+	}
+
+	return ""
+}
+
+// TestAnUpgradedMachineIsShownTheFoldersItIsActuallyBackingUp.
+//
+// The bug this is for shipped, and it was found by upgrading a machine and
+// looking at the page. Every plan written before this page existed has folders
+// and no style recorded beside them, and the migration marks those confirmed
+// so they keep backing up. The page read "confirmed" as "somebody has answered
+// this before", skipped filling the form in from the plan, and selected its
+// own first option — while the machine's real folder list sat unselected in
+// the box underneath.
+//
+// Nothing warned about it. The first press of "Start backing up" would have
+// swapped a list somebody had been backing up for months for a default.
+func TestAnUpgradedMachineIsShownTheFoldersItIsActuallyBackingUp(t *testing.T) {
+	h := newHarness(t)
+
+	// Exactly what plandb's migration leaves: targets, no style, and confirmed
+	// as of whenever the plan was last written.
+	plan := samplePlan()
+	plan.Style = ""
+	plan.Targets = []string{"/srv/work", "/home/user/Photos"}
+
+	if err := h.plan.Put(context.Background(), plan, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+
+	body := h.get(t, "/setup").Body.String()
+
+	if got := checkedStyle(t, body); got != "custom" {
+		t.Errorf("the page has %q selected for a machine backing up its own list of "+
+			"folders, want custom — one save here replaces that list", got)
+	}
+
+	for _, dir := range plan.Targets {
+		if !strings.Contains(body, dir) {
+			t.Errorf("the page does not show %q, which this machine backs up", dir)
+		}
+	}
+}
+
+// TestAnUpgradedMachineOnAnOfferedListIsShownThatOption is the other half: a
+// stored list that happens to be one of the choices on the page is that
+// choice, not a custom one. Otherwise somebody who picked "my documents" is
+// shown their own folders typed out in the box below, which reads like the
+// setting has been lost.
+func TestAnUpgradedMachineOnAnOfferedListIsShownThatOption(t *testing.T) {
+	h := newHarness(t)
+
+	plan := samplePlan()
+	plan.Style = ""
+	plan.Targets = h.offered.Roots
+
+	if err := h.plan.Put(context.Background(), plan, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+
+	if got := checkedStyle(t, h.get(t, "/setup").Body.String()); got != "personal" {
+		t.Errorf("style %q selected, want personal", got)
+	}
+}
+
+// TestExclusionsSomebodyAlreadyHasAreShownAndKept.
+//
+// There is no exclusions box on this page — the Settings page owns that — and
+// a page that carries them along in silence is indistinguishable from one that
+// has dropped them. Somebody who cannot see their exclusions assumes they are
+// gone, and the sensible thing to do about that is to stop using the page.
+func TestExclusionsSomebodyAlreadyHasAreShownAndKept(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+
+	plan := samplePlan()
+	plan.Style = ""
+	plan.Excludes = []string{"*.iso", "/srv/scratch"}
+
+	if err := h.plan.Put(ctx, plan, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+
+	body := h.get(t, "/setup").Body.String()
+
+	for _, pattern := range plan.Excludes {
+		if !strings.Contains(body, pattern) {
+			t.Errorf("the page does not mention %q, which this machine is leaving out", pattern)
+		}
+	}
+
+	// And a save through the page keeps them, junk or no junk.
+	h.post(t, "/setup", "form_token="+h.guard.Token()+
+		"&style=custom&targets=/srv/work&junk=on&schedule=daily&daily_time=13:00")
+
+	saved, err := h.plan.Get(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for _, pattern := range plan.Excludes {
+		if !contains(saved.Excludes, pattern) {
+			t.Errorf("saving the setup page dropped the exclusion %q", pattern)
+		}
+	}
+}
+
+// TestTheJunkListIsNotAddedToAPlanNobodyAskedToChange.
+//
+// A machine that has been backing up its whole home directory for a year did
+// not ask, on the day it was upgraded, to start leaving parts of it out. The
+// checkbox is a default offered to a machine nobody has answered for.
+func TestTheJunkListIsNotAddedToAPlanNobodyAskedToChange(t *testing.T) {
+	h := newHarness(t)
+
+	plan := samplePlan()
+	plan.Style = ""
+	plan.Excludes = nil
+
+	if err := h.plan.Put(context.Background(), plan, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+
+	if strings.Contains(h.get(t, "/setup").Body.String(), `name="junk" checked`) {
+		t.Error("the junk list is ticked for a machine that is already backing up " +
+			"without it, so the next save quietly starts leaving things out")
+	}
+}
+
+// TestAnExclusionThatLooksLikeJunkIsNotDeletedForLookingLikeIt.
+//
+// The checkbox is all-or-nothing: it reports itself ticked only when the whole
+// junk list is present. Taking it off, though, removed any pattern on that
+// list — so a plan carrying one of them and nothing else showed an unticked
+// box, and the first save through this page deleted the pattern. Nothing on
+// the screen changed. Somebody's exclusion was simply gone.
+func TestAnExclusionThatLooksLikeJunkIsNotDeletedForLookingLikeIt(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+
+	plan := samplePlan()
+	plan.Style = ""
+	plan.Excludes = []string{"*.iso"} // written by hand, and also on the junk list
+
+	if err := h.plan.Put(ctx, plan, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+
+	// Saved without touching the checkbox, which is how it renders: unticked,
+	// because one pattern out of thirty is not the junk list.
+	body := h.get(t, "/setup").Body.String()
+	if strings.Contains(body, `name="junk" checked`) {
+		t.Fatal("one junk pattern reported as the whole set; this test no longer " +
+			"describes the situation it was written for")
+	}
+
+	if !strings.Contains(body, "*.iso") {
+		t.Error("the page does not show the exclusion this machine has")
+	}
+
+	h.post(t, "/setup", "form_token="+h.guard.Token()+
+		"&style=custom&targets=/srv/work&schedule=daily&daily_time=13:00")
+
+	saved, err := h.plan.Get(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if !contains(saved.Excludes, "*.iso") {
+		t.Errorf("saving deleted the exclusion; the plan now excludes %v", saved.Excludes)
+	}
+}
+
+// TestAMachineWithARepositoryButNoEnrolmentIsNotOfferedTheForm.
+//
+// The two can come apart: a repository URL written into config.toml by hand
+// and no token to fetch a credential with. Such a machine cannot back up —
+// credentialbus refuses before restic is started — but the page checked only
+// for the repository, so it offered the whole form. It walked the home
+// directory, put "this machine is not enrolled" in the small print under a
+// failed speed test, and left a button reading "Start backing up" at the
+// bottom of it.
+func TestAMachineWithARepositoryButNoEnrolmentIsNotOfferedTheForm(t *testing.T) {
+	h := notEnrolled(t)
+
+	if err := h.plan.Put(context.Background(), unconfirmed(), time.Now()); err != nil {
+		t.Fatal(err)
+	}
+
+	body := h.get(t, "/setup").Body.String()
+
+	if !strings.Contains(body, "has not been enrolled") {
+		t.Errorf("the page does not say the machine is not enrolled:\n%s", body)
+	}
+
+	if strings.Contains(body, "Start backing up") {
+		t.Error("the page offered to start backing up a machine that cannot fetch " +
+			"a credential")
+	}
+}

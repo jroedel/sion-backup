@@ -57,9 +57,17 @@ type setupView struct {
 
 	// The form's own state, which is not the plan's: it is what the boxes
 	// currently hold, including on a re-render after something was refused.
-	Style            string
-	Targets          string
-	Junk             bool
+	Style   string
+	Targets string
+	Junk    bool
+
+	// Excludes are the patterns that are not the junk list: whatever was in
+	// the plan before this page was opened. There is no box for them here —
+	// the Settings page owns that — and they are shown because a page that
+	// silently carries somebody's exclusions along reads exactly like a page
+	// that has dropped them.
+	Excludes []string
+
 	SkipLargerThanGB int
 	Schedule         string
 	DailyTime        string
@@ -125,7 +133,17 @@ func (s *Server) setup(w http.ResponseWriter, r *http.Request) {
 	plan, err := s.cfg.Plan.Get(r.Context())
 
 	switch {
-	case errors.Is(err, planbus.ErrNoPlan), err == nil && plan.Repository == "":
+	// Enrolment is checked as well as the repository, because a machine can
+	// have one without the other: a repository URL written into config.toml
+	// by hand, and no token to fetch a credential with. Such a machine cannot
+	// back up — credentialbus refuses before restic is ever started — and
+	// before this it was shown the whole page anyway. It counted the folders,
+	// failed the speed test with "this machine is not enrolled" in the small
+	// print at the bottom, and still offered a button that said "Start backing
+	// up".
+	case errors.Is(err, planbus.ErrNoPlan),
+		err == nil && plan.Repository == "",
+		err == nil && !s.cfg.Credentials.Enrolled():
 		s.render(w, r, "setup.html", setupView{
 			chrome: s.chromeFor("Set up backups", "/setup"),
 			Missing: "This computer has not been enrolled yet, so there is nowhere for " +
@@ -182,6 +200,7 @@ func (s *Server) setupViewFrom(plan planbus.Plan) setupView {
 		SkipOnMetered:    plan.SkipOnMetered,
 		MeteredKnown:     s.cfg.MeteredKnown,
 		Junk:             surveybus.HasJunk(plan.Excludes),
+		Excludes:         beyondTheCheckbox(plan.Excludes),
 		Schedule:         string(plan.Schedule.Preset()),
 		DailyTime:        plan.Schedule.DailyTime(),
 		Times:            strings.Join(plan.Schedule.Times, ", "),
@@ -206,25 +225,35 @@ func (s *Server) setupViewFrom(plan planbus.Plan) setupView {
 		view.Options = append(view.Options, o)
 	}
 
-	// A plan nobody has answered for yet: the machine was enrolled a minute
-	// ago, or adopt-enroll read a plan out of a legacy script. Defaults are
-	// offered rather than imposed — this whole page exists so that somebody
-	// looks at them.
-	if !plan.Confirmed() && plan.Style == "" {
-		if len(plan.Targets) > 0 {
-			// adopt-enroll's case: there IS a list, taken out of the backup
-			// this machine is already running, and it is the best answer
-			// anybody has. It is shown as it stands.
-			view.Style = string(surveybus.StyleCustom)
-		} else if len(view.Options) > 0 {
+	// A plan with no style recorded on it, which is three different machines:
+	// one enrolled a minute ago, one adopt-enroll read a folder list out of a
+	// legacy script for, and — the one this was got wrong for — every machine
+	// in the fleet that upgraded into this page. Those last have a plan they
+	// have been backing up with for months and no style beside it, because the
+	// field did not exist when it was written.
+	//
+	// All three need the radio put where the stored plan actually is. The
+	// alternative is what this did: offer the first choice on the page while
+	// somebody's real folder list sat unselected in the box below it, so that
+	// one press of "Start backing up" quietly replaced the second with the
+	// first. Whether the plan is confirmed has nothing to do with it — that
+	// only says somebody has answered this page before, and the migration says
+	// yes for every upgraded machine so it would keep backing up.
+	if plan.Style == "" {
+		switch style := s.cfg.Survey.StyleOf(plan.Targets); {
+		case style != "":
+			view.Style = string(style)
+		case len(view.Options) > 0:
 			view.Style = view.Options[0].Style
 		}
-
-		view.Junk = true
 	}
 
-	if view.Style == "" && len(view.Options) > 0 {
-		view.Style = view.Options[0].Style
+	// The junk list is offered to a machine nobody has answered for, and never
+	// added to a plan that is already running: somebody who has been backing
+	// up their whole home directory for a year did not ask, on the day they
+	// upgraded, to start leaving parts of it out.
+	if !plan.Confirmed() && plan.Style == "" {
+		view.Junk = true
 	}
 
 	if view.Schedule == string(planbus.PresetDaily) && view.DailyTime == "" {
@@ -256,14 +285,42 @@ func (s *Server) setupViewFrom(plan planbus.Plan) setupView {
 // sizes have to reflect the checkbox as it is now: somebody who has just
 // ticked "leave out the usual junk" and pressed Update is asking what that
 // did, and answering with the old number would make the checkbox look broken.
+//
+// The first case is the one that matters and it is not an optimisation. The
+// checkbox is all-or-nothing — [surveybus.HasJunk] reports it ticked only when
+// the whole set is present — but [surveybus.WithoutJunk] removes any member of
+// that set it finds. So a plan carrying one pattern that happens to be on the
+// list, "*.iso" say, written by hand years ago, showed the box unticked and
+// then deleted the pattern the first time anything on this page was saved.
+// Nothing on the screen changed and an exclusion was gone.
+//
+// So: the list only moves when the checkbox does.
 func effectiveExcludes(plan planbus.Plan, junk bool) []string {
-	out := surveybus.WithoutJunk(plan.Excludes)
-
-	if junk {
-		out = append(out, surveybus.JunkExcludes()...)
+	if junk == surveybus.HasJunk(plan.Excludes) {
+		return plan.Excludes
 	}
 
-	return out
+	if junk {
+		return append(surveybus.WithoutJunk(plan.Excludes), surveybus.JunkExcludes()...)
+	}
+
+	return surveybus.WithoutJunk(plan.Excludes)
+}
+
+// beyondTheCheckbox is what the page shows under the junk box: the exclusions
+// this machine has that the checkbox does not account for.
+//
+// When the box is ticked those are whatever is left after the junk set; when
+// it is not, they are all of them — including a pattern that coincides with
+// one on the junk list, which is not being left out by the checkbox and would
+// be a strange thing to hide from somebody on the grounds that it might have
+// been.
+func beyondTheCheckbox(excludes []string) []string {
+	if surveybus.HasJunk(excludes) {
+		return surveybus.WithoutJunk(excludes)
+	}
+
+	return excludes
 }
 
 func (s *Server) saveSetup(w http.ResponseWriter, r *http.Request) {

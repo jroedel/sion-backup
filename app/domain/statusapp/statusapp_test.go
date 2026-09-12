@@ -42,7 +42,13 @@ type harness struct {
 	started int
 }
 
-func newHarness(t *testing.T) *harness {
+func newHarness(t *testing.T) *harness { return harnessWith(t, stubSource{}) }
+
+// notEnrolled is a machine with no source to fetch credentials from, which is
+// how credentialbus renders one that has never been enrolled.
+func notEnrolled(t *testing.T) *harness { return harnessWith(t, nil) }
+
+func harnessWith(t *testing.T, source credentialbus.Source) *harness {
 	t.Helper()
 
 	dir := t.TempDir()
@@ -106,7 +112,7 @@ func newHarness(t *testing.T) *harness {
 	app, err := statusapp.New(statusapp.Config{
 		Plan:        h.plan,
 		Backups:     h.backups,
-		Credentials: credentialbus.NewBusiness(stubSource{}),
+		Credentials: credentialbus.NewBusiness(source),
 		Survey:      h.survey,
 		Background:  ctx,
 		StartRun:    func(context.Context) error { h.started++; return nil },

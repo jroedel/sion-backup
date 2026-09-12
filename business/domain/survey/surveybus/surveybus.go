@@ -33,6 +33,7 @@ package surveybus
 import (
 	"context"
 	"log/slog"
+	"path/filepath"
 	"strconv"
 	"sync"
 	"time"
@@ -170,6 +171,59 @@ func NewBusiness(log *slog.Logger, probe Prober, choices []Choice) *Business {
 		choices: choices,
 		sizes:   map[Style]Sizing{},
 	}
+}
+
+// StyleOf reads a stored list of folders back as the choice that would have
+// produced it, so a form can put its radio button where the plan actually is.
+//
+// The same job [planbus.Schedule.Preset] does for times, and it exists for the
+// same reason. A plan written before this page existed — which is every plan
+// in the fleet upgrading to it — has folders and no style recorded beside
+// them. Without this the page offers a default while somebody's real list sits
+// unselected in the box below it, and the first save replaces the one with the
+// other without ever saying so.
+//
+// An empty list is not a style: that caller has a machine with no plan yet,
+// and what to offer it is the caller's decision.
+func (b *Business) StyleOf(targets []string) Style {
+	if len(targets) == 0 {
+		return ""
+	}
+
+	for _, c := range b.choices {
+		if sameRoots(c.Roots, targets) {
+			return c.Style
+		}
+	}
+
+	return StyleCustom
+}
+
+// sameRoots compares two folder lists as sets of cleaned paths.
+//
+// Order and a trailing separator are not differences anybody means: a list
+// that has been through a text box is the same list whether or not somebody
+// reordered it while they were in there.
+func sameRoots(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+
+	have := make(map[string]int, len(a))
+	for _, s := range a {
+		have[filepath.Clean(s)]++
+	}
+
+	for _, s := range b {
+		key := filepath.Clean(s)
+
+		have[key]--
+		if have[key] < 0 {
+			return false
+		}
+	}
+
+	return true
 }
 
 // Choices are the backup styles this machine can offer, in the order they
