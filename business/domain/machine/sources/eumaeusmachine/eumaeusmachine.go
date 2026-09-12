@@ -64,16 +64,17 @@ func (s *Source) State(ctx context.Context) (machinebus.State, error) {
 			"eumaeusmachine: %w: %w", machinebus.ErrNotEnrolled, err)
 
 	case errors.Is(err, eumaeusapi.ErrNotFound):
-		// Ambiguous on this endpoint in a way it is not elsewhere: a Eumaeus
-		// too old to serve it and a Eumaeus that has forgotten this machine
-		// both answer 404. Read as the server's shortcoming rather than as
-		// de-enrolment, because the caller is a repair that must not run and
-		// the cost of being wrong in the other direction — a machine deciding
-		// it has been retired because its server is a version behind — is far
-		// worse than a repair that does not happen.
+		// Documented, and it does NOT mean what a 404 usually means. Per the
+		// specification: the token is good and the machine has no repository.
+		// An enrolled machine always has one, so this is a repository removed
+		// from underneath a machine — something to be fixed on the server, and
+		// not something this machine can do anything about but report.
+		//
+		// It is deliberately not read as "this server is too old to answer".
+		// Retirement and revocation refuse at authentication with 401
+		// (jroedel/eumaeus#116), so a 404 here is never de-enrolment either.
 		return machinebus.State{}, fmt.Errorf(
-			"eumaeusmachine: this Eumaeus does not report machine state, or does not "+
-				"know this machine: %w", machinebus.ErrUnsupported)
+			"eumaeusmachine: %w", machinebus.ErrNoRepository)
 
 	case err != nil:
 		return machinebus.State{}, fmt.Errorf("eumaeusmachine: reading machine state: %w", err)

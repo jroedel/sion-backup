@@ -34,12 +34,14 @@ import (
 // ask.
 var ErrNotEnrolled = errors.New("machinebus: this machine is not enrolled")
 
-// ErrUnsupported is a Eumaeus that does not answer this endpoint.
+// ErrNoRepository is a machine the server knows and has no repository for.
 //
-// Named rather than folded into a general failure, because a fleet mid-upgrade
-// has machines talking to a server that predates it, and that is a fact about
-// the server rather than a fault on the machine.
-var ErrUnsupported = errors.New("machinebus: this Eumaeus does not report machine state")
+// Its own status in the API, and worth keeping as one here. An enrolled
+// machine always has a repository, so this is one removed from underneath a
+// machine rather than an ordinary answer — and the machine cannot repair it,
+// cannot back up, and must say which of those two things is wrong rather than
+// reporting a general failure to whoever reads the log.
+var ErrNoRepository = errors.New("machinebus: Eumaeus has no repository for this machine")
 
 // State is what the server says about this machine.
 //

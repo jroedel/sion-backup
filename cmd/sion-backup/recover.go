@@ -74,9 +74,14 @@ func (d *deps) recoverPlan(ctx context.Context) {
 
 		return
 
-	case errors.Is(err, machinebus.ErrUnsupported):
-		d.log.Info("the server cannot say which repository this machine belongs to",
-			"note", "no plan could be recovered; enrol this machine again to repair it")
+	case errors.Is(err, machinebus.ErrNoRepository):
+		// The server knows this machine and has no repository for it. Nothing
+		// to recover, and nothing this machine can do: a repository is
+		// provisioned in Eumaeus, never here.
+		d.log.Warn("Eumaeus has no repository for this machine",
+			"note", "an enrolled machine always has one, so this is a repository "+
+				"removed from underneath it. It cannot back up until that is fixed "+
+				"on the server")
 
 		return
 

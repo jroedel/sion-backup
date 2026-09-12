@@ -684,6 +684,15 @@ again repairs that with nobody standing at the machine. The recovered plan has
 no targets and is unconfirmed, so nothing can run from it; it only stops the
 machine being wrong about itself.
 
+The three refusals that endpoint can give are kept apart, because they need
+different people to do different things. `401` is de-enrolment — the token is
+finished, and no amount of retrying changes that
+([eumaeus#116](https://github.com/jroedel/eumaeus/issues/116) is why `403` is
+not read that way here). `404` is documented as *the token is good and the
+machine has no repository*, which is a repository removed from underneath a
+machine and is fixed on the server. Anything else is the network, and is tried
+again at the next start.
+
 Writing the client's half first was deliberate. It pinned the contract down
 while it was still prose, and `sion-backup doctor` reports a 404 from a server
 that has not implemented an endpoint as clearly as it reports a wrong token.
