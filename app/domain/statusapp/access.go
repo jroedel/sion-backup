@@ -3,6 +3,7 @@ package statusapp
 import (
 	"errors"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/jroedel/sion-backup/business/domain/disclosure/disclosurebus"
@@ -41,6 +42,11 @@ type accessView struct {
 	// Since is the beginning of the period the chain covers where that is not
 	// the beginning of the log. Zero means it covers everything.
 	Since time.Time
+
+	// Foreign is the key IDs of credentials the server found at the storage
+	// provider and did not create, joined for the banner. Empty is the
+	// ordinary and desired state.
+	Foreign string
 }
 
 // accessCheck is the verdict, in words a person can act on.
@@ -107,12 +113,36 @@ func (s *Server) access(w http.ResponseWriter, r *http.Request) {
 	view.Report = report
 	view.Check = checkSentence(report)
 	view.Since = report.ChainedSince
+	view.Foreign = foreignKeys(report)
 
 	if len(report.Machines) > 0 {
 		view.MachineNewest = report.Machines[0].At
 	}
 
 	s.render(w, r, "access.html", view)
+}
+
+// foreignKeys names the credentials the server found and did not create.
+//
+// The key IDs and nothing else. An access key ID is not a secret — one is
+// printed on the owner's own restore card — and naming it is the difference
+// between a warning an administrator can act on and one they can only worry
+// about.
+//
+// The actor is deliberately not mentioned anywhere near this. The server
+// leaves it empty because it genuinely does not know who holds the key, and a
+// page that filled in "unknown" or "somebody" would be inventing the one fact
+// that matters most.
+func foreignKeys(r disclosurebus.Report) string {
+	var ids []string
+
+	for _, e := range r.Foreign {
+		if e.Detail != "" {
+			ids = append(ids, e.Detail)
+		}
+	}
+
+	return strings.Join(ids, ", ")
 }
 
 // vouchDate is the date the check reaches back to, without a time of day.
