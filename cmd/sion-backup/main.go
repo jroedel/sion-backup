@@ -29,6 +29,9 @@ import (
 	"github.com/jroedel/sion-backup/business/domain/credential/credentialbus"
 	"github.com/jroedel/sion-backup/business/domain/credential/sources/eumaeuscreds"
 	"github.com/jroedel/sion-backup/business/domain/diag/diagbus"
+	"github.com/jroedel/sion-backup/business/domain/disclosure/disclosurebus"
+	"github.com/jroedel/sion-backup/business/domain/disclosure/sources/eumaeusdisclosure"
+	"github.com/jroedel/sion-backup/business/domain/disclosure/stores/disclosuredb"
 	"github.com/jroedel/sion-backup/business/domain/fleet/fleetbus"
 	"github.com/jroedel/sion-backup/business/domain/fleet/sources/eumaeusfleet"
 	"github.com/jroedel/sion-backup/business/domain/machine/machinebus"
@@ -181,6 +184,7 @@ type deps struct {
 	backups *backupbus.Runner
 	creds   *credentialbus.Business
 	machine *machinebus.Business
+	discl   *disclosurebus.Business
 	fleet   *fleetbus.Business
 	diag    *diagbus.Business
 	restic  *restic.Runner
@@ -352,6 +356,7 @@ func (d *deps) wireEumaeus() error {
 		d.fleet = fleetbus.NewBusiness(fleetbus.Nop{}, d.log)
 		d.creds = credentialbus.NewBusiness(nil)
 		d.machine = machinebus.NewBusiness(nil)
+		d.discl = disclosurebus.NewBusiness(nil, nil)
 
 		return nil
 	}
@@ -368,6 +373,8 @@ func (d *deps) wireEumaeus() error {
 	d.fleet = fleetbus.NewBusiness(eumaeusfleet.NewReporter(client), d.log)
 	d.creds = credentialbus.NewBusiness(eumaeuscreds.NewSource(client))
 	d.machine = machinebus.NewBusiness(eumaeusmachine.NewSource(client))
+	d.discl = disclosurebus.NewBusiness(
+		eumaeusdisclosure.NewSource(client), disclosuredb.NewStore(d.db))
 
 	return nil
 }
@@ -383,6 +390,7 @@ var migrators = []struct {
 }{
 	{"plan", plandb.Migrate},
 	{"backup", backupdb.Migrate},
+	{"disclosure", disclosuredb.Migrate},
 }
 
 // prepare brings every schema up to date.

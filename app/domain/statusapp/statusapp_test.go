@@ -18,6 +18,7 @@ import (
 	"github.com/jroedel/sion-backup/business/domain/backup/backupbus"
 	"github.com/jroedel/sion-backup/business/domain/backup/stores/backupdb"
 	"github.com/jroedel/sion-backup/business/domain/credential/credentialbus"
+	"github.com/jroedel/sion-backup/business/domain/disclosure/disclosurebus"
 	"github.com/jroedel/sion-backup/business/domain/plan/planbus"
 	"github.com/jroedel/sion-backup/business/domain/plan/stores/plandb"
 	"github.com/jroedel/sion-backup/business/domain/survey/surveybus"
@@ -57,6 +58,14 @@ func newHarness(t *testing.T) *harness { return harnessWith(t, stubSource{}) }
 func notEnrolled(t *testing.T) *harness { return harnessWith(t, nil) }
 
 func harnessWith(t *testing.T, source credentialbus.Source) *harness {
+	return harnessWithDisclosures(t, source, nil)
+}
+
+// harnessWithDisclosures is the same machine with a record of who has opened
+// its repository password, which most page tests do not need and the Access
+// page test is entirely about.
+func harnessWithDisclosures(t *testing.T, source credentialbus.Source,
+	discl *disclosurebus.Business) *harness {
 	t.Helper()
 
 	dir := t.TempDir()
@@ -122,6 +131,7 @@ func harnessWith(t *testing.T, source credentialbus.Source) *harness {
 		Plan:        h.plan,
 		Backups:     h.backups,
 		Credentials: credentialbus.NewBusiness(source),
+		Disclosures: discl,
 		Survey:      h.survey,
 		Background:  ctx,
 		StartRun:    func(context.Context) error { h.started++; return nil },

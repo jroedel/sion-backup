@@ -122,6 +122,7 @@ func daemonCmd(args []string) error {
 		Plan:                    d.plan,
 		Backups:                 d.backups,
 		Credentials:             d.creds,
+		Disclosures:             d.discl,
 		Survey:                  survey,
 		Background:              ctx,
 		MeteredKnown:            meteredKnown(d.cfg),
