@@ -366,10 +366,11 @@ func plan(r Recon) []string {
 
 		out = append(out,
 			"If it really is new: provision a bucket in Eumaeus, issue a code, and "+
-				"run \"sion-backup enroll --code ...\". If it is not, \"sion-backup "+
-				"adopt-enroll\" run as "+elevated("adopt-enroll")+" is what takes the old "+
-				"install over, and it refuses to migrate a machine it was not allowed "+
-				"to look at.")
+				"run \"sion-backup enroll --code ...\". If it is not, adopt it with root "+
+				"doing the reading and this account keeping the enrolment — "+
+				"SION_BACKUP_DATA_DIR=\"$HOME/.local/share/sion-backup\" "+
+				elevated("adopt-enroll")+" --code ... — which refuses to migrate a "+
+				"machine it was not allowed to look at.")
 
 		return out
 	}

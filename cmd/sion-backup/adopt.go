@@ -99,6 +99,15 @@ func adoptEnrollCmd(args []string) error {
 		return err
 	}
 
+	// Before wire(), because wire() creates the data directory — under sudo,
+	// as root, in root's home. This command in particular gets run with sudo
+	// on purpose: the advice for a legacy script that cannot be read says to.
+	// See refuseElevatedEnrollment, which names the read-only command to use
+	// instead.
+	if err := refuseElevatedEnrollment("adopt-enroll"); err != nil {
+		return err
+	}
+
 	ctx, cancel := signalContext()
 	defer cancel()
 
@@ -188,6 +197,7 @@ func adoptEnrollCmd(args []string) error {
 	// screen that can mean "stop" — a bucket that is not the legacy one — and
 	// it must not be pushed up the terminal by a paragraph about a web page.
 	handoff(ctx, d, !*noStart, !*noOpen)
+	handBackToSudoUser(d.paths, d.log)
 
 	return nil
 }
@@ -440,9 +450,13 @@ func assemble(r Recon) (adoption, error) {
 		return adoption{}, fmt.Errorf("no legacy install was found, but this account "+
 			"could not read %s — and a home directory belonging to another account is "+
 			"exactly where these installs live.\n\n"+
-			"Re-run as %s. Migrating on the strength of a report that was not allowed "+
-			"to look is how a machine ends up with two backups and one bucket nobody "+
-			"reads again", strings.Join(r.Blocked, ", "), elevated("adopt-enroll"))
+			"Migrating on the strength of a report that was not allowed to look is how "+
+			"a machine ends up with two backups and one bucket nobody reads again.\n\n"+
+			"%s reads it and writes nothing. To adopt it, root has to do the reading "+
+			"while this account keeps the enrolment:\n\n"+
+			"    SION_BACKUP_DATA_DIR=\"$HOME/.local/share/sion-backup\" \\\n"+
+			"        %s --code ...",
+			strings.Join(r.Blocked, ", "), elevated("recon"), elevated("adopt-enroll"))
 
 	case r.Legacy == nil:
 		return adoption{}, errors.New("no legacy install was found on this machine, so " +
@@ -489,9 +503,10 @@ func assemble(r Recon) (adoption, error) {
 	case err != nil:
 		a.notes = append(a.notes, "the exclude list at "+l.ExcludeFile+" could not be read ("+
 			err.Error()+"), so the plan carries only the excludes written in the script. "+
-			"Re-run as "+elevated("adopt-enroll")+", or copy them in by hand on the "+
-			"status page — the first backup will otherwise include things somebody "+
-			"chose to leave out")
+			"Re-run with root doing the reading and this account keeping the "+
+			"enrolment (SION_BACKUP_DATA_DIR=\"$HOME/.local/share/sion-backup\" "+
+			elevated("adopt-enroll")+"), or copy them in by hand on the status page — "+
+			"the first backup will otherwise include things somebody chose to leave out")
 
 	default:
 		a.fromFile = len(patterns)

@@ -90,6 +90,35 @@ report_failure() {
   return 0
 }
 
+# ---------------------------------------------------------------------------
+# 0. Whose machine is this?
+# ---------------------------------------------------------------------------
+#
+# Every path below hangs off $HOME, and sudo answers $HOME with root's. Run
+# this way it installs the binary into /root/.local/bin, the user service into
+# root's systemd, and enables lingering for root — a complete and completely
+# useless installation, with the real account left untouched and nothing
+# printed to say so. The binary refuses to enrol under sudo for the same
+# reason; this is the same check, earlier.
+#
+# Being root is not itself the mistake. Typing sudo is: it says the files worth
+# backing up belong to the account it was typed from.
+
+if [ -n "${SUDO_USER:-}" ]; then
+  warn "this installs into \$HOME, and sudo makes that root's."
+  printf '\n'
+  note "Everything here belongs to the person whose files are backed up: the"
+  note "binary, the data directory, and a systemd USER service. Run it as"
+  note "${SUDO_USER}, without sudo:"
+  printf '\n'
+  note "    ./install.sh"
+  printf '\n'
+  note "If root's own files really are what should be backed up, this is not"
+  note "the script for it yet — see deploy/systemd/sion-backup.service."
+  printf '\n'
+  exit 2
+fi
+
 trap report_failure EXIT
 
 # ---------------------------------------------------------------------------

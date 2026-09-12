@@ -77,6 +77,12 @@ func enrollCmd(args []string) error {
 		return errors.New("an enrollment code is required")
 	}
 
+	// Before anything is fetched or written, and well before the code is
+	// spent. See refuseElevatedEnrollment.
+	if err := refuseElevatedEnrollment("enroll"); err != nil {
+		return err
+	}
+
 	ctx, cancel := signalContext()
 	defer cancel()
 
@@ -91,6 +97,7 @@ func enrollCmd(args []string) error {
 	}
 
 	handoff(ctx, d, !*noStart, !*noOpen)
+	handBackToSudoUser(d.paths, d.log)
 
 	return nil
 }

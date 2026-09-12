@@ -221,17 +221,6 @@ func openBrowser(url string) error {
 	}
 }
 
-// elevatedBySudo reports whether this process is root because somebody typed
-// sudo, rather than because it is a service.
-//
-// It matters because the daemon is a per-user service reading a per-user data
-// directory: `systemctl --user` from a root shell addresses root's own
-// services, and a browser opened as root lands on the wrong desktop or on
-// none.
-func elevatedBySudo() bool {
-	return os.Getenv("SUDO_USER") != ""
-}
-
 // firstLine keeps the part of a service manager's complaint that fits in a
 // sentence.
 func firstLine(s string) string {
