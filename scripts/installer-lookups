@@ -1,0 +1,128 @@
+#!/usr/bin/env bash
+#
+# installer-lookups — prove the installers can find the files they ship with.
+#
+# The two shell installers each look for a binary and a service file in
+# several places, and both said in their own error message that they had
+# "looked beside this script" when they had not: every candidate was relative
+# to the current directory or to deploy/, and none to the script's own
+# directory. Running the installer from the directory it was downloaded into
+# hides this completely, because there the two are the same path.
+#
+# It was found on a fresh Debian box, downloading v0.6.4 the way a person
+# does, by running ~/Downloads/install-linux.sh from the home directory
+# instead of from ~/Downloads.
+#
+# Two checks, because neither alone is enough:
+#
+#   1. Static. Every first_of list must offer "${HERE}/<name>" for the same
+#      <name> it offers as "./<name>". This one covers macOS, which no runner
+#      here can execute end to end, and the plist and unit lookups, which come
+#      too late in a run to reach without doing things to the machine.
+#
+#   2. Live. The Linux installer, invoked by its absolute path from somewhere
+#      else entirely, against a stub binary and a throwaway prefix. --recon-only
+#      so it stops before touching any service. This is the one that would
+#      actually have caught it.
+
+set -euo pipefail
+
+cd "$(dirname "$0")/.."
+
+fail() { printf 'installer-lookups: %s\n' "$*" >&2; exit 1; }
+ok()   { printf '  ok  %s\n' "$*"; }
+
+# ---------------------------------------------------------------------------
+# 1. Every "./x" candidate has a "${HERE}/x" beside it
+# ---------------------------------------------------------------------------
+
+echo "first_of candidate lists"
+
+for script in deploy/linux/install.sh deploy/macos/install.sh; do
+  # Each first_of call is one logical line continued with backslashes. Join
+  # them, then read off the candidates.
+  lists=$(sed -e ':a' -e '/\\$/{N;s/\\\n//;ta' -e '}' "$script" | grep '$(first_of ' || true)
+
+  [ -n "$lists" ] || fail "$script has no first_of calls; has it been rewritten?"
+
+  while IFS= read -r line; do
+    # The candidates, one per line. Matched by their shape rather than by
+    # the quotes around them: the line begins VAR="$(first_of, so pairing
+    # quotes off from the left pairs them wrongly and yields nothing.
+    candidates=$(printf '%s' "$line" | grep -oE '(\./|\$\{HERE\}/)[^" ]*' || true)
+
+    for candidate in $candidates; do
+      case "$candidate" in
+        ./*) ;;
+        *) continue ;;
+      esac
+
+      name=${candidate#./}
+
+      case "$candidate" in
+        */*/*) continue ;;   # ./dist/x and ./deploy/systemd/x are the clone layout
+      esac
+
+      if ! printf '%s' "$candidates" | grep -qxF "\${HERE}/${name}"; then
+        fail "$script offers ${candidate} but not \${HERE}/${name} — a release run by its path will not find it"
+      fi
+
+      ok "$script: ${name} is looked for in . and beside the script"
+    done
+  done <<<"$lists"
+done
+
+# ---------------------------------------------------------------------------
+# 2. The Linux installer, run from somewhere that is not its own directory
+# ---------------------------------------------------------------------------
+
+echo
+echo "install.sh run by its absolute path from elsewhere"
+
+WORK=$(mktemp -d)
+trap 'rm -rf "$WORK"' EXIT
+
+case "$(uname -m)" in
+  x86_64)        arch=amd64 ;;
+  aarch64|arm64) arch=arm64 ;;
+  *)             fail "unknown architecture $(uname -m)" ;;
+esac
+
+# A release, unpacked flat, as a browser leaves it.
+RELEASE="$WORK/Downloads"
+mkdir -p "$RELEASE"
+cp deploy/linux/install.sh "$RELEASE/install-linux.sh"
+cp deploy/systemd/sion-backup.service "$RELEASE/"
+
+# A stub, because this tests the installer and not the program. It answers the
+# two things --recon-only needs and nothing else.
+cat > "$RELEASE/sion-backup-linux-${arch}" <<'STUB'
+#!/bin/sh
+case "$1" in
+  version) echo "sion-backup vSTUB (stub)" ;;
+  recon)   echo "stub recon" ;;
+  *)       echo "stub: unexpected command $*" >&2; exit 64 ;;
+esac
+STUB
+chmod +x "$RELEASE/sion-backup-linux-${arch}"
+
+PREFIX="$WORK/prefix"
+
+# From $WORK, not from $RELEASE: that is the whole point.
+cd "$WORK"
+"$RELEASE/install-linux.sh" --yes --recon-only --prefix "$PREFIX" >"$WORK/out" 2>&1 || {
+  cat "$WORK/out" >&2
+  fail "the installer could not find the binary sitting beside it"
+}
+
+[ -x "$PREFIX/sion-backup" ] || fail "nothing was installed at $PREFIX/sion-backup"
+ok "found the binary beside itself and installed it"
+
+grep -q 'Nothing was changed' "$WORK/out" || {
+  cat "$WORK/out" >&2
+  fail "--recon-only did not stop where it says it does"
+}
+ok "--recon-only changed nothing else"
+
+echo
+echo "installer-lookups: both installers can find what ships with them"

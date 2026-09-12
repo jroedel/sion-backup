@@ -68,6 +68,13 @@ INSTALLED="${PREFIX}/sion-backup"
 # in ./deploy, so an install driven from a downloaded release found no plist,
 # skipped the agent, and left somebody with a status page that refused the
 # connection and a launchctl command for a service nobody had registered.
+#
+# Each name is looked for in the current directory and then beside this script,
+# because those are different places and a person uses both. Downloading a
+# release into ~/Downloads and running ./install-macos.sh there makes them the
+# same; running ~/Downloads/install-macos.sh from anywhere else does not, and
+# that used to fail with a message saying it had "looked beside this script"
+# when it had done no such thing.
 first_of() {
   for candidate in "$@"; do
     if [ -f "$candidate" ]; then
@@ -156,6 +163,7 @@ if [ -z "$BINARY" ]; then
   # script run by its path from somewhere else entirely.
   BINARY="$(first_of \
     "./sion-backup-darwin-${arch}" \
+    "${HERE}/sion-backup-darwin-${arch}" \
     "./dist/sion-backup-darwin-${arch}" \
     "${HERE}/../../dist/sion-backup-darwin-${arch}")"
 fi
@@ -218,6 +226,7 @@ if [ "$NO_SERVICE" -eq 0 ]; then
   if [ -z "$PLIST_SRC" ]; then
     PLIST_SRC="$(first_of \
       "./${LABEL}.plist" \
+      "${HERE}/${LABEL}.plist" \
       "./deploy/launchd/${LABEL}.plist" \
       "${HERE}/../launchd/${LABEL}.plist")"
   fi
