@@ -551,3 +551,51 @@ func TestSettingsRefusesAFolderThatIsNotThere(t *testing.T) {
 		t.Errorf("the typo was stored anyway: %v", plan.Targets)
 	}
 }
+
+// TestAnEmptyRepositoryPromisesNoHistory.
+//
+// A repository with no snapshots has nothing to restore, and the page must not
+// say otherwise. planbus.Measurement starts Since at today's date for a
+// repository it holds no figures for — which is right for the rotation
+// question and was being rendered as "Backups available from 12 Sep onwards"
+// on a machine whose every backup had failed.
+//
+// It is a small lie and it is precisely the species this program exists to
+// prevent: an owner reading that line has been told their files are
+// recoverable when nothing of theirs has ever left the machine.
+func TestAnEmptyRepositoryPromisesNoHistory(t *testing.T) {
+	h := newHarness(t)
+
+	if err := h.plan.Put(context.Background(), samplePlan(), time.Now()); err != nil {
+		t.Fatal(err)
+	}
+
+	body := h.get(t, "/").Body.String()
+
+	if strings.Contains(body, "Backups available from") {
+		t.Error("a repository with no snapshots claims restorable history")
+	}
+}
+
+// TestARepositoryWithSnapshotsShowsItsHistory, so the guard above did not
+// simply delete the line.
+func TestARepositoryWithSnapshotsShowsItsHistory(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+
+	plan := samplePlan()
+	if err := h.plan.Put(ctx, plan, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+
+	since := time.Now().Add(-90 * 24 * time.Hour)
+
+	if err := h.plan.RecordMeasurement(ctx, plan.Repository, time.Now(), since,
+		planbus.Size{Now: 1 << 30, Fresh: 1 << 29, Snapshots: 12}); err != nil {
+		t.Fatal(err)
+	}
+
+	if !strings.Contains(h.get(t, "/").Body.String(), "Backups available from") {
+		t.Error("a repository with snapshots does not show its history")
+	}
+}

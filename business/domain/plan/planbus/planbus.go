@@ -265,6 +265,12 @@ func (b *Business) Measurement(ctx context.Context, repositoryURL string, now ti
 	}
 
 	if m.RepositoryURL != repositoryURL {
+		// Since starts now: a repository this machine has no figures for has
+		// no history to reclaim, and the rotation question is asked from
+		// today. Snapshots stays zero, which is what stops this being read as
+		// "there are backups from today" — see the status page, where the
+		// history line is shown only when there is at least one snapshot to
+		// restore.
 		return Measurement{RepositoryURL: repositoryURL, Since: now}, nil
 	}
 
