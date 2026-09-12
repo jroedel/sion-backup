@@ -5,7 +5,9 @@ import (
 	"flag"
 	"fmt"
 	"net"
+	"net/http"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -106,6 +108,37 @@ func doctorCmd(args []string) error {
 
 		return "machine token present; credentials are fetched per run and not stored", nil
 	})
+
+	// Reported rather than judged. What a deployment implements is not this
+	// machine's business to have an opinion about — a fleet mid-upgrade is an
+	// ordinary state — but it is the first thing somebody wants when a feature
+	// is missing and nobody can say whether the client or the server is
+	// behind. Asking is also the only way to know: a 404 from this API means
+	// either "no such path here" or something documented about this machine,
+	// and they are identical on the wire (jroedel/eumaeus#144).
+	if d.machine.Available() {
+		c.check("server", func() (string, error) {
+			state, err := d.machine.State(ctx)
+			if err != nil {
+				return "", err
+			}
+
+			if !state.KnowsWhatItServes() {
+				return "reachable; it is older than the block that says which " +
+					"endpoints it implements, so nothing can be assumed about them", nil
+			}
+
+			serves := "serves " + strconv.Itoa(len(state.Routes)) + " endpoints"
+
+			if state.Serves(http.MethodGet, "/machines/me/disclosures") {
+				return serves + ", including the record of who has opened this " +
+					"machine's password", nil
+			}
+
+			return serves + ", not including the record of who has opened this " +
+				"machine's password", nil
+		})
+	}
 
 	plan, planErr := d.plan.Get(ctx)
 

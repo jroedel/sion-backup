@@ -69,16 +69,19 @@ func (s *Source) Fetch(ctx context.Context) (credentialbus.Set, error) {
 	err := s.client.Do(ctx, http.MethodGet, path, nil, &got)
 
 	switch {
-	case errors.Is(err, eumaeusapi.ErrUnauthorised), errors.Is(err, eumaeusapi.ErrForbidden):
+	case errors.Is(err, eumaeusapi.ErrUnauthorised):
 		// Distinguished so the daemon stops retrying and the status page can
 		// say something true. A revoked token will still be revoked in an hour.
 		//
-		// Both statuses, and only on this endpoint. A machine that may not
-		// read its own credentials cannot back up whichever status says so,
-		// so the honest thing to show is de-enrolment. Elsewhere a 403 means
-		// something quite different — the fleet has fresh buckets switched
-		// off — and eumaeusapi keeps them apart so that only the calls where
-		// the two coincide put them back together.
+		// 401 alone. This used to accept a 403 here as well, on the argument
+		// that a machine which may not read its own credentials cannot back up
+		// whichever status says so. That argument was sound and the branch was
+		// still dead: Eumaeus answers 403 in exactly one place in the whole
+		// API — the rotation request, when fresh buckets are switched off —
+		// and never on this endpoint, which they hold with a test
+		// (jroedel/eumaeus#144). A branch that cannot run is a branch nobody
+		// can check, and it was copied into two more sources before anybody
+		// asked whether the status it guards against ever arrives.
 		return credentialbus.Set{}, &credentialbus.Unauthorised{Err: err}
 
 	case errors.Is(err, eumaeusapi.ErrNotFound):
