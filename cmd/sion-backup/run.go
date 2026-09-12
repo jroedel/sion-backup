@@ -45,6 +45,8 @@ func runCmd(args []string) error {
 		return err
 	}
 
+	d.recoverPlan(ctx)
+
 	plan, err := d.plan.Get(ctx)
 	if errors.Is(err, planbus.ErrNoPlan) {
 		return errors.New("this machine has no backup plan yet; run \"sion-backup enroll\" first")

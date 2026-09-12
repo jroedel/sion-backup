@@ -103,6 +103,11 @@ func daemonCmd(args []string) error {
 		return err
 	}
 
+	// And if there is still none, ask the server. A machine enrolled by a
+	// build that did not store what it was told is holding a working token and
+	// nothing else; this is what gets it back.
+	d.recoverPlan(ctx)
+
 	guard, err := loopback.New(listen)
 	if err != nil {
 		return err

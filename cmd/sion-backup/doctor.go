@@ -111,6 +111,19 @@ func doctorCmd(args []string) error {
 
 	c.check("backup plan", func() (string, error) {
 		if errors.Is(planErr, planbus.ErrNoPlan) {
+			// Two different machines land here and they need different
+			// answers. One has never been enrolled. The other has a token,
+			// and telling that one to enrol sends it at a command that will
+			// refuse — which is the dead end that made this distinction worth
+			// drawing: before v0.6.0, enrolment could store the token and
+			// drop the plan, leaving a machine that said it was not enrolled
+			// and could not be enrolled again.
+			if d.machineToken != "" {
+				return "", fmt.Errorf("this machine has a token but no plan. Starting "+
+					"the daemon recovers it from Eumaeus; if that has already been "+
+					"tried, %s/setup and the log say why", d.statusPage())
+			}
+
 			return "", errors.New("this machine has no plan; run \"sion-backup enroll\"")
 		}
 
