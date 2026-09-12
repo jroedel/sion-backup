@@ -333,3 +333,60 @@ func TestTheSpeedTestRunsWithoutBeingAskedTheFirstTime(t *testing.T) {
 		t.Fatal("the first render of the setup page did not start a speed test")
 	}
 }
+
+// TestAStoredFolderListIsReadBackAsTheChoiceThatWouldHaveMadeIt.
+//
+// The round trip the setup page depends on. Every machine upgrading into that
+// page has folders in its plan and no style beside them, because the field did
+// not exist when the plan was written; without this the page cannot tell a
+// list somebody typed from one of its own offers, and it puts the radio button
+// somewhere other than where the machine actually is.
+func TestAStoredFolderListIsReadBackAsTheChoiceThatWouldHaveMadeIt(t *testing.T) {
+	personal := surveybus.Choice{
+		Style: surveybus.StylePersonal,
+		Roots: []string{"/home/jeff/Documents", "/home/jeff/Desktop"},
+	}
+	home := surveybus.Choice{Style: surveybus.StyleHome, Roots: []string{"/home/jeff"}}
+
+	b := surveybus.NewBusiness(quiet(), nil, []surveybus.Choice{personal, home})
+
+	for _, c := range []struct {
+		name    string
+		targets []string
+		want    surveybus.Style
+	}{
+		{"an offered choice", personal.Roots, surveybus.StylePersonal},
+		{"the other one", home.Roots, surveybus.StyleHome},
+		{
+			// Somebody reordered the box, or restic wrote them out with a
+			// trailing separator. Neither is a different list, and calling
+			// either one Custom would show the wrong radio button.
+			name:    "the same folders, reordered and with a trailing slash",
+			targets: []string{"/home/jeff/Desktop/", "/home/jeff/Documents"},
+			want:    surveybus.StylePersonal,
+		},
+		{
+			name:    "one of the offered folders removed",
+			targets: []string{"/home/jeff/Documents"},
+			want:    surveybus.StyleCustom,
+		},
+		{
+			name:    "a list of their own",
+			targets: []string{"/srv/work", "/mnt/photos"},
+			want:    surveybus.StyleCustom,
+		},
+		{
+			// Not Custom: an empty list is a machine with no plan, and what to
+			// offer it is the page's decision, not this one's.
+			name:    "nothing at all",
+			targets: nil,
+			want:    "",
+		},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			if got := b.StyleOf(c.targets); got != c.want {
+				t.Errorf("StyleOf(%v) = %q, want %q", c.targets, got, c.want)
+			}
+		})
+	}
+}

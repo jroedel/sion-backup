@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/jroedel/sion-backup/app/sdk/loopback"
+	"github.com/jroedel/sion-backup/foundation/web"
 )
 
 func guarded(t *testing.T) (*loopback.Guard, http.Handler) {
@@ -202,5 +203,79 @@ func TestACommandLineClientStillWorks(t *testing.T) {
 
 	if rec.Code != http.StatusOK {
 		t.Errorf("status %d, want 200: %s", rec.Code, rec.Body)
+	}
+}
+
+// TestFirefoxCanSubmitTheForm is a regression test for a page that could not
+// be used at all in one of the two browsers anybody has.
+//
+// The Fetch standard says that when a request's referrer policy is
+// no-referrer, the Origin header of an unsafe request is serialised as "null"
+// rather than as the page's real origin. Firefox implements that; Chrome does
+// not. This server sent Referrer-Policy: no-referrer, so a POST from its own
+// setup page arrived with Origin: null, was refused here, and the person who
+// had just filled the whole page in got a bare error page reading "a request
+// from null cannot change this machine's backup settings".
+//
+// Both halves are fixed and both are held here, composed the way daemon.go
+// composes them, because either one alone leaves the page broken: the header
+// so that the origin is stated, and the guard so that an opaque origin
+// vouched for by Sec-Fetch-Site is not mistaken for another site's page.
+func TestFirefoxCanSubmitTheForm(t *testing.T) {
+	g, guarded := guarded(t)
+
+	handler := web.SecureHeaders(guarded)
+
+	// The header a page is served with, which is what decides the next
+	// request's Origin.
+	get := httptest.NewRecorder()
+	handler.ServeHTTP(get, httptest.NewRequest(http.MethodGet, "http://127.0.0.1:7391/setup", nil))
+
+	if policy := get.Header().Get("Referrer-Policy"); policy == "no-referrer" {
+		t.Error("the page is served with Referrer-Policy: no-referrer, which makes " +
+			"Firefox send Origin: null on the form post and locks it out of every " +
+			"form on this server")
+	}
+
+	// And the post that policy produced, in the version of Firefox that is
+	// already running against a server that has not been restarted.
+	rec := httptest.NewRecorder()
+
+	handler.ServeHTTP(rec, postForm(g, g.Token(), map[string]string{
+		"Sec-Fetch-Site": "same-origin",
+		"Origin":         "null",
+	}))
+
+	if rec.Code != http.StatusOK {
+		t.Errorf("status %d, want 200: %s", rec.Code, rec.Body)
+	}
+}
+
+// TestAnOpaqueOriginIsNotAFreePass. Accepting "null" is a narrowing, not a
+// hole: the other thing that produces one is a sandboxed iframe on somebody
+// else's page, and what separates the two is the header the browser sends
+// about where the request came from.
+func TestAnOpaqueOriginIsNotAFreePass(t *testing.T) {
+	for name, site := range map[string]string{
+		"a sandboxed iframe on another site": "cross-site",
+		"a page somewhere else on this host": "same-site",
+		"a client that will not say":         "",
+	} {
+		t.Run(name, func(t *testing.T) {
+			g, h := guarded(t)
+
+			rec := httptest.NewRecorder()
+
+			headers := map[string]string{"Origin": "null"}
+			if site != "" {
+				headers["Sec-Fetch-Site"] = site
+			}
+
+			h.ServeHTTP(rec, postForm(g, g.Token(), headers))
+
+			if rec.Code != http.StatusForbidden {
+				t.Errorf("status %d, want 403", rec.Code)
+			}
+		})
 	}
 }

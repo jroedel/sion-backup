@@ -99,6 +99,14 @@
       here is work. The full list is on the Settings page, where you can take
       anything back off it.
     </p>
+    {{if .Excludes}}
+    <p class="hint">
+      This computer is already leaving out
+      {{range .Excludes}}<code>{{.}}</code> {{end}}
+      — kept as they are, whatever is chosen above. Change them on the
+      <a href="/settings">Settings</a> page.
+    </p>
+    {{end}}
   </div>
 
   <div>

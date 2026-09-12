@@ -55,7 +55,21 @@ func SecureHeaders(h http.Handler) http.Handler {
 			"default-src 'none'; style-src 'self'; img-src 'self' data:; "+
 				"form-action 'self'; base-uri 'none'; frame-ancestors 'none'")
 		head.Set("X-Content-Type-Options", "nosniff")
-		head.Set("Referrer-Policy", "no-referrer")
+		// same-origin rather than no-referrer, which is what this was and
+		// which broke every form on this server in Firefox.
+		//
+		// The Fetch standard says that when a request's referrer policy is
+		// no-referrer, the Origin header on an unsafe method is serialised as
+		// "null". Firefox implements that; Chrome does not. So a POST from
+		// this server's own setup page arrived with Origin: null, the loopback
+		// guard refused it as coming from somewhere else, and the person who
+		// had just filled the page in got "a request from null cannot change
+		// this machine's backup settings".
+		//
+		// same-origin gives up nothing here: the referrer is still withheld
+		// from every other origin, and this page has no cross-origin requests
+		// to withhold it from — the policy above forbids them all.
+		head.Set("Referrer-Policy", "same-origin")
 		head.Set("Cache-Control", "no-store, max-age=0")
 
 		h.ServeHTTP(w, r)
