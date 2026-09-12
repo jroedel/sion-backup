@@ -131,23 +131,56 @@ type Plan struct {
 // Confirmed reports whether somebody at this machine has approved the plan.
 func (p Plan) Confirmed() bool { return !p.ConfirmedAt.IsZero() }
 
-// Validate reports a plan that would not produce a usable backup.
+// Validate reports a plan that could not be stored.
 //
-// Called before a plan is stored, not before it is used, so a bad plan cannot
+// Called before a plan is written, not before it is used, so a bad plan cannot
 // reach the disk and be found at 1am.
+//
+// # Why an empty target list passes here
+//
+// Because it is the state every machine is in between enrolment and somebody
+// choosing folders, and it has to be writable — otherwise there is nowhere to
+// keep the two facts enrolment just learned, the node ID and the repository
+// URL. That is not hypothetical: it cost a Mac its enrolment. `enroll` saved
+// the token, asked to store the plan, was refused for having no targets, and
+// carried on; the daemon then found no plan and told the owner, on the page
+// the handoff had just sent them to, that the machine had never been enrolled
+// — while refusing to enrol it again, because it had been.
+//
+// What must not happen is such a plan being RUN, because a backup of nothing
+// reports success. That is [Plan.Runnable], which is checked where a run
+// begins and by [Business.Confirm], so no plan can be approved into the
+// scheduler without targets. The two questions were one function, and the
+// answer to "may I store this" was quietly being used for "may I run this".
 func (p Plan) Validate() error {
 	switch {
 	case p.NodeID == "":
 		return errors.New("planbus: the plan needs a node ID, so the fleet dashboard can name this machine")
 	case p.Repository == "":
 		return errors.New("planbus: the plan needs a repository URL")
-	case len(p.Targets) == 0:
-		return errors.New("planbus: the plan has no targets; a backup of nothing would report success")
 	case p.SkipLargerThanGB < 0:
 		return errors.New("planbus: the size limit cannot be negative")
 	}
 
 	return p.Schedule.Validate()
+}
+
+// Runnable reports a plan that must not start a backup.
+//
+// Everything [Plan.Validate] asks, and targets as well. A plan with no targets
+// is a machine waiting for somebody to choose folders; running it would upload
+// nothing, succeed, and light the dashboard green for a machine that is not
+// backed up — which is the exact failure this program exists to prevent.
+func (p Plan) Runnable() error {
+	if err := p.Validate(); err != nil {
+		return err
+	}
+
+	if len(p.Targets) == 0 {
+		return errors.New("planbus: the plan has no targets; a backup of nothing would report success")
+	}
+
+	return nil
 }
 
 // Storer is the persistence this domain needs.
@@ -204,7 +237,11 @@ func (b *Business) Confirm(ctx context.Context, now time.Time) error {
 		return err
 	}
 
-	if err := p.Validate(); err != nil {
+	// Runnable, not Validate: confirming is what releases the scheduler, so
+	// this is the moment the stricter question has to be asked. A plan with no
+	// targets can be stored -- see [Plan.Validate] -- and must never be
+	// approved.
+	if err := p.Runnable(); err != nil {
 		return err
 	}
 

@@ -2,8 +2,14 @@
 <!--
   A launchd USER AGENT, not a daemon.
 
+  deploy/macos/install.sh is what puts this in place, and it REWRITES the
+  program path below: it installs the binary into ~/.local/bin, because Full
+  Disk Access is granted to a path by a person for their own account and
+  nothing about this install should belong to root. The path here is the
+  fallback for a hand install:
+
     cp us.schoenstatt.sion-backup.plist ~/Library/LaunchAgents/
-    launchctl load -w ~/Library/LaunchAgents/us.schoenstatt.sion-backup.plist
+    launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/us.schoenstatt.sion-backup.plist
 
   An agent rather than a daemon. The original reason — the credentials sat in
   the login Keychain, which only unlocks inside a user session — no longer
@@ -15,10 +21,13 @@
   Privacy & Security › Full Disk Access; for a LaunchDaemon it is a PPPC
   profile pushed by MDM.
 
-  NOTE: no Mac has ever run this. The legacy project scoped macOS and shipped
-  nothing — its "mac 0.2" folder is empty — so this file is reasoned from the
-  documentation rather than from a machine that took a backup. Treat the first
-  Mac as a test, not a deployment.
+  NOTE: this was reasoned from Apple's documentation rather than from a
+  machine that had taken a backup — the legacy project scoped macOS and
+  shipped nothing, its "mac 0.2" folder being empty. The first Mac was
+  enrolled on 12 September 2026 and found three things this file could not
+  have told anybody: the release binaries are quarantined by Gatekeeper, there
+  was no installer to register this agent at all, and enrolment did not keep
+  the plan it was given. Treat the second Mac as a test too.
 
   RunAtLoad plus KeepAlive means it starts when the user logs in and is
   restarted if it exits. The scheduling is the program's own — see
