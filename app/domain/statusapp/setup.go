@@ -146,10 +146,18 @@ func (s *Server) setup(w http.ResponseWriter, r *http.Request) {
 		err == nil && !s.cfg.Credentials.Enrolled():
 		s.render(w, r, "setup.html", setupView{
 			chrome: s.chromeFor("Set up backups", "/setup"),
-			Missing: "This computer has not been enrolled yet, so there is nowhere for " +
-				"a backup to go. Whoever is installing it needs to run “sion-backup " +
-				"enroll” with a code from Eumaeus; this page is what they are sent to " +
-				"afterwards.",
+			// Both commands are named because both lead here. "adopt-enroll"
+			// without a code is a deliberate half-step — it writes the plan
+			// read out of the backup already running, and stops so the bucket
+			// can be adopted in Eumaeus before anybody claims a code — and it
+			// leaves exactly this machine: a plan, a repository, and no token.
+			// Telling somebody standing in the middle of that to run "enroll"
+			// would send them to the wrong command.
+			Missing: "This computer has not been enrolled yet, so it has no credentials " +
+				"and nothing can be backed up. Whoever is installing it needs a code " +
+				"from Eumaeus, and then “sion-backup enroll --code …” — or “sion-backup " +
+				"adopt-enroll --code …” on a machine that is already backing up with " +
+				"the old script. This page is what they are sent to afterwards.",
 		})
 
 		return
