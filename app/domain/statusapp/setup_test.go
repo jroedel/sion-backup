@@ -4,6 +4,8 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -101,7 +103,7 @@ func TestConfirmingReleasesTheSchedulerAndStartsTheFirstBackup(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	rec := h.post(t, "/setup", "action=confirm&style=custom&targets=/home/jeff"+
+	rec := h.post(t, "/setup", "action=confirm&style=custom&targets="+url.QueryEscape(h.dir)+""+
 		"&schedule=thrice-daily&junk=on")
 
 	if rec.Code != http.StatusSeeOther {
@@ -121,7 +123,7 @@ func TestConfirmingReleasesTheSchedulerAndStartsTheFirstBackup(t *testing.T) {
 		t.Errorf("schedule preset %q, want three times a day", got)
 	}
 
-	if len(plan.Targets) != 1 || plan.Targets[0] != "/home/jeff" {
+	if len(plan.Targets) != 1 || plan.Targets[0] != h.dir {
 		t.Errorf("targets %v, want the one that was typed", plan.Targets)
 	}
 
@@ -143,7 +145,7 @@ func TestSavingWithoutConfirmingKeepsTheMachineHeld(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	rec := h.post(t, "/setup", "action=save&style=custom&targets=/home/jeff&schedule=daily&daily_time=07:30")
+	rec := h.post(t, "/setup", "action=save&style=custom&targets="+url.QueryEscape(h.dir)+"&schedule=daily&daily_time=07:30")
 	if rec.Code != http.StatusSeeOther {
 		t.Fatalf("status %d: %s", rec.Code, rec.Body)
 	}
@@ -179,7 +181,7 @@ func TestTheJunkExcludesGoOnAndComeOffAgain(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	h.post(t, "/setup", "action=save&style=custom&targets=/home/jeff&schedule=daily&daily_time=13:00&junk=on")
+	h.post(t, "/setup", "action=save&style=custom&targets="+url.QueryEscape(h.dir)+"&schedule=daily&daily_time=13:00&junk=on")
 
 	with, err := h.plan.Get(ctx)
 	if err != nil {
@@ -194,7 +196,7 @@ func TestTheJunkExcludesGoOnAndComeOffAgain(t *testing.T) {
 		t.Errorf("the junk list is not in the excludes: %v", with.Excludes)
 	}
 
-	h.post(t, "/setup", "action=save&style=custom&targets=/home/jeff&schedule=daily&daily_time=13:00")
+	h.post(t, "/setup", "action=save&style=custom&targets="+url.QueryEscape(h.dir)+"&schedule=daily&daily_time=13:00")
 
 	without, err := h.plan.Get(ctx)
 	if err != nil {
@@ -254,7 +256,7 @@ func TestTheSizeLimitAndTheMeteredSwitchAreStored(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	h.post(t, "/setup", "action=save&style=custom&targets=/home/jeff&schedule=hourly"+
+	h.post(t, "/setup", "action=save&style=custom&targets="+url.QueryEscape(h.dir)+"&schedule=hourly"+
 		"&skip_larger_than_gb=2&skip_on_metered=on")
 
 	plan, err := h.plan.Get(ctx)
@@ -273,7 +275,7 @@ func TestTheSizeLimitAndTheMeteredSwitchAreStored(t *testing.T) {
 
 	// And empty means no limit, rather than a parse error that silently keeps
 	// the old one.
-	h.post(t, "/setup", "action=save&style=custom&targets=/home/jeff&schedule=hourly&skip_larger_than_gb=")
+	h.post(t, "/setup", "action=save&style=custom&targets="+url.QueryEscape(h.dir)+"&schedule=hourly&skip_larger_than_gb=")
 
 	if plan, _ = h.plan.Get(ctx); plan.SkipLargerThanGB != 0 {
 		t.Errorf("an empty size limit left %d behind", plan.SkipLargerThanGB)
@@ -480,7 +482,7 @@ func TestExclusionsSomebodyAlreadyHasAreShownAndKept(t *testing.T) {
 
 	// And a save through the page keeps them, junk or no junk.
 	h.post(t, "/setup", "form_token="+h.guard.Token()+
-		"&style=custom&targets=/srv/work&junk=on&schedule=daily&daily_time=13:00")
+		"&style=custom&targets="+url.QueryEscape(h.dir)+"&junk=on&schedule=daily&daily_time=13:00")
 
 	saved, err := h.plan.Get(ctx)
 	if err != nil {
@@ -548,7 +550,7 @@ func TestAnExclusionThatLooksLikeJunkIsNotDeletedForLookingLikeIt(t *testing.T) 
 	}
 
 	h.post(t, "/setup", "form_token="+h.guard.Token()+
-		"&style=custom&targets=/srv/work&schedule=daily&daily_time=13:00")
+		"&style=custom&targets="+url.QueryEscape(h.dir)+"&schedule=daily&daily_time=13:00")
 
 	saved, err := h.plan.Get(ctx)
 	if err != nil {
@@ -585,5 +587,137 @@ func TestAMachineWithARepositoryButNoEnrolmentIsNotOfferedTheForm(t *testing.T) 
 	if strings.Contains(body, "Start backing up") {
 		t.Error("the page offered to start backing up a machine that cannot fetch " +
 			"a credential")
+	}
+}
+
+// TestAFolderThatIsNotThereIsRefusedWithoutLosingTheForm.
+//
+// The whole reason this check is on the page and not only in doctor: somebody
+// adding /opt/projects to their list is standing right there, and a typo is
+// free to fix now and expensive to find in March.
+func TestAFolderThatIsNotThereIsRefusedWithoutLosingTheForm(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+
+	if err := h.plan.Put(ctx, unconfirmed(), time.Now()); err != nil {
+		t.Fatal(err)
+	}
+
+	typo := filepath.Join(h.dir, "projcts")
+
+	rec := h.post(t, "/setup", "action=confirm&style=custom&targets="+
+		url.QueryEscape(h.dir+"\n"+typo)+"&schedule=daily&daily_time=13:00")
+
+	body := rec.Body.String()
+
+	if !strings.Contains(body, typo) {
+		t.Errorf("the page does not say which folder is wrong:\n%s", body)
+	}
+
+	if !strings.Contains(body, "is not on this computer") {
+		t.Error("the page does not say what is wrong with it")
+	}
+
+	// And the good one is still in the box. Losing a folder list to a
+	// validation error is how somebody decides the page is not worth using.
+	if !strings.Contains(body, h.dir) {
+		t.Error("the rest of the typed list was lost")
+	}
+
+	plan, err := h.plan.Get(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if plan.Confirmed() {
+		t.Error("a plan naming a folder that is not there was confirmed")
+	}
+
+	if h.started != 0 {
+		t.Error("a backup was started for a plan that was refused")
+	}
+}
+
+// TestTheResultingFolderListIsShown.
+//
+// The three radio buttons describe an intention; this is the consequence.
+// "Everything in my user folder" and "/home/jeff, minus /home/jeff/Downloads"
+// are the same sentence only to somebody who already knows.
+func TestTheResultingFolderListIsShown(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+
+	root := t.TempDir()
+	inside := filepath.Join(root, "Downloads")
+	elsewhere := "/somewhere/else/entirely"
+
+	plan := unconfirmed()
+	plan.Style = "custom"
+	plan.Targets = []string{root}
+	plan.Excludes = []string{inside, elsewhere, "*.iso"}
+
+	if err := h.plan.Put(ctx, plan, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+
+	body := h.get(t, "/setup").Body.String()
+
+	for _, want := range []string{"What this comes to", "Backing up", "Leaving out", root, inside, "*.iso"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("the resulting list does not show %q", want)
+		}
+	}
+
+	// An exclusion that cannot match anything in the selection is kept, and
+	// kept apart: listing it beside the ones that apply is three lines of
+	// irrelevance, and dropping it reads as having thrown it away. That the
+	// narrowing itself is right is asserted in surveybus, where the rule is.
+	if !strings.Contains(body, "Also kept") {
+		t.Error("an exclusion that cannot apply here was dropped from the page entirely")
+	}
+
+	if !strings.Contains(body, elsewhere) {
+		t.Errorf("the page does not mention %q at all, so it reads as having lost it", elsewhere)
+	}
+}
+
+// TestAnOfferedFolderThatIsMissingIsReportedRatherThanRefused.
+//
+// A machine with no ~/Videos is not somebody's mistake to fix. Refusing to
+// save over it would leave them with a page that cannot be used and no way to
+// tell why; saying so beside the folder is the whole of what needs doing.
+func TestAnOfferedFolderThatIsMissingIsReportedRatherThanRefused(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+
+	if err := h.plan.Put(ctx, unconfirmed(), time.Now()); err != nil {
+		t.Fatal(err)
+	}
+
+	// The harness offers one real folder; give the plan a style pointing at it
+	// plus one that is not there, as PersonalFolders does on a machine with no
+	// Videos directory.
+	missing := filepath.Join(h.dir, "Videos")
+
+	plan, err := h.plan.Get(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	plan.Style = "custom"
+	plan.Targets = []string{h.dir, missing}
+
+	if err := h.plan.Put(ctx, plan, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+
+	body := h.get(t, "/setup").Body.String()
+
+	if !strings.Contains(body, "is not on this computer") {
+		t.Error("a folder that is not there was shown without a word about it")
+	}
+
+	if rec := h.get(t, "/setup"); rec.Code != http.StatusOK {
+		t.Errorf("the page itself failed: %d", rec.Code)
 	}
 }

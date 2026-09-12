@@ -140,6 +140,11 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0
 
 ul.files { margin: 0.4rem 0 0; padding-left: 1.1rem; color: var(--muted); font-size: 0.9rem; }
 
+/* "What this comes to" on the setup page: the folders a choice resolves to,
+ * and the exclusions that apply to them. A heading rather than a label,
+ * because it is a summary of the three choices above it and not a fourth. */
+.choice h3 { margin: 0 0 0.2rem; font-size: 0.95rem; }
+
 footer {
   display: flex;
   gap: 1.25rem;
