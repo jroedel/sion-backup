@@ -649,7 +649,11 @@ func TestTheResultingFolderListIsShown(t *testing.T) {
 
 	root := t.TempDir()
 	inside := filepath.Join(root, "Downloads")
-	elsewhere := "/somewhere/else/entirely"
+	// A real absolute path outside the root, rather than a written-out posix
+	// one: "/somewhere/else" is not an absolute path on Windows at all, so the
+	// page quite correctly treated it as a pattern that could match anywhere
+	// and this test failed there and only there.
+	elsewhere := filepath.Join(t.TempDir(), "Downloads")
 
 	plan := unconfirmed()
 	plan.Style = "custom"

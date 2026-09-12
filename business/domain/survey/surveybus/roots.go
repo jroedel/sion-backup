@@ -123,7 +123,7 @@ func ExcludesFor(roots, excludes []string) []string {
 	out := make([]string, 0, len(excludes))
 
 	for _, pattern := range excludes {
-		if !strings.ContainsRune(pattern, filepath.Separator) || !filepath.IsAbs(pattern) {
+		if !hasSeparator(pattern) || !filepath.IsAbs(pattern) {
 			out = append(out, pattern)
 
 			continue
@@ -139,6 +139,20 @@ func ExcludesFor(roots, excludes []string) []string {
 	}
 
 	return out
+}
+
+// hasSeparator reports whether a pattern names a path rather than a bare name.
+//
+// Both separators, on every platform. Windows accepts a forward slash
+// everywhere it accepts a backslash, and somebody who writes
+// "C:/Users/jeff/Downloads" in the exclude box means the same folder as the one
+// who wrote it with backslashes — testing only filepath.Separator there read
+// that as a bare name and claimed it applied to every folder on the machine.
+// On Unix a backslash is a legal filename character rather than a separator,
+// and treating it as one costs nothing: such a pattern is not absolute either
+// way, so it lands in the same branch.
+func hasSeparator(pattern string) bool {
+	return strings.ContainsAny(pattern, `/\`)
 }
 
 // inside reports whether path is root or below it.
