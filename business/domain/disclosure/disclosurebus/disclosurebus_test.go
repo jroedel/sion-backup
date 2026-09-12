@@ -349,3 +349,83 @@ func TestTheGlanceSaysNothingBeforeTheFirstLook(t *testing.T) {
 		t.Errorf("got %+v, want nothing known yet", glance)
 	}
 }
+
+// TestAnUnrecognisedKindIsNotTreatedAsBucketBusiness.
+//
+// The forward-compatibility rule, and the reason AboutBucket checks three
+// named kinds rather than a prefix. A kind invented after this build falls
+// back to by_machine — which the server sets for exactly that purpose — and
+// lands somewhere defensible, instead of in a section whose heading would be
+// a guess about what it means.
+func TestAnUnrecognisedKindIsNotTreatedAsBucketBusiness(t *testing.T) {
+	log := chain(2)
+	log.Entries[0].Kind = "keys-something-invented-later"
+	log.Entries[0].ByMachine = false
+
+	report := read(t, log)
+
+	if report.KeyCount != 0 {
+		t.Error("a kind this build has never heard of was filed under the bucket")
+	}
+
+	if report.PeopleCount != 1 {
+		t.Errorf("got %d people entries, want the unknown kind to fall back to by_machine",
+			report.PeopleCount)
+	}
+}
+
+// TestTheThreeBucketKindsAreKnownAndSorted.
+func TestTheThreeBucketKindsAreKnownAndSorted(t *testing.T) {
+	for _, k := range []disclosurebus.Kind{
+		disclosurebus.KindKeysGranted,
+		disclosurebus.KindKeysRetired,
+		disclosurebus.KindKeysForeign,
+	} {
+		if !k.Known() {
+			t.Errorf("%s is not a kind this build knows", k)
+		}
+
+		if !k.AboutBucket() {
+			t.Errorf("%s is not sorted as bucket business", k)
+		}
+	}
+
+	for _, k := range []disclosurebus.Kind{
+		disclosurebus.KindMinted,
+		disclosurebus.KindAdopted,
+		disclosurebus.KindEnrolled,
+		disclosurebus.KindFetched,
+		disclosurebus.KindRevealed,
+		disclosurebus.KindExported,
+	} {
+		if k.AboutBucket() {
+			t.Errorf("%s, which is about the password, is sorted as bucket business", k)
+		}
+	}
+}
+
+// TestOnlyAFoundKeyIsSingledOut.
+//
+// Granting and retiring keys is Eumaeus doing its job. Finding one it did not
+// create is not, and only that one earns the interruption.
+func TestOnlyAFoundKeyIsSingledOut(t *testing.T) {
+	log := chain(3)
+	log.Entries[0].Kind = disclosurebus.KindKeysForeign
+	log.Entries[0].ByMachine = false
+	log.Entries[1].Kind = disclosurebus.KindKeysGranted
+	log.Entries[1].ByMachine = false
+
+	report := read(t, log)
+
+	if report.KeyCount != 2 {
+		t.Fatalf("got %d bucket entries, want 2", report.KeyCount)
+	}
+
+	if len(report.Foreign) != 1 {
+		t.Fatalf("got %d singled out, want only the found one", len(report.Foreign))
+	}
+
+	if report.Foreign[0].Kind != disclosurebus.KindKeysForeign {
+		t.Errorf("singled out %s", report.Foreign[0].Kind)
+	}
+}
