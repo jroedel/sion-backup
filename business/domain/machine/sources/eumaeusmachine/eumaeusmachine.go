@@ -37,6 +37,14 @@ type payload struct {
 		URL       string    `json:"url"`
 		CreatedAt time.Time `json:"created_at"`
 	} `json:"repository"`
+
+	// API is absent from a deployment older than the field, and a nil Serves
+	// is carried through as nil rather than flattened to an empty slice:
+	// machinebus.State draws the whole distinction between "said nothing" and
+	// "said nothing is served" from that.
+	API struct {
+		Serves []string `json:"serves"`
+	} `json:"api"`
 }
 
 // Source reads machine state from Eumaeus.
@@ -56,10 +64,12 @@ func (s *Source) State(ctx context.Context) (machinebus.State, error) {
 	err := s.client.Do(ctx, http.MethodGet, path, nil, &got)
 
 	switch {
-	case errors.Is(err, eumaeusapi.ErrUnauthorised), errors.Is(err, eumaeusapi.ErrForbidden):
-		// The reading eumaeuscreds gives the same pair on the credentials
-		// endpoint: a machine that may not read its own record is a machine
-		// that is no longer in the fleet, whichever status the server chose.
+	case errors.Is(err, eumaeusapi.ErrUnauthorised):
+		// 401 and only 401. The whole API uses 403 in exactly one place — the
+		// rotation request, refusing because fresh buckets are switched off —
+		// and never here, so a branch for it would be a branch that cannot
+		// run, hedging against a guarantee the server holds with a test
+		// (jroedel/eumaeus#144).
 		return machinebus.State{}, fmt.Errorf(
 			"eumaeusmachine: %w: %w", machinebus.ErrNotEnrolled, err)
 
@@ -84,6 +94,7 @@ func (s *Source) State(ctx context.Context) (machinebus.State, error) {
 		NodeID:              got.NodeID,
 		RepositoryURL:       got.Repository.URL,
 		RepositoryCreatedAt: got.Repository.CreatedAt,
+		Routes:              got.API.Serves,
 	}, nil
 }
 

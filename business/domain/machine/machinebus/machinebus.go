@@ -61,6 +61,57 @@ type State struct {
 	// bucket is years before Eumaeus ever heard of it. Zero when the server
 	// said nothing.
 	RepositoryCreatedAt time.Time
+
+	// Serves is every route this deployment answers, as "METHOD /path".
+	//
+	// Nil from a server old enough not to send it, and that is not the same
+	// as an empty list: absence means "assume nothing", never "serves
+	// nothing". [State.KnowsWhatItServes] is the question to ask first.
+	//
+	// # Why this is asked rather than inferred
+	//
+	// Because inferring it from a 404 cannot work, and this client proved it
+	// the expensive way. A 404 from this API means either "no such path here"
+	// or something documented about this machine — /machines/me answers one
+	// when the repository has been removed from underneath it — and the two
+	// are identical on the wire, body included: Eumaeus's catch-all has
+	// returned an Error body for unserved paths since before the endpoints
+	// worth probing for existed. A client guessing from the status will one
+	// day report a broken machine as an old server, which this one did, or
+	// skip a feature that was there all along. See jroedel/eumaeus#144.
+	//
+	// Named Routes rather than Serves so that [State.Serves] can be the
+	// question a caller actually asks.
+	Routes []string
+}
+
+// KnowsWhatItServes reports whether the server said what it implements.
+//
+// False means a deployment older than the field, and the honest reading is
+// "assume nothing" — fall back to whatever the client did before it could ask,
+// rather than treating silence as a list with nothing in it.
+func (s State) KnowsWhatItServes() bool { return s.Routes != nil }
+
+// Serves reports whether this deployment answers one route.
+//
+// The method is part of the question and is load-bearing: the server matches
+// method and path together, so a GET to a POST-only path falls through to the
+// catch-all as a 404 rather than a 405, and a client matching on the path
+// alone would believe it could call it.
+//
+// A server that did not say returns false for everything, which is why callers
+// must ask [State.KnowsWhatItServes] first rather than reading a false here as
+// "not served".
+func (s State) Serves(method, path string) bool {
+	want := method + " " + path
+
+	for _, route := range s.Routes {
+		if route == want {
+			return true
+		}
+	}
+
+	return false
 }
 
 // Usable reports whether the server said enough to act on.

@@ -29,27 +29,53 @@ func client(t *testing.T, h http.HandlerFunc) *eumaeusapi.Client {
 	return c
 }
 
-// TestATokenRefusedOnThisEndpointIsDeEnrolment, whichever of the two statuses
-// says so.
+// TestATokenRefusedOnThisEndpointIsDeEnrolment.
 //
-// eumaeusapi now keeps 401 and 403 apart, because everywhere else they mean
-// opposite things. Here they do not: a machine that may not read its own
-// credentials cannot back up, and telling its owner the server is having
-// trouble would be a lie that repeated hourly. So this is the one place that
-// deliberately puts them back together, and it is worth a test saying so —
-// the next person to see the pair here will think it is the old bug.
+// 401 and only 401. This used to accept a 403 here too, on the argument that a
+// machine which may not read its own credentials cannot back up whichever
+// status says so — sound, and describing something that never happens.
+// Eumaeus answers 403 in exactly one place in the whole API, the rotation
+// request refusing because fresh buckets are switched off, and never on this
+// endpoint; they hold that with a test of their own (jroedel/eumaeus#144).
+//
+// The pair is worth remembering rather than just deleting, because it was
+// copied into two later sources before anybody asked whether the status it
+// guarded against ever arrives. A branch that cannot run is a branch nobody
+// can check.
 func TestATokenRefusedOnThisEndpointIsDeEnrolment(t *testing.T) {
-	for _, status := range []int{http.StatusUnauthorized, http.StatusForbidden} {
-		source := eumaeuscreds.NewSource(client(t, func(w http.ResponseWriter, r *http.Request) {
-			w.WriteHeader(status)
-		}))
+	source := eumaeuscreds.NewSource(client(t, func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+	}))
 
-		_, err := source.Fetch(context.Background())
+	_, err := source.Fetch(context.Background())
 
-		var revoked *credentialbus.Unauthorised
-		if !errors.As(err, &revoked) {
-			t.Errorf("%d: got %v, want credentialbus.Unauthorised", status, err)
-		}
+	var revoked *credentialbus.Unauthorised
+	if !errors.As(err, &revoked) {
+		t.Errorf("got %v, want credentialbus.Unauthorised", err)
+	}
+}
+
+// TestA403IsNotReadAsDeEnrolment.
+//
+// It does not arrive on this endpoint, and if it ever did it would mean
+// something else entirely. Reporting a machine as cut off because the fleet
+// has fresh buckets switched off is the bug this pair was untangled to
+// prevent, and the untangling is only finished if the reading cannot come
+// back here by habit.
+func TestA403IsNotReadAsDeEnrolment(t *testing.T) {
+	source := eumaeuscreds.NewSource(client(t, func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusForbidden)
+	}))
+
+	_, err := source.Fetch(context.Background())
+
+	var revoked *credentialbus.Unauthorised
+	if errors.As(err, &revoked) {
+		t.Error("a 403 is reported as de-enrolment")
+	}
+
+	if err == nil {
+		t.Error("a 403 was not reported at all")
 	}
 }
 

@@ -69,16 +69,36 @@ func TestTheTwoFactsAMachineCannotLearnAnywhereElse(t *testing.T) {
 	}
 }
 
-// TestARefusedTokenIsDeEnrolment, on either status.
+// TestARefusedTokenIsDeEnrolment, on 401 and on nothing else.
 func TestARefusedTokenIsDeEnrolment(t *testing.T) {
-	for _, status := range []int{http.StatusUnauthorized, http.StatusForbidden} {
-		s := source(t, func(w http.ResponseWriter, r *http.Request) {
-			w.WriteHeader(status)
-		})
+	s := source(t, func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+	})
 
-		if _, err := s.State(context.Background()); !errors.Is(err, machinebus.ErrNotEnrolled) {
-			t.Errorf("%d: got %v, want ErrNotEnrolled", status, err)
-		}
+	if _, err := s.State(context.Background()); !errors.Is(err, machinebus.ErrNotEnrolled) {
+		t.Errorf("got %v, want ErrNotEnrolled", err)
+	}
+}
+
+// TestA403IsNotDeEnrolmentHereEither.
+//
+// This source copied the 401-or-403 pair out of eumaeuscreds, where it was a
+// deliberate exception. It was not an exception worth copying — the status
+// does not arrive on this endpoint — and copying it is how a reading spreads
+// past the one place somebody thought about it.
+func TestA403IsNotDeEnrolmentHereEither(t *testing.T) {
+	s := source(t, func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusForbidden)
+	})
+
+	_, err := s.State(context.Background())
+
+	if errors.Is(err, machinebus.ErrNotEnrolled) {
+		t.Error("a 403 is reported as de-enrolment")
+	}
+
+	if err == nil {
+		t.Error("a 403 was not reported at all")
 	}
 }
 
@@ -136,5 +156,92 @@ func TestAMachineWithNoTokenHasNobodyToAsk(t *testing.T) {
 
 	if _, err := b.State(context.Background()); !errors.Is(err, machinebus.ErrNotEnrolled) {
 		t.Errorf("got %v, want ErrNotEnrolled", err)
+	}
+}
+
+// TestTheServerSaysWhatItServes.
+//
+// Asked rather than inferred, which is the whole point: a 404 from this API is
+// either "no such path here" or something documented about this machine, and
+// the two are identical on the wire down to the error body. See
+// jroedel/eumaeus#144, and the bug in this package that prompted it.
+func TestTheServerSaysWhatItServes(t *testing.T) {
+	s := source(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(`{
+		  "node_id": "macbook-air",
+		  "repository": {"url": "s3:https://s3.example/b"},
+		  "api": {"serves": [
+		    "GET /machines/me",
+		    "GET /machines/me/disclosures",
+		    "POST /runs"
+		  ]}
+		}`))
+	})
+
+	state, err := s.State(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if !state.KnowsWhatItServes() {
+		t.Fatal("a server that listed its routes is reported as having said nothing")
+	}
+
+	if !state.Serves("GET", "/machines/me/disclosures") {
+		t.Error("a route the server listed is reported as not served")
+	}
+
+	if state.Serves("GET", "/machines/me/card-issued") {
+		t.Error("a route the server did not list is reported as served")
+	}
+}
+
+// TestTheMethodIsPartOfTheQuestion.
+//
+// The server matches method and path together, so a GET to a POST-only path
+// falls through to the catch-all as a 404 rather than a 405. A client matching
+// on the path alone would believe it could call it.
+func TestTheMethodIsPartOfTheQuestion(t *testing.T) {
+	s := source(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(`{"node_id": "n", "repository": {"url": "u"},
+		  "api": {"serves": ["POST /runs"]}}`))
+	})
+
+	state, err := s.State(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if !state.Serves("POST", "/runs") {
+		t.Error("POST /runs is not recognised")
+	}
+
+	if state.Serves("GET", "/runs") {
+		t.Error("a GET to a POST-only path is reported as served")
+	}
+}
+
+// TestSayingNothingIsNotSayingNothingIsServed.
+//
+// A deployment older than the field omits it, and the honest reading is
+// "assume nothing" — fall back to whatever the client did before it could ask.
+// Flattening that to an empty list would turn every older server into one that
+// implements no endpoints at all, which is the opposite of the truth.
+func TestSayingNothingIsNotSayingNothingIsServed(t *testing.T) {
+	s := source(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(`{"node_id": "n", "repository": {"url": "u"}}`))
+	})
+
+	state, err := s.State(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if state.KnowsWhatItServes() {
+		t.Error("a server that said nothing is reported as having answered")
+	}
+
+	if state.Serves("GET", "/machines/me") {
+		t.Error("a server that said nothing is reported as serving something")
 	}
 }

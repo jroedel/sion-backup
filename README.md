@@ -684,14 +684,34 @@ again repairs that with nobody standing at the machine. The recovered plan has
 no targets and is unconfirmed, so nothing can run from it; it only stops the
 machine being wrong about itself.
 
-The three refusals that endpoint can give are kept apart, because they need
-different people to do different things. `401` is de-enrolment — the token is
-finished, and no amount of retrying changes that
-([eumaeus#116](https://github.com/jroedel/eumaeus/issues/116) is why `403` is
-not read that way here). `404` is documented as *the token is good and the
-machine has no repository*, which is a repository removed from underneath a
-machine and is fixed on the server. Anything else is the network, and is tried
-again at the next start.
+The refusals that endpoint can give are kept apart, because they need different
+people to do different things. `401` is de-enrolment — the token is finished,
+and no amount of retrying changes that. `404` is documented as *the token is
+good and the machine has no repository*, which is fixed on the server. Anything
+else is the network, and is tried again at the next start.
+
+`403` is none of them, and the client no longer has a branch for it here or on
+the credentials endpoint. It used to: a machine that may not read its own
+credentials cannot back up whichever status says so, which was sound reasoning
+about a status that never arrives. Eumaeus answers `403` in exactly one place
+in the whole API — a rotation request refusing because fresh buckets are
+switched off — and holds that with a test
+([eumaeus#144](https://github.com/jroedel/eumaeus/issues/144)). The reading had
+been copied into two more sources before anybody asked whether the status it
+guarded against ever shows up, which is the argument for deleting a branch that
+cannot run rather than keeping it for safety.
+
+**And the client asks what a deployment serves rather than inferring it.**
+`GET /machines/me` carries an `api.serves` block listing every route, generated
+from the server's own route table. This exists because inferring it does not
+work and this client proved it: a `404` here means either "no such path" or
+something specific about the machine, and they are identical on the wire down
+to the error body — Eumaeus's catch-all has returned one since before the
+endpoints worth probing for existed. Guessing from the status will one day
+report a broken machine as an old server, which this client did, or skip a
+feature that was there all along. A deployment older than the block omits it,
+and absence means *assume nothing*, never *serves nothing*. `sion-backup
+doctor` prints what the server answered.
 
 Writing the client's half first was deliberate. It pinned the contract down
 while it was still prose, and `sion-backup doctor` reports a 404 from a server
