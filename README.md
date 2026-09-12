@@ -594,6 +594,8 @@ business/            the rules. Knows nothing about HTTP.
   domain/plan/         what to back up and when; the scheduler
   domain/credential/   the three secrets: fetched, used, wiped
   domain/fleet/        reporting, including "eventually, from a plane"
+  domain/machine/      what the server says this machine is: its node ID and
+                       its repository, which it cannot learn anywhere else
   domain/survey/       what this machine could back up, how big it is, and
                        how fast it can upload — the setup page's numbers
 
@@ -651,7 +653,7 @@ The contract is these documents, in the order to read them:
 | [eumaeus issues](https://github.com/jroedel/eumaeus/issues) | what this client still needs from the server. One issue per ask, on their tracker — not a document passed back and forth, which is how the last round went unanswered for a week |
 
 Seven endpoints. The installation at `https://terraboskamp.org` answers all of
-them; the client speaks the first, third, fourth and seventh:
+them; the client speaks the first, second, third, fourth and seventh:
 
 ```
 POST /api/backup/v1/enrollments/claim           code → machine token + credentials
@@ -671,6 +673,16 @@ One rule shapes all seven: **the server owns the facts, the machine reports what
 it did.** Eumaeus provisions the bucket, generates the repository password,
 mints both S3 keys and decides when a machine is overdue. The machine caches
 none of it: every run fetches its credentials and discards them.
+
+That rule is also why `GET /machines/me` is now called at start-up by a machine
+that has a token and no plan. Its node ID and its repository are facts it was
+told once, at enrolment, and could not learn anywhere else — so losing them
+used to be permanent. A build before v0.6.0 could store the token and drop the
+plan, and what the owner saw was the set-up page insisting the computer had
+never been enrolled while `enroll` refused to run again because it had. Asking
+again repairs that with nobody standing at the machine. The recovered plan has
+no targets and is unconfirmed, so nothing can run from it; it only stops the
+machine being wrong about itself.
 
 Writing the client's half first was deliberate. It pinned the contract down
 while it was still prose, and `sion-backup doctor` reports a 404 from a server

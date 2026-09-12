@@ -31,6 +31,8 @@ import (
 	"github.com/jroedel/sion-backup/business/domain/diag/diagbus"
 	"github.com/jroedel/sion-backup/business/domain/fleet/fleetbus"
 	"github.com/jroedel/sion-backup/business/domain/fleet/sources/eumaeusfleet"
+	"github.com/jroedel/sion-backup/business/domain/machine/machinebus"
+	"github.com/jroedel/sion-backup/business/domain/machine/sources/eumaeusmachine"
 	"github.com/jroedel/sion-backup/business/domain/plan/planbus"
 	"github.com/jroedel/sion-backup/business/domain/plan/stores/plandb"
 	"github.com/jroedel/sion-backup/foundation/eumaeusapi"
@@ -178,6 +180,7 @@ type deps struct {
 	plan    *planbus.Business
 	backups *backupbus.Runner
 	creds   *credentialbus.Business
+	machine *machinebus.Business
 	fleet   *fleetbus.Business
 	diag    *diagbus.Business
 	restic  *restic.Runner
@@ -348,6 +351,7 @@ func (d *deps) wireEumaeus() error {
 	if d.machineToken == "" {
 		d.fleet = fleetbus.NewBusiness(fleetbus.Nop{}, d.log)
 		d.creds = credentialbus.NewBusiness(nil)
+		d.machine = machinebus.NewBusiness(nil)
 
 		return nil
 	}
@@ -363,6 +367,7 @@ func (d *deps) wireEumaeus() error {
 
 	d.fleet = fleetbus.NewBusiness(eumaeusfleet.NewReporter(client), d.log)
 	d.creds = credentialbus.NewBusiness(eumaeuscreds.NewSource(client))
+	d.machine = machinebus.NewBusiness(eumaeusmachine.NewSource(client))
 
 	return nil
 }
