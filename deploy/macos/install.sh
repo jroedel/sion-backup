@@ -34,8 +34,12 @@ RECON_ONLY=0
 NO_SERVICE=0
 
 LABEL="us.schoenstatt.sion-backup"
-PLIST_SRC="./deploy/launchd/${LABEL}.plist"
+PLIST_SRC=""
 AGENT_DIR="${HOME}/Library/LaunchAgents"
+
+# HERE is this script's own directory, so it can find the files that ship
+# beside it however it was invoked.
+HERE="$(cd "$(dirname "$0")" && pwd)"
 
 INSTALL_ID="$(uuidgen 2>/dev/null || date +%s-$$)"
 STEP="starting"
@@ -53,6 +57,26 @@ while [ $# -gt 0 ]; do
 done
 
 INSTALLED="${PREFIX}/sion-backup"
+
+# first_of prints the first of its arguments that exists, and nothing if none
+# do.
+#
+# This exists because there are two entirely reasonable ways to be holding
+# these files and the script used to work for only one of them. A release
+# unpacks flat -- the binaries, the service file and this script all in one
+# directory -- while a clone keeps them in deploy/. The old code looked only
+# in ./deploy, so an install driven from a downloaded release found no plist,
+# skipped the agent, and left somebody with a status page that refused the
+# connection and a launchctl command for a service nobody had registered.
+first_of() {
+  for candidate in "$@"; do
+    if [ -f "$candidate" ]; then
+      printf '%s' "$candidate"
+
+      return 0
+    fi
+  done
+}
 
 say()  { printf '\n\033[1m%s\033[0m\n' "$*"; }
 note() { printf '  %s\n' "$*"; }
@@ -123,14 +147,22 @@ STEP="install-binary"
 # about a bad CPU type that tells nobody what to do about it.
 if [ -z "$BINARY" ]; then
   case "$(uname -m)" in
-    arm64)  BINARY="./sion-backup-darwin-arm64" ;;
-    x86_64) BINARY="./sion-backup-darwin-amd64" ;;
+    arm64)  arch=arm64 ;;
+    x86_64) arch=amd64 ;;
     *)      echo "install.sh: unknown architecture $(uname -m)" >&2; exit 1 ;;
   esac
+
+  # A release unpacked flat, a repository after `make release-all`, or this
+  # script run by its path from somewhere else entirely.
+  BINARY="$(first_of \
+    "./sion-backup-darwin-${arch}" \
+    "./dist/sion-backup-darwin-${arch}" \
+    "${HERE}/../../dist/sion-backup-darwin-${arch}")"
 fi
 
-if [ ! -f "$BINARY" ]; then
-  echo "install.sh: cannot find $BINARY — pass --binary /path/to/it" >&2
+if [ -z "$BINARY" ] || [ ! -f "$BINARY" ]; then
+  echo "install.sh: cannot find the macOS binary here — pass --binary /path/to/it" >&2
+  echo "            (looked beside this script, in ./ and in ./dist/)" >&2
   exit 1
 fi
 
@@ -183,8 +215,17 @@ say "restic"
 if [ "$NO_SERVICE" -eq 0 ]; then
   STEP="install-service"
 
-  if [ ! -f "$PLIST_SRC" ]; then
-    warn "$PLIST_SRC is not here; skipping the service"
+  if [ -z "$PLIST_SRC" ]; then
+    PLIST_SRC="$(first_of \
+      "./${LABEL}.plist" \
+      "./deploy/launchd/${LABEL}.plist" \
+      "${HERE}/../launchd/${LABEL}.plist")"
+  fi
+
+  if [ -z "$PLIST_SRC" ] || [ ! -f "$PLIST_SRC" ]; then
+    warn "cannot find ${LABEL}.plist (looked beside this script, in ./ and in"
+    warn "./deploy/launchd/); skipping the service. The binary is installed, and"
+    warn "nothing will start at login until this is registered."
   else
     say "Installing the launch agent"
 

@@ -161,11 +161,19 @@ sha256sum --ignore-missing -c SHA256SUMS
 
 ### Installing on a Mac
 
-Run the installer as the person whose files are backed up, never with `sudo`:
+Download the release into one directory and run the installer there, as the
+person whose files are backed up, never with `sudo`:
 
 ```sh
-./deploy/macos/install.sh
+sha256sum --ignore-missing -c SHA256SUMS   # shasum -a 256 -c on a Mac
+chmod +x install-macos.sh
+./install-macos.sh
 ```
+
+From a clone it is `./deploy/macos/install.sh`, and the binary comes from
+`dist/` after `make release-all`. Both layouts work: the installer looks for
+the binary and the launch agent beside itself, in the current directory, and
+in `deploy/`.
 
 It picks the right binary for the processor, clears the download quarantine,
 installs into `~/.local/bin`, registers the launch agent, and stops before
@@ -313,12 +321,18 @@ Nothing is backed up until that page is answered — see
 below. `--no-start` and `--no-open` turn off the last two steps, for an install
 being driven from a script or over SSH.
 
-macOS and Windows have their own installers in `deploy/`. The Windows one is a
-PowerShell script; run it elevated, with `-Elevated`, so Volume Shadow Copy is
-available and open files get backed up. The macOS one is
-`deploy/macos/install.sh` and must NOT be run with sudo — see
+macOS and Windows have their own installers. The Windows one is a PowerShell
+script; run it elevated, with `-Elevated`, so Volume Shadow Copy is available
+and open files get backed up. The macOS one must NOT be run with sudo — see
 [Installing on a Mac](#installing-on-a-mac) above, including the Full Disk
 Access step that no installer can take for you.
+
+All three ship **in the release** as `install-linux.sh`, `install-macos.sh` and
+`install-windows.ps1`, alongside the service files they register and covered by
+`SHA256SUMS` like every other asset. They are also in `deploy/` in this
+repository, which is where they are edited; a release is a flat copy. They did
+not ship at all until v0.6.3, which made the instruction above — run the
+installer from the unpacked release — describe a file that was not there.
 
 ---
 

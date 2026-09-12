@@ -52,12 +52,32 @@ jobs:
       - name: Build every binary
         run: make release-all
 
-      - name: Checksums
-        run: make checksums
+      # Before the checksums, so the installers are covered by them: they are
+      # about to be run on somebody's laptop and they place a binary that holds
+      # the credentials to an off-site copy.
+      #
+      # Flat, beside the binaries, rather than keeping deploy/'s shape. A
+      # release is unpacked into one directory and that is where somebody runs
+      # things from; the installers look in both places for exactly this
+      # reason. Before this, the installers shipped nowhere at all and the
+      # README told people to run one from the unpacked release, where it did
+      # not exist -- and where, downloaded on its own, it would have found no
+      # service file and silently skipped registering the service.
+      - name: Include the installers and the service files
+        run: |
+          cp deploy/macos/install.sh          dist/install-macos.sh
+          cp deploy/linux/install.sh          dist/install-linux.sh
+          cp deploy/windows/install.ps1       dist/install-windows.ps1
+          cp deploy/launchd/*.plist           dist/
+          cp deploy/systemd/sion-backup.service dist/
+          chmod +x dist/install-macos.sh dist/install-linux.sh
 
       # Shipped so an installer can verify restic without cloning the repo.
       - name: Include the restic pin
         run: cp deploy/restic.pin dist/
+
+      - name: Checksums
+        run: make checksums
 
       - name: Write the release notes
         run: |

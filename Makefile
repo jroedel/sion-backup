@@ -125,7 +125,11 @@ checksums: ## Write SHA-256 sums for the release binaries
 	@# The installer verifies these before running anything. A binary fetched
 	@# over a network is a binary that will hold every credential on the
 	@# machine within a minute of starting.
-	cd $(DIST) && sha256sum $(BINARY)-* > SHA256SUMS
+	@# Everything in dist/ except the sums file itself, rather than just the
+	@# binaries. The installers and service files ship in a release too, and a
+	@# script that is about to place a credential-holding binary on somebody's
+	@# laptop deserves to be verifiable by the same command as the binary.
+	cd $(DIST) && ls -1 | grep -v '^SHA256SUMS$$' | xargs sha256sum > SHA256SUMS
 	@cat $(DIST)/SHA256SUMS
 
 ##@ Releasing
