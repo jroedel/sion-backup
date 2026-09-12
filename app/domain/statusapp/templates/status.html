@@ -69,7 +69,7 @@
   <dt>Repository</dt>
   <dd><code>{{.Repository}}</code></dd>
 
-  {{if nonzero .Measurement.Since}}
+  {{if and (nonzero .Measurement.Since) .Measurement.Snapshots}}
   <dt>History</dt>
   <dd>Backups available from {{day .Measurement.Since}} onwards ({{duration .Rotation.Discards}})</dd>
   {{end}}
