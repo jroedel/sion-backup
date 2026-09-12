@@ -218,3 +218,8 @@ input[type=time] {
 /* Radio and checkbox labels are inline questions, not field headings, so they
  * do not take the block layout the rule above gives every other label. */
 label > input[type=radio], label > input[type=checkbox] { margin-right: 0.35rem; }
+
+/* The sentence under an h1 that has to be read before the tables below it:
+   the Access page opens by saying what the password actually is, because
+   nothing under it means anything to somebody who does not know that. */
+.lede { color: var(--muted); max-width: 42rem; margin: 0 0 1.5rem; }

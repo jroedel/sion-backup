@@ -450,6 +450,50 @@ protect nothing and would guarantee a sticky note on the monitor.
 
 The daemon refuses to bind anything but loopback, with no override flag.
 
+### The owner can see who has opened their password, and what that does not prove
+
+The people whose machines these are have no account on Eumaeus. They are rows
+in a fleet store, not users, and the administration pages sit behind a key only
+administrators hold. So the only surface an owner actually has is the page
+their own computer serves them — which means that if they are ever to see who
+has held the one secret that opens their data, it has to be here.
+
+The **Access** page is that. It lists every occasion the repository password
+left the server or arrived at it: minted, adopted, handed to this machine at
+enrolment, fetched at the start of a backup, read by a person, exported by a
+person. The entries where a human being saw it are shown first and separately,
+because the four hundred rows saying "this computer collected the password at
+01:14" are the backup working, and the two that name a person are what the
+record is printed for.
+
+Two things about it are worth arguing with.
+
+**The machine keeps its own copies of the seal.** Every entry is hashed
+together with the one before it, so editing or removing any entry changes every
+hash after it. Each time the page is opened, this machine writes the newest
+hash into its own SQLite database and compares what it is shown against every
+hash it has written down before. Without that, the page would be checking the
+server's bookkeeping against the server's bookkeeping — and the sentence at the
+top would be worth nothing. With it, the page can say *"this record has not
+been altered since 14 March"* and mean it, because 14 March is a date on the
+owner's disk that the server cannot reach.
+
+What the machine deliberately does **not** do is recompute each entry's hash
+from its fields. That would mean a second implementation of an encoding that
+lives in the server, and the day the two drift apart this program reports
+tampering that did not happen — a false alarm in the one place where a false
+alarm cannot be told apart from the real thing.
+
+**The page says what it cannot prove**, in those words, at the bottom. Anyone
+who can read the server's vault file directly reads the password without
+passing through any of this and leaves no entry behind. The record proves that
+entries have not been changed since this machine last looked. It is not a
+promise that nobody has ever seen the password, and a transparency claim that
+overstates itself spends the trust it was meant to earn.
+
+The endpoint is `GET /api/backup/v1/machines/me/disclosures`, served to the
+machine because it is meant for the machine's owner.
+
 ### Nothing backs up until somebody says yes
 
 Enrolment used to end with a machine that had credentials, a plan somebody else
@@ -585,7 +629,7 @@ cmd/sion-backup/     the composition root: wiring, subcommands, and the only
                      place that loads a credential
 
 app/                 delivery. Knows about HTTP; knows nothing about restic.
-  domain/statusapp/    the localhost pages: status, set-up, settings
+  domain/statusapp/    the localhost pages: status, set-up, settings, access
   sdk/loopback/        CSRF and DNS-rebinding defence
   sdk/page/            shared chrome and the one stylesheet
 
@@ -596,6 +640,9 @@ business/            the rules. Knows nothing about HTTP.
   domain/fleet/        reporting, including "eventually, from a plane"
   domain/machine/      what the server says this machine is: its node ID and
                        its repository, which it cannot learn anywhere else
+  domain/disclosure/   every time the repository password left the server, and
+                       this machine's own check that the record still says what
+                       it said last week
   domain/survey/       what this machine could back up, how big it is, and
                        how fast it can upload — the setup page's numbers
 
@@ -652,8 +699,8 @@ The contract is these documents, in the order to read them:
 | [`eumaeus/docs/openapi.yaml`](https://github.com/jroedel/eumaeus/blob/main/docs/openapi.yaml) | the same endpoints, machine-readable. **It lives there now** ([eumaeus#121](https://github.com/jroedel/eumaeus/issues/121)): a spec the client maintains has no way to notice the server changing, and ours was four features behind for exactly that reason. A test beside their routing table now fails when a served path is missing from the document, or the reverse |
 | [eumaeus issues](https://github.com/jroedel/eumaeus/issues) | what this client still needs from the server. One issue per ask, on their tracker — not a document passed back and forth, which is how the last round went unanswered for a week |
 
-Seven endpoints. The installation at `https://terraboskamp.org` answers all of
-them; the client speaks the first, second, third, fourth and seventh:
+Eight endpoints. The installation at `https://terraboskamp.org` answers all of
+them; the client speaks the first, second, third, fourth, seventh and eighth:
 
 ```
 POST /api/backup/v1/enrollments/claim           code → machine token + credentials
@@ -663,7 +710,13 @@ POST /api/backup/v1/runs                        a run event
 POST /api/backup/v1/machines/me/rotation-request  the owner asks for a fresh bucket
 POST /api/backup/v1/machines/me/card-issued     the owner's card was printed
 POST /api/backup/v1/diagnostics                 an install that failed, token or not
+GET  /api/backup/v1/machines/me/disclosures     who has opened this machine's password
 ```
+
+The eighth is the only one served to the machine for somebody other than the
+machine: it fills the Access page, and a 404 from it is read as a server that
+has not deployed it yet rather than as a fault, because a fleet mid-upgrade is
+a fleet where that is the normal answer for a while.
 
 §11 of the API spec lists what is done on this side and what is not —
 including four things the server now does that the specification has not caught
