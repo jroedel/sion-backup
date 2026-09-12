@@ -41,6 +41,7 @@ import (
 	"github.com/jroedel/sion-backup/app/sdk/page"
 	"github.com/jroedel/sion-backup/business/domain/backup/backupbus"
 	"github.com/jroedel/sion-backup/business/domain/credential/credentialbus"
+	"github.com/jroedel/sion-backup/business/domain/disclosure/disclosurebus"
 	"github.com/jroedel/sion-backup/business/domain/plan/planbus"
 	"github.com/jroedel/sion-backup/business/domain/survey/surveybus"
 	"github.com/jroedel/sion-backup/foundation/paths"
@@ -60,6 +61,16 @@ type Config struct {
 	// Credentials is consulted only for the sentence it can print about how
 	// credentials are handled. This app never obtains one.
 	Credentials *credentialbus.Business
+
+	// Disclosures is the record of every time this machine's repository
+	// password left the server, and this machine's own check that the record
+	// has not been rewritten since it last looked.
+	//
+	// Nil on a machine that is not enrolled, and on one talking to a Eumaeus
+	// that does not serve the record yet. The page says which; it does not
+	// disappear, because a link that is sometimes there and sometimes not is
+	// a link nobody learns to look for.
+	Disclosures *disclosurebus.Business
 
 	// Survey is what this machine could back up, how big it is, and how fast
 	// it can upload. The setup page is built out of it.
@@ -149,6 +160,7 @@ func New(cfg Config) (*Server, error) {
 	mux.Handle("GET "+page.StylePath, page.Style())
 	mux.HandleFunc("GET /healthz", s.health)
 	mux.HandleFunc("GET /{$}", s.status)
+	mux.HandleFunc("GET /access", s.access)
 	mux.HandleFunc("GET /settings", s.settings)
 	mux.HandleFunc("POST /settings", s.saveSettings)
 	mux.HandleFunc("GET /setup", s.setup)
@@ -211,8 +223,13 @@ type statusView struct {
 	Recent      []backupbus.Run
 	Credentials string
 	Enrolled    bool
-	Repository  string
-	Targets     []string
+
+	// Glance is the one line under the credentials fact, read from what this
+	// machine has written down rather than from the server. See the Access
+	// page for the record itself.
+	Glance     disclosurebus.Glance
+	Repository string
+	Targets    []string
 
 	// Rotation is the "a fresh start would reclaim this much" suggestion, and
 	// the measurement behind it. Rotation.Show decides whether it appears.
@@ -235,6 +252,17 @@ func (s *Server) status(w http.ResponseWriter, r *http.Request) {
 		chrome:      s.chromeFor("Status", "/"),
 		Credentials: s.cfg.Credentials.Describe(),
 		Enrolled:    s.cfg.Credentials.Enrolled(),
+	}
+
+	if s.cfg.Disclosures != nil {
+		// Best effort, and deliberately not fatal: a fault in reading a
+		// footnote must not take down the page that says whether this
+		// computer is backing up.
+		if glance, err := s.cfg.Disclosures.Glance(ctx); err == nil {
+			view.Glance = glance
+		} else {
+			s.cfg.Log.Warn("could not read the kept disclosure heads", "err", err)
+		}
 	}
 
 	plan, err := s.cfg.Plan.Get(ctx)
@@ -515,6 +543,7 @@ func (s *Server) chromeFor(title, current string) chrome {
 		{Href: "/", Label: "Status"},
 		{Href: "/setup", Label: "Set up"},
 		{Href: "/settings", Label: "Settings"},
+		{Href: "/access", Label: "Access"},
 	}
 
 	for i := range links {
