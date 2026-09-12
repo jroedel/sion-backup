@@ -24,8 +24,12 @@
 
 set -euo pipefail
 
-BINARY="./sion-backup-linux-amd64"
+BINARY=""
 PREFIX="${HOME}/.local/bin"
+
+# HERE is this script's own directory, so it can find the files that ship
+# beside it however it was invoked.
+HERE="$(cd "$(dirname "$0")" && pwd)"
 ASSUME_YES=0
 RECON_ONLY=0
 DISABLE_LEGACY=0
@@ -56,6 +60,24 @@ while [ $# -gt 0 ]; do
 done
 
 INSTALLED="${PREFIX}/sion-backup"
+
+# first_of prints the first of its arguments that exists, and nothing if none
+# do.
+#
+# Two reasonable ways to be holding these files, and this script used to work
+# for only one. A release unpacks flat -- binaries, unit file and this script
+# in one directory -- while a clone keeps them under deploy/. Looking only in
+# ./deploy meant an install driven from a downloaded release silently skipped
+# the service.
+first_of() {
+  for candidate in "$@"; do
+    if [ -f "$candidate" ]; then
+      printf '%s' "$candidate"
+
+      return 0
+    fi
+  done
+}
 
 say()  { printf '\n\033[1m%s\033[0m\n' "$*"; }
 note() { printf '  %s\n' "$*"; }
@@ -127,8 +149,25 @@ trap report_failure EXIT
 
 STEP="install-binary"
 
-if [ ! -f "$BINARY" ]; then
-  echo "install.sh: cannot find $BINARY — pass --binary /path/to/it" >&2
+if [ -z "$BINARY" ]; then
+  case "$(uname -m)" in
+    x86_64)          arch=amd64 ;;
+    aarch64|arm64)   arch=arm64 ;;
+    *)               echo "install.sh: unknown architecture $(uname -m)" >&2; exit 1 ;;
+  esac
+
+  # Picked from the machine rather than hardcoded to amd64, which quietly
+  # refused to install on an arm64 box that had the right binary sitting
+  # beside it.
+  BINARY="$(first_of \
+    "./sion-backup-linux-${arch}" \
+    "./dist/sion-backup-linux-${arch}" \
+    "${HERE}/../../dist/sion-backup-linux-${arch}")"
+fi
+
+if [ -z "$BINARY" ] || [ ! -f "$BINARY" ]; then
+  echo "install.sh: cannot find the Linux binary here — pass --binary /path/to/it" >&2
+  echo "            (looked beside this script, in ./ and in ./dist/)" >&2
   exit 1
 fi
 
@@ -214,13 +253,30 @@ say "restic"
 if [ "$NO_SERVICE" -eq 0 ]; then
   STEP="install-service"
 
-  UNIT_SRC="./deploy/systemd/sion-backup.service"
+  UNIT_SRC="$(first_of \
+    "./sion-backup.service" \
+    "./deploy/systemd/sion-backup.service" \
+    "${HERE}/../systemd/sion-backup.service")"
   UNIT_DIR="${HOME}/.config/systemd/user"
 
-  if [ -f "$UNIT_SRC" ]; then
+  if [ -n "$UNIT_SRC" ]; then
     say "Installing the user service"
     mkdir -p "$UNIT_DIR"
-    install -m 0644 "$UNIT_SRC" "$UNIT_DIR/sion-backup.service"
+
+    # Rewritten rather than copied, for the same reason the macOS installer
+    # rewrites the plist: the shipped unit says %h/.local/bin/sion-backup,
+    # which is right for the default prefix and wrong for every other one.
+    # --prefix is a documented flag, and before this it produced a service
+    # that systemd accepted, enabled, and could never start -- pointing at a
+    # path where nothing had been installed.
+    sed "s|^ExecStart=.*|ExecStart=${INSTALLED} daemon|" \
+      "$UNIT_SRC" > "$UNIT_DIR/sion-backup.service"
+    chmod 0644 "$UNIT_DIR/sion-backup.service"
+
+    if ! grep -q "^ExecStart=${INSTALLED} daemon$" "$UNIT_DIR/sion-backup.service"; then
+      echo "install.sh: could not point the service at ${INSTALLED}" >&2
+      exit 1
+    fi
 
     systemctl --user daemon-reload
     systemctl --user enable sion-backup >/dev/null
@@ -234,7 +290,9 @@ if [ "$NO_SERVICE" -eq 0 ]; then
 
     note "enabled (not started: it has nothing to do until the machine is enrolled)"
   else
-    warn "deploy/systemd/sion-backup.service is not here; skipping the service"
+    warn "cannot find sion-backup.service (looked beside this script, in ./ and"
+    warn "in ./deploy/systemd/); skipping the service. The binary is installed,"
+    warn "and nothing will start at boot until this is registered."
   fi
 fi
 
