@@ -1,0 +1,183 @@
+{{define "access.html"}}<!doctype html>
+<html lang="en">
+<head>{{template "page-head" .}}</head>
+<body>
+{{template "page-top" .}}
+<main>
+
+<h1>Who can reach your backups</h1>
+
+<p class="lede">
+  Your backups are encrypted with one password. Anyone holding it can read
+  everything this computer has ever backed up, and the storage keys reach the
+  same files without being able to read them. This is every occasion either
+  left the server, or arrived at it.
+</p>
+
+{{if not .Available}}
+
+<p class="hint">{{.Reason}}</p>
+
+{{else}}
+
+{{if .Foreign}}
+<div class="verdict bad">
+  <h1>A key nobody here created can reach your files</h1>
+  <p>
+    <code>{{.Foreign}}</code>, found at the storage provider. Eumaeus did not
+    create it, so it is outside everything this page can otherwise account for.
+    Who holds it, and whether it has ever been used, cannot be known from here
+    — the provider does not record it. It cannot read your backups without the
+    password, but it can reach the stored files. Tell whoever looks after your
+    backups today.
+  </p>
+</div>
+{{end}}
+
+<div class="verdict {{.Check.Level}}">
+  <h1>{{.Check.Heading}}</h1>
+  <p>{{.Check.Detail}}</p>
+</div>
+
+<dl class="facts">
+  <dt>A person saw it</dt>
+  <dd>
+    {{if .Report.Capped}}at least {{end}}{{.Report.PeopleCount}}
+    {{if eq .Report.PeopleCount 1}}time{{else}}times{{end}}
+  </dd>
+
+  <dt>This computer fetched it</dt>
+  <dd>
+    {{if .Report.Capped}}at least {{end}}{{.Report.MachineCount}}
+    {{if eq .Report.MachineCount 1}}time{{else}}times{{end}}
+    {{if nonzero .MachineNewest}}<span class="hint">newest {{day .MachineNewest}}</span>{{end}}
+  </dd>
+
+  <dt>Keys to the storage</dt>
+  <dd>
+    {{if .Report.Capped}}at least {{end}}{{.Report.KeyCount}}
+    {{if eq .Report.KeyCount 1}}entry{{else}}entries{{end}}
+    {{if .Foreign}}<span class="pill bad">one was not created here</span>{{end}}
+  </dd>
+
+  <dt>Entries in all</dt>
+  <dd>
+    {{.Report.Count}}
+    {{if .Report.Capped}}<span class="hint">the {{len .Report.Entries}} most recent are shown, so the figures above count what is visible in those and not the whole story</span>{{end}}
+  </dd>
+</dl>
+
+<h2>A person saw it</h2>
+{{if .Report.People}}
+<table>
+  <thead><tr><th>When</th><th>What happened</th><th>Who</th><th>From</th><th class="num">Password</th></tr></thead>
+  <tbody>
+  {{range .Report.People}}
+    <tr>
+      <td>{{day .At}}</td>
+      <td>{{.Describe}}</td>
+      <td>{{.Actor}}</td>
+      <td>{{if .FromIP}}<code>{{.FromIP}}</code>{{else}}<span class="hint">at the server itself</span>{{end}}</td>
+      <td class="num">#{{.CredentialsVersion}}</td>
+    </tr>
+  {{end}}
+  </tbody>
+</table>
+<p class="hint">
+  If one of these was not arranged with you, tell whoever looks after your
+  backups. A password that has been read cannot be un-read — it has to be
+  changed, and changing it means starting a new backup.
+</p>
+{{else}}
+<p class="hint">
+  Nobody{{if .Report.Capped}} in the {{len .Report.Entries}} entries shown{{end}}.
+  Every entry {{if .Report.Capped}}here{{else}}in this record{{end}} is this
+  computer collecting the password to run a backup.
+</p>
+{{end}}
+
+<h2>This computer fetched it</h2>
+{{if .Report.Machines}}
+<p class="hint">
+  These are your backups running. The password is fetched at the start of each
+  run and never written to this disk.
+</p>
+<table>
+  <thead><tr><th>When</th><th>What happened</th><th>As</th><th>From</th><th class="num">Password</th></tr></thead>
+  <tbody>
+  {{range .Report.Machines}}
+    <tr>
+      <td>{{day .At}}</td>
+      <td>{{.Describe}}</td>
+      <td>{{.Actor}}</td>
+      <td>{{if .FromIP}}<code>{{.FromIP}}</code>{{else}}<span class="hint">—</span>{{end}}</td>
+      <td class="num">#{{.CredentialsVersion}}</td>
+    </tr>
+  {{end}}
+  </tbody>
+</table>
+{{else}}
+<p class="hint">Nothing yet.</p>
+{{end}}
+
+<h2>Access to the storage</h2>
+<p class="hint">
+  These are the keys that reach the files, rather than the password that makes
+  them readable. They are a smaller matter than the password, and deliberately
+  held to a lower standard: a key can be withdrawn in a second, where the
+  password can never be changed — changing it would mean starting your backups
+  again from nothing.
+</p>
+{{if .Report.Keys}}
+<table>
+  <thead><tr><th>When</th><th>What happened</th><th>Key</th><th>Who</th></tr></thead>
+  <tbody>
+  {{range .Report.Keys}}
+    <tr>
+      <td>{{day .At}}</td>
+      <td>{{.Describe}}</td>
+      <td>{{if .Detail}}<code>{{.Detail}}</code>{{else}}<span class="hint">—</span>{{end}}</td>
+      <td>
+        {{if .Actor}}{{.Actor}}
+        {{else}}<span class="hint">not known, and not guessed at</span>{{end}}
+      </td>
+    </tr>
+  {{end}}
+  </tbody>
+</table>
+{{else}}
+<p class="hint">Nothing yet.</p>
+{{end}}
+
+<h2>What this does not prove</h2>
+<p class="hint">
+  That every disclosure was recorded. Anyone who can read the server's vault
+  file directly reads the password without passing through any of this, and
+  leaves no entry behind. What this record does prove is that the entries in
+  it have not been changed since this computer last looked — which is worth
+  having, and is less than a promise that nobody has ever seen your password.
+</p>
+<p class="hint">
+  The storage keys are weaker still. This record says which ones Eumaeus
+  created and which it withdrew, and it checks the storage provider for keys it
+  did not create — but no server here ever sees a request to your bucket, so
+  nobody can say whether any key has actually been used. A key listed as
+  retired is one the provider has confirmed no longer works; a key listed as
+  found is one somebody outside this system holds.
+</p>
+{{if nonzero .Since}}
+<p class="hint">
+  The seals on this record were computed on {{day .Since}}, when the server
+  was upgraded. Entries before that date are genuine — they record disclosures
+  that really happened — but they were sealed together on that day, so they
+  attest to nothing that happened before it.
+</p>
+{{end}}
+
+{{end}}
+
+</main>
+{{template "page-foot" .}}
+</body>
+</html>
+{{end}}

@@ -78,6 +78,14 @@
   <dd>
     {{if .Enrolled}}<span class="pill good">nothing stored here</span>{{else}}<span class="pill bad">not enrolled</span>{{end}}
     <p class="hint">{{.Credentials}}</p>
+    <p class="hint">
+      {{if .Glance.Known}}
+        Handed out {{.Glance.Count}} {{if eq .Glance.Count 1}}time{{else}}times{{end}}{{if nonzero .Glance.At}}, most recently {{day .Glance.At}}{{end}} —
+        <a href="/access">see who has opened it</a>
+      {{else}}
+        <a href="/access">See who has opened your repository password</a>
+      {{end}}
+    </p>
   </dd>
 </dl>
 
