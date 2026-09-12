@@ -61,6 +61,11 @@ done
 
 INSTALLED="${PREFIX}/sion-backup"
 
+# ACCOUNT is whose machine this is. id -un rather than $USER, which a shell is
+# under no obligation to set -- and this is the name that goes in the lingering
+# instruction somebody else has to type.
+ACCOUNT="$(id -un)"
+
 # first_of prints the first of its arguments that exists, and nothing if none
 # do.
 #
@@ -69,6 +74,13 @@ INSTALLED="${PREFIX}/sion-backup"
 # in one directory -- while a clone keeps them under deploy/. Looking only in
 # ./deploy meant an install driven from a downloaded release silently skipped
 # the service.
+#
+# Each name is looked for in the current directory and then beside this script,
+# because those are different places and a person uses both. Downloading a
+# release into ~/Downloads and running ./install-linux.sh there makes them the
+# same; running ~/Downloads/install-linux.sh from anywhere else does not, and
+# that used to fail with a message saying it had "looked beside this script"
+# when it had done no such thing.
 first_of() {
   for candidate in "$@"; do
     if [ -f "$candidate" ]; then
@@ -161,6 +173,7 @@ if [ -z "$BINARY" ]; then
   # beside it.
   BINARY="$(first_of \
     "./sion-backup-linux-${arch}" \
+    "${HERE}/sion-backup-linux-${arch}" \
     "./dist/sion-backup-linux-${arch}" \
     "${HERE}/../../dist/sion-backup-linux-${arch}")"
 fi
@@ -255,6 +268,7 @@ if [ "$NO_SERVICE" -eq 0 ]; then
 
   UNIT_SRC="$(first_of \
     "./sion-backup.service" \
+    "${HERE}/sion-backup.service" \
     "./deploy/systemd/sion-backup.service" \
     "${HERE}/../systemd/sion-backup.service")"
   UNIT_DIR="${HOME}/.config/systemd/user"
@@ -283,9 +297,26 @@ if [ "$NO_SERVICE" -eq 0 ]; then
 
     # Without lingering, the daemon stops when the last session ends and a
     # machine that is switched on but not signed into takes no backups.
-    if ! loginctl show-user "$USER" 2>/dev/null | grep -q '^Linger=yes'; then
+    #
+    # It is not "the schedule slips" -- systemd stops the entire user manager,
+    # so the daemon, the status page and the scheduler all cease to exist until
+    # somebody signs in again. On a Debian box with no polkit installed this
+    # call is refused outright, which is how it was found, so the failure has
+    # to name the command that fixes it rather than say "ask an administrator"
+    # and leave the administrator guessing.
+    if ! loginctl show-user "$ACCOUNT" 2>/dev/null | grep -q '^Linger=yes'; then
       note "enabling lingering so it runs when nobody is signed in"
-      loginctl enable-linger "$USER" || warn "could not enable lingering; ask an administrator"
+
+      if ! loginctl enable-linger "$ACCOUNT" 2>/dev/null; then
+        warn "could not enable lingering for ${ACCOUNT}."
+        warn ""
+        warn "Until somebody with root runs"
+        warn ""
+        warn "    sudo loginctl enable-linger ${ACCOUNT}"
+        warn ""
+        warn "this computer takes no backups while ${ACCOUNT} is not signed in:"
+        warn "systemd stops the whole user session and the daemon with it."
+      fi
     fi
 
     note "enabled (not started: it has nothing to do until the machine is enrolled)"

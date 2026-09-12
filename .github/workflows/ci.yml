@@ -90,13 +90,13 @@ jobs:
           git diff --exit-code go.mod go.sum
 
   installers:
-    # The two installers are the only code in this repository that nobody can
-    # run before a deployment: install.ps1 needs Windows, and both of them do
-    # things to a machine that a test cannot undo. So at least parse them.
+    # install.ps1 needs Windows even to be parsed, and it does things to a
+    # machine that a test cannot undo. So at least parse it.
     #
     # A 300-line PowerShell script with a typo on line 200 fails halfway
     # through installing on somebody's laptop, in the evening, in front of
-    # them. That is the failure this job exists to prevent.
+    # them. That is the failure this job exists to prevent. The shell
+    # installers get the same treatment and more in shell-installers below.
     runs-on: windows-latest
 
     steps:
@@ -116,9 +116,29 @@ jobs:
 
           Write-Host "install.ps1 parses"
 
-      - name: Parse the shell installer
-        shell: bash
-        run: bash -n deploy/linux/install.sh && echo "install.sh parses"
+  shell-installers:
+    # The other half of the same job, on a runner with a real bash, real
+    # `install`, and a real /tmp — because one of these checks runs the Linux
+    # installer rather than only reading it.
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Parse both shell installers
+        run: |
+          for script in deploy/linux/install.sh deploy/macos/install.sh; do
+            bash -n "$script" && echo "$script parses"
+          done
+
+      # v0.6.4 shipped installers that told the truth about everything except
+      # where they had looked. Both said "looked beside this script" and
+      # neither did: every candidate was relative to the current directory.
+      # Running the installer from the directory it was downloaded into hides
+      # it, which is why it survived every test and was found on a Debian box
+      # by typing ~/Downloads/install-linux.sh from the home directory.
+      - name: The installers can find what ships with them
+        run: scripts/installer-lookups
 
   selfupdate:
     # Self-update is the one feature that can break every machine at once, and

@@ -159,6 +159,34 @@ before running anything:
 sha256sum --ignore-missing -c SHA256SUMS
 ```
 
+### Installing on Linux
+
+From the directory the release was downloaded into:
+
+```sh
+sha256sum --ignore-missing -c SHA256SUMS
+chmod +x install-linux.sh
+./install-linux.sh
+```
+
+Run it as the person whose files are backed up, never with `sudo` — it refuses,
+because `sudo` makes `$HOME` root's and would install a complete and completely
+useless backup of nobody's files. From a clone it is `./deploy/linux/install.sh`.
+
+**Lingering is not optional.** The daemon is a systemd *user* service, and
+without lingering systemd stops the entire user session when the last one ends
+— the daemon, the status page and the scheduler all cease to exist until
+somebody signs in again. A computer left switched on overnight then takes no
+backups at all. The installer turns it on, and on a machine with no polkit
+installed the call is refused; it says so, and the fix is one command from
+somebody with root:
+
+```sh
+sudo loginctl enable-linger "$USER"
+```
+
+`loginctl show-user "$USER" | grep Linger` says which way it currently is.
+
 ### Installing on a Mac
 
 Download the release into one directory and run the installer there, as the
@@ -303,7 +331,8 @@ backs up, `adopt-enroll` above replaces steps 1 and 2 and keeps the history:
 # 1. In Eumaeus: sign in, "Enrol a computer", choose the owner and the bucket.
 #    It shows a code, good for fifteen minutes, usable once.
 
-# 2. Install the service (install.sh does this for you).
+# 2. Install the service. This is what install-linux.sh does for you, and it
+#    is written out here because somebody eventually has to read it.
 cp deploy/systemd/sion-backup.service ~/.config/systemd/user/
 systemctl --user enable sion-backup
 loginctl enable-linger "$USER"
