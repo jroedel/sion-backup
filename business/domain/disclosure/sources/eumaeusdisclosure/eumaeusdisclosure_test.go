@@ -151,22 +151,36 @@ func TestAServerWithoutTheEndpointIsNotAnError(t *testing.T) {
 	}
 }
 
-// TestATokenRefusedIsDeEnrolment, on either status.
-//
-// The same reading eumaeuscreds gives them on the credentials endpoint: a
-// machine that may not read its own record is a machine that is no longer in
-// the fleet, whichever of the two the server chose.
+// TestATokenRefusedIsDeEnrolment, on 401 and on nothing else.
 func TestATokenRefusedIsDeEnrolment(t *testing.T) {
-	for _, status := range []int{http.StatusUnauthorized, http.StatusForbidden} {
-		s := source(t, func(w http.ResponseWriter, r *http.Request) {
-			w.WriteHeader(status)
-		})
+	s := source(t, func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+	})
 
-		_, err := s.List(context.Background(), 200)
+	if _, err := s.List(context.Background(), 200); !errors.Is(err, disclosurebus.ErrNotEnrolled) {
+		t.Errorf("got %v, want ErrNotEnrolled", err)
+	}
+}
 
-		if !errors.Is(err, disclosurebus.ErrNotEnrolled) {
-			t.Errorf("%d: got %v, want ErrNotEnrolled", status, err)
-		}
+// TestA403IsNotDeEnrolmentHereEither.
+//
+// The third and last place this reading was copied to. It is worth a test in
+// each rather than one somewhere central, because what spread it was habit:
+// somebody writing a new source, looking at the one beside it, and carrying
+// the pair across without asking whether the status arrives.
+func TestA403IsNotDeEnrolmentHereEither(t *testing.T) {
+	s := source(t, func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusForbidden)
+	})
+
+	_, err := s.List(context.Background(), 200)
+
+	if errors.Is(err, disclosurebus.ErrNotEnrolled) {
+		t.Error("a 403 is reported as de-enrolment")
+	}
+
+	if err == nil {
+		t.Error("a 403 was not reported at all")
 	}
 }
 
