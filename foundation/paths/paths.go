@@ -116,8 +116,13 @@ type Paths struct {
 // Environment overrides exist for one reason: the tests, and an operator
 // running two configurations on one machine while migrating. They are read
 // before the platform default so that a set variable always wins.
+// DataDirEnv overrides every path below. Named rather than written out at
+// each use because it is also how a caller says "I know which account's
+// installation I mean" — see refuseElevatedEnrollment.
+const DataDirEnv = "SION_BACKUP_DATA_DIR"
+
 func Resolve() (Paths, error) {
-	dataDir := os.Getenv("SION_BACKUP_DATA_DIR")
+	dataDir := os.Getenv(DataDirEnv)
 	if dataDir == "" {
 		root, err := platformRoot()
 		if err != nil {
