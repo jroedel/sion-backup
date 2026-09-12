@@ -65,6 +65,21 @@ func aRecord() disclosurebus.Log {
 	}
 }
 
+// readReport is the report behind the page, for assertions about how entries
+// are sorted rather than about how they are rendered.
+func readReport(t *testing.T, log disclosurebus.Log) disclosurebus.Report {
+	t.Helper()
+
+	b := disclosurebus.NewBusiness(&trail{log: log}, &heads{})
+
+	report, err := b.Read(context.Background(), 200)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	return report
+}
+
 func withRecord(t *testing.T, log disclosurebus.Log, kept ...disclosurebus.Keep) *harness {
 	t.Helper()
 
@@ -268,5 +283,124 @@ func TestAnUncappedRecordIsCountedPlainly(t *testing.T) {
 
 	if strings.Contains(body, "at least") {
 		t.Error("a complete record is hedged as though it were capped")
+	}
+}
+
+// withKeys is a record that also carries the bucket half: a key granted, one
+// retired, and one found at the provider that Eumaeus never created.
+func withKeys() disclosurebus.Log {
+	log := aRecord()
+
+	log.Entries = append([]disclosurebus.Entry{
+		{
+			Seq: 415, At: time.Date(2026, 9, 11, 9, 0, 0, 0, time.UTC),
+			Kind: disclosurebus.KindKeysRetired, Actor: "Eumaeus", FromIP: "",
+			CredentialsVersion: 3, ByMachine: false,
+			Describe: "Storage keys were withdrawn and no longer work.",
+			Detail:   "AKIAEXAMPLE7X2", Hash: "1111", PrevHash: "ffff",
+		},
+		{
+			Seq: 414, At: time.Date(2026, 9, 10, 8, 0, 0, 0, time.UTC),
+			Kind: disclosurebus.KindKeysForeign, Actor: "", FromIP: "",
+			CredentialsVersion: 3, ByMachine: false,
+			Describe: "A storage key was found that this server did not create.",
+			Detail:   "AKIAEXAMPLE9F4", Hash: "ffff", PrevHash: "eeee",
+		},
+		{
+			Seq: 413, At: time.Date(2026, 3, 14, 9, 0, 0, 0, time.UTC),
+			Kind: disclosurebus.KindKeysGranted, Actor: "Eumaeus", FromIP: "",
+			CredentialsVersion: 3, ByMachine: false,
+			Describe: "Storage keys able to reach the bucket were created.",
+			Detail:   "AKIAEXAMPLE7X2", Hash: "eeee", PrevHash: "9f2c",
+		},
+	}, log.Entries...)
+
+	log.Count = 415
+	log.Head = "1111"
+
+	return log
+}
+
+// TestAForeignKeyInterrupts.
+//
+// The gravest line the log can carry: a credential outside this system can
+// reach the owner's files. It goes above the tamper check, because an intact
+// record of somebody else's access is not the reassuring combination it would
+// read as if the two were the other way round.
+func TestAForeignKeyInterrupts(t *testing.T) {
+	body := withRecord(t, withKeys()).get(t, "/access").Body.String()
+
+	alarm := strings.Index(body, "A key nobody here created")
+	if alarm < 0 {
+		t.Fatal("a foreign storage key raises no alarm on the page")
+	}
+
+	if !strings.Contains(body, "AKIAEXAMPLE9F4") {
+		t.Error("the alarm does not name the key, so nobody can act on it")
+	}
+
+	check := strings.Index(body, "has not been altered since")
+	if check > 0 && alarm > check {
+		t.Error("the foreign key is shown below the tamper check")
+	}
+}
+
+// TestAForeignKeyInventsNobody.
+//
+// The server leaves the actor empty because it genuinely does not know who
+// holds the key — the provider records no such thing — and the specification
+// says a client must not fill it in. "Unknown" or "somebody" in that column
+// would be the page inventing the one fact that matters most.
+func TestAForeignKeyInventsNobody(t *testing.T) {
+	body := withRecord(t, withKeys()).get(t, "/access").Body.String()
+
+	for _, invented := range []string{"unknown person", "somebody unknown", "an attacker"} {
+		if strings.Contains(body, invented) {
+			t.Errorf("the page invents an actor for a foreign key: %q", invented)
+		}
+	}
+
+	if !strings.Contains(body, "not known, and not guessed at") {
+		t.Error("the empty actor is not explained")
+	}
+}
+
+// TestStorageKeysAreNotFiledUnderSomebodyReadingThePassword.
+//
+// They are access to the files rather than to what makes the files readable,
+// and the server is explicit that the two are not equally grave. Putting a
+// keys- row under "A person saw it" would describe it wrongly in the heading a
+// reader trusts most.
+func TestStorageKeysAreNotFiledUnderSomebodyReadingThePassword(t *testing.T) {
+	report := readReport(t, withKeys())
+
+	if report.KeyCount != 3 {
+		t.Fatalf("got %d storage entries, want 3", report.KeyCount)
+	}
+
+	if len(report.Foreign) != 1 {
+		t.Fatalf("got %d foreign keys, want 1", len(report.Foreign))
+	}
+
+	for _, e := range report.People {
+		if e.Kind.AboutBucket() {
+			t.Errorf("%s is filed as a person reading the password", e.Kind)
+		}
+	}
+
+	for _, e := range report.Machines {
+		if e.Kind.AboutBucket() {
+			t.Errorf("%s is filed as this computer fetching the password", e.Kind)
+		}
+	}
+}
+
+// TestAnOrdinaryRecordRaisesNoAlarm, so the banner means something when it
+// does appear.
+func TestAnOrdinaryRecordRaisesNoAlarm(t *testing.T) {
+	body := withRecord(t, aRecord()).get(t, "/access").Body.String()
+
+	if strings.Contains(body, "A key nobody here created") {
+		t.Error("a record with no foreign key raises the alarm anyway")
 	}
 }

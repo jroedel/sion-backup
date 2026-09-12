@@ -491,8 +491,21 @@ entries have not been changed since this machine last looked. It is not a
 promise that nobody has ever seen the password, and a transparency claim that
 overstates itself spends the trust it was meant to earn.
 
+**The storage keys are a separate and weaker matter**, and the page keeps them
+apart rather than totting everything up into one number. A key reaches the
+files; the password makes them readable. A key can be withdrawn in a second;
+the password can never be changed. Eumaeus records the keys it created and
+withdrew, and asks the storage provider what it actually holds — so a key
+*found there that Eumaeus did not create* is the one line on this page that
+interrupts, because it says somebody outside this system can reach the owner's
+files. Nobody can say whether they ever have: no server here sees a request to
+the bucket. The entry names the key ID and leaves the actor empty, and the page
+does not fill it in.
+
 The endpoint is `GET /api/backup/v1/machines/me/disclosures`, served to the
-machine because it is meant for the machine's owner.
+machine because it is meant for the machine's owner. It also returns every
+entry folded by the address it came from, which this client does not yet use —
+see [Known gaps](#known-gaps).
 
 ### Nothing backs up until somebody says yes
 
@@ -747,6 +760,19 @@ that has not implemented an endpoint as clearly as it reports a wrong token.
 
 Named here rather than left to be discovered. These are decisions. Work that is
 intended and not yet done is in [`docs/todo.md`](docs/todo.md).
+
+- **The Access page does not use the `addresses` block, and does not check it
+  against this machine's own history.** `GET /machines/me/disclosures` returns
+  every entry folded by the address it came from, and the server's own note
+  says a client can do better than a person here: the machine knows which
+  addresses are its own, and *"anything in one and not the other is worth
+  saying out loud"*. Only this machine holds its token, so a `fetched` at an
+  hour this machine took no backup is the strongest signal a stolen token
+  leaves — and this client has the run history to notice it. It does not yet.
+  The reason it is a gap rather than a feature is the wording: a run that
+  failed before it was recorded, and a database restored from an image, both
+  look exactly like theft, and a page that cries wolf about somebody stealing
+  your backup credentials is worse than one that says nothing.
 
 - **Self-update has no staged rollout and no kill switch.** Every machine takes
   the newest published release within an hour of it existing, and there is no
