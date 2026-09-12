@@ -331,8 +331,12 @@ All three ship **in the release** as `install-linux.sh`, `install-macos.sh` and
 `install-windows.ps1`, alongside the service files they register and covered by
 `SHA256SUMS` like every other asset. They are also in `deploy/` in this
 repository, which is where they are edited; a release is a flat copy. They did
-not ship at all until v0.6.3, which made the instruction above — run the
+not ship at all until v0.6.4, which made the instruction above — run the
 installer from the unpacked release — describe a file that was not there.
+v0.6.3 was supposed to be the one and was not: the build copied them into
+`dist/` and the upload step attached a list of patterns that did not match
+them. The release workflow now attaches everything the build produced and
+fails while the release is still a draft if the two disagree.
 
 ---
 
