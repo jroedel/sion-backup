@@ -61,13 +61,6 @@ type setupView struct {
 	Targets string
 	Junk    bool
 
-	// Excludes are the patterns that are not the junk list: whatever was in
-	// the plan before this page was opened. There is no box for them here —
-	// the Settings page owns that — and they are shown because a page that
-	// silently carries somebody's exclusions along reads exactly like a page
-	// that has dropped them.
-	Excludes []string
-
 	SkipLargerThanGB int
 	Schedule         string
 	DailyTime        string
@@ -86,6 +79,25 @@ type setupView struct {
 	Chosen  styleOption
 	HasSize bool
 
+	// Included and Excluded are what the selected choice comes to: the
+	// folders that would be backed up, and the exclusions that would apply to
+	// them. Shown because the three radio buttons describe an intention and
+	// this is the consequence — "everything in my user folder" and
+	// "/home/jeff minus /home/jeff/Downloads" are the same sentence only to
+	// somebody who already knows.
+	//
+	// Excluded is narrowed to the patterns that could match something inside
+	// Included. See [surveybus.ExcludesFor].
+	Included []rootLine
+	Excluded []string
+
+	// Elsewhere are the exclusions that survive but cannot match anything in
+	// Included — a pattern under a folder this choice does not cover. They are
+	// listed separately rather than dropped, because a page that carries
+	// somebody's exclusions along in silence reads exactly like a page that
+	// has thrown them away, and they come back the moment the choice changes.
+	Elsewhere []string
+
 	// CustomSizing is the measured size of the list somebody wrote
 	// themselves, which is not one of Options and still has to carry a figure
 	// — on a machine adopt-enroll set up, it is the only answer on the page.
@@ -94,6 +106,18 @@ type setupView struct {
 
 	Saved   bool
 	Problem string
+}
+
+// rootLine is one folder in the resulting list, with whatever is wrong with
+// it.
+//
+// Offered choices are reported rather than refused: a machine with no ~/Videos
+// is not somebody's mistake to fix, and "Videos — is not on this computer" is
+// the whole of what needs saying. A list somebody typed is refused instead,
+// in applySetup, because there it is a typo and they are standing right there.
+type rootLine struct {
+	Path string
+	Note string
 }
 
 // styleOption is one backup style as the page shows it.
@@ -208,7 +232,6 @@ func (s *Server) setupViewFrom(plan planbus.Plan) setupView {
 		SkipOnMetered:    plan.SkipOnMetered,
 		MeteredKnown:     s.cfg.MeteredKnown,
 		Junk:             surveybus.HasJunk(plan.Excludes),
-		Excludes:         beyondTheCheckbox(plan.Excludes),
 		Schedule:         string(plan.Schedule.Preset()),
 		DailyTime:        plan.Schedule.DailyTime(),
 		Times:            strings.Join(plan.Schedule.Times, ", "),
@@ -277,6 +300,7 @@ func (s *Server) setupViewFrom(plan planbus.Plan) setupView {
 	if view.Style == string(surveybus.StyleCustom) {
 		view.Chosen = styleOption{
 			Style:    string(surveybus.StyleCustom),
+			Roots:    plan.Targets,
 			Sizing:   view.CustomSizing,
 			Estimate: view.CustomEstimate,
 		}
@@ -284,7 +308,46 @@ func (s *Server) setupViewFrom(plan planbus.Plan) setupView {
 		view.HasSize = view.CustomSizing.Known()
 	}
 
+	effective := effectiveExcludes(plan, view.Junk)
+
+	view.Included = describe(view.Chosen.Roots)
+	view.Excluded = surveybus.ExcludesFor(view.Chosen.Roots, effective)
+	view.Elsewhere = remainder(effective, view.Excluded)
+
 	return view
+}
+
+// remainder is everything in all that is not in some.
+func remainder(all, some []string) []string {
+	shown := make(map[string]bool, len(some))
+	for _, s := range some {
+		shown[s] = true
+	}
+
+	out := make([]string, 0, len(all)-len(some))
+
+	for _, s := range all {
+		if !shown[s] {
+			out = append(out, s)
+		}
+	}
+
+	return out
+}
+
+// describe pairs each folder with whatever is wrong with it.
+func describe(roots []string) []rootLine {
+	trouble := make(map[string]string, 2)
+	for _, t := range surveybus.CheckRoots(roots) {
+		trouble[t.Path] = t.Why
+	}
+
+	out := make([]rootLine, 0, len(roots))
+	for _, root := range roots {
+		out = append(out, rootLine{Path: root, Note: trouble[root]})
+	}
+
+	return out
 }
 
 // effectiveExcludes is the exclude list the chosen settings would produce.
@@ -313,22 +376,6 @@ func effectiveExcludes(plan planbus.Plan, junk bool) []string {
 	}
 
 	return surveybus.WithoutJunk(plan.Excludes)
-}
-
-// beyondTheCheckbox is what the page shows under the junk box: the exclusions
-// this machine has that the checkbox does not account for.
-//
-// When the box is ticked those are whatever is left after the junk set; when
-// it is not, they are all of them — including a pattern that coincides with
-// one on the junk list, which is not being left out by the checkbox and would
-// be a strange thing to hide from somebody on the grounds that it might have
-// been.
-func beyondTheCheckbox(excludes []string) []string {
-	if surveybus.HasJunk(excludes) {
-		return surveybus.WithoutJunk(excludes)
-	}
-
-	return excludes
 }
 
 func (s *Server) saveSetup(w http.ResponseWriter, r *http.Request) {
@@ -424,6 +471,14 @@ func (s *Server) applySetup(plan planbus.Plan, r *http.Request) (planbus.Plan, s
 				"Choose one of the options above, or write the folders one per line."
 		}
 
+		// Checked before the plan is stored, because the alternative is that
+		// restic reports the missing folder on its own output, backs up the
+		// rest, exits successfully, and the run is recorded green. Somebody
+		// finds out in six months. See surveybus.CheckRoots.
+		if problem := unusable(plan.Targets); problem != "" {
+			return plan, problem
+		}
+
 	default:
 		found := false
 
@@ -462,6 +517,30 @@ func (s *Server) applySetup(plan planbus.Plan, r *http.Request) (planbus.Plan, s
 	plan.Schedule = schedule
 
 	return plan, ""
+}
+
+// unusable describes every folder on a typed list that cannot be backed up, or
+// returns empty.
+//
+// All of them, not the first: somebody who pasted four paths out of the old
+// backup script and got two of them wrong should be told twice, once, rather
+// than once, twice.
+func unusable(targets []string) string {
+	trouble := surveybus.CheckRoots(targets)
+	if len(trouble) == 0 {
+		return ""
+	}
+
+	parts := make([]string, 0, len(trouble))
+	for _, t := range trouble {
+		parts = append(parts, t.Path+" "+t.Why)
+	}
+
+	if len(trouble) == 1 {
+		return "This folder cannot be backed up: " + parts[0] + "."
+	}
+
+	return "These folders cannot be backed up: " + strings.Join(parts, "; ") + "."
 }
 
 // schedule turns the "how often" answer into times.

@@ -465,6 +465,16 @@ func (s *Server) saveSettings(w http.ResponseWriter, r *http.Request) {
 		plan.PackSizeMiB = n
 	}
 
+	// The same check the setup page makes, for the same reason and on the same
+	// box: a folder that is not there is backed up silently and successfully
+	// as nothing at all. It is here as well as there because this page edits
+	// the same list, and a check one of two doors enforces is not a check.
+	if problem := unusable(plan.Targets); problem != "" {
+		s.renderSettings(w, r, plan, false, problem)
+
+		return
+	}
+
 	if err := s.cfg.Plan.Put(ctx, plan, time.Now()); err != nil {
 		// Re-rendered with what they typed still in the boxes. Losing a
 		// carefully assembled exclude list to a validation error is the kind

@@ -88,6 +88,46 @@
     {{end}}
   </div>
 
+  {{if .Included}}
+  <div class="choice">
+    <h3>What this comes to</h3>
+    <p class="hint">
+      For the option selected above, as it was last saved. Change the option
+      and press “Save, and work out the sizes again” to see the new answer.
+    </p>
+    <p class="size"><strong>Backing up</strong></p>
+    <ul class="files">
+      {{range .Included}}
+      <li><code>{{.Path}}</code>
+        {{if .Note}}<span class="warnish">— {{.Note}}</span>{{end}}
+      </li>
+      {{end}}
+    </ul>
+    {{if .Excluded}}
+    <p class="size"><strong>Leaving out</strong></p>
+    <ul class="files">
+      {{range .Excluded}}<li><code>{{.}}</code></li>{{end}}
+    </ul>
+    <p class="hint">
+      Patterns without a folder in front of them — <code>*.iso</code>,
+      <code>node_modules</code> — are left out wherever they turn up.
+    </p>
+    {{else}}
+    <p class="hint">Nothing here is being left out.</p>
+    {{end}}
+    {{if .Elsewhere}}
+    <p class="size"><strong>Also kept, though nothing in this selection is under them</strong></p>
+    <ul class="files">
+      {{range .Elsewhere}}<li><code>{{.}}</code></li>{{end}}
+    </ul>
+    <p class="hint">
+      These stay in the plan and come back the moment the selection above
+      includes them.
+    </p>
+    {{end}}
+  </div>
+  {{end}}
+
   <h2>What to leave out</h2>
 
   <div>
@@ -99,14 +139,6 @@
       here is work. The full list is on the Settings page, where you can take
       anything back off it.
     </p>
-    {{if .Excludes}}
-    <p class="hint">
-      This computer is already leaving out
-      {{range .Excludes}}<code>{{.}}</code> {{end}}
-      — kept as they are, whatever is chosen above. Change them on the
-      <a href="/settings">Settings</a> page.
-    </p>
-    {{end}}
   </div>
 
   <div>

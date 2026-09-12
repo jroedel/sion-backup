@@ -7,6 +7,8 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -38,6 +40,12 @@ type harness struct {
 	backups *backupbus.Runner
 	survey  *surveybus.Business
 	offered surveybus.Choice
+
+	// dir is a real folder for tests that post a list of targets. Real,
+	// because the setup page checks that a typed folder exists and can be
+	// read before it will save it — a made-up path is refused now, which is
+	// the point of the check.
+	dir     string
 	runs    *backupdb.Store
 	started int
 }
@@ -86,6 +94,7 @@ func harnessWith(t *testing.T, source credentialbus.Source) *harness {
 	runs := backupdb.NewStore(db)
 
 	h := &harness{
+		dir:     t.TempDir(),
 		guard:   guard,
 		plan:    planbus.NewBusiness(plandb.NewStore(db)),
 		runs:    runs,
@@ -282,8 +291,13 @@ func TestTheSettingsPageRendersAndSaves(t *testing.T) {
 		t.Error("the form does not show the current targets")
 	}
 
+	// Real folders, because the settings page now checks that a typed folder
+	// exists and can be read before it will save it.
+	second := t.TempDir()
+
 	rec = h.post(t, "/settings",
-		"targets=%2Fhome%2Fuser%0A%2Fsrv%2Fshared&excludes=*.iso&times=13%3A00%2C+22%3A00&paused=on")
+		"targets="+url.QueryEscape(h.dir+"\n"+second)+
+			"&excludes=*.iso&times=13%3A00%2C+22%3A00&paused=on")
 	if rec.Code != http.StatusSeeOther {
 		t.Fatalf("status %d: %s", rec.Code, rec.Body)
 	}
@@ -293,7 +307,7 @@ func TestTheSettingsPageRendersAndSaves(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if len(plan.Targets) != 2 || plan.Targets[1] != "/srv/shared" {
+	if len(plan.Targets) != 2 || plan.Targets[1] != second {
 		t.Errorf("targets = %v", plan.Targets)
 	}
 
@@ -318,7 +332,7 @@ func TestSettingsCannotChangeTheNodeOrRepository(t *testing.T) {
 	}
 
 	rec := h.post(t, "/settings",
-		"targets=%2Fhome%2Fuser&times=13%3A00&node_id=attacker&repository=s3%3Ahttps%3A%2F%2Fevil.example%2Fbucket")
+		"targets="+url.QueryEscape(h.dir)+"&times=13%3A00&node_id=attacker&repository=s3%3Ahttps%3A%2F%2Fevil.example%2Fbucket")
 	if rec.Code != http.StatusSeeOther {
 		t.Fatalf("status %d: %s", rec.Code, rec.Body)
 	}
@@ -348,7 +362,7 @@ func TestAnInvalidScheduleIsRefusedWithoutLosingTheForm(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	rec := h.post(t, "/settings", "targets=%2Fhome%2Fuser&excludes=*.iso%0A*.dmg&times=1pm")
+	rec := h.post(t, "/settings", "targets="+url.QueryEscape(h.dir)+"&excludes=*.iso%0A*.dmg&times=1pm")
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status %d, want the form re-rendered", rec.Code)
 	}
@@ -490,5 +504,40 @@ func TestTheStylesheetIsServed(t *testing.T) {
 
 	if ct := rec.Header().Get("Content-Type"); !strings.HasPrefix(ct, "text/css") {
 		t.Errorf("content type %q", ct)
+	}
+}
+
+// TestSettingsRefusesAFolderThatIsNotThere.
+//
+// The same check the setup page makes, on the same box. It is here as well as
+// there because this page edits the same list, and a check that only one of
+// two doors enforces is not a check.
+func TestSettingsRefusesAFolderThatIsNotThere(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+
+	if err := h.plan.Put(ctx, samplePlan(), time.Now()); err != nil {
+		t.Fatal(err)
+	}
+
+	typo := filepath.Join(h.dir, "Documnets")
+
+	rec := h.post(t, "/settings", "targets="+url.QueryEscape(typo)+"&times=13%3A00")
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status %d, want the form back with a problem on it", rec.Code)
+	}
+
+	if !strings.Contains(rec.Body.String(), "is not on this computer") {
+		t.Error("the settings page saved a folder that is not there, or did not say why not")
+	}
+
+	plan, err := h.plan.Get(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if contains(plan.Targets, typo) {
+		t.Errorf("the typo was stored anyway: %v", plan.Targets)
 	}
 }
