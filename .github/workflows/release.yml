@@ -164,14 +164,61 @@ jobs:
             gh api --method DELETE "repos/$GITHUB_REPOSITORY/releases/$id"
           done < <(find_release)
 
+          # Everything in dist/, rather than a list of patterns kept in step
+          # with what the build puts there. The list is how v0.6.3 shipped
+          # without the installers: they were copied into dist/, covered by
+          # SHA256SUMS, and then not uploaded, because nothing matched
+          # `dist/sion-backup-*` and nobody thought to extend the line. The
+          # build decides what a release contains; this step's job is to
+          # attach it.
+          #
+          # SHA256SUMS covers every other file here, and `make checksums`
+          # excludes only itself, so "upload all of dist" and "the checksums
+          # describe the release" cannot drift apart.
           gh release create "$GITHUB_REF_NAME" \
             --draft \
             --title "$GITHUB_REF_NAME" \
             --generate-notes \
             --notes-file "$RUNNER_TEMP/notes.md" \
-            dist/sion-backup-* dist/SHA256SUMS dist/restic.pin
+            dist/*
 
           echo "::notice::drafted $GITHUB_REF_NAME; invisible to the fleet until the gate passes."
+
+      # A release that is missing something nobody notices is the failure this
+      # step exists for, and it has already happened once: v0.6.3 shipped
+      # without the installers the README tells people to run, because the
+      # upload line listed patterns and the build had grown a file none of them
+      # matched. Nothing failed. The release looked complete.
+      #
+      # Comparing the draft's assets against dist/ cannot drift the way a list
+      # does: whatever the build produced is what must be attached, and a file
+      # added to the build is covered the day it appears.
+      #
+      # It runs while the release is still a DRAFT, so a failure here leaves it
+      # invisible to the fleet, exactly like a failed self-update gate.
+      - name: Every file the build produced is attached
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          id=$(gh api "repos/$GITHUB_REPOSITORY/releases" \
+                 --jq ".[] | select(.tag_name == \"$GITHUB_REF_NAME\" and .draft) | .id" | head -1)
+
+          if [ -z "$id" ]; then
+            echo "::error::no draft release found for $GITHUB_REF_NAME"
+            exit 1
+          fi
+
+          gh api "repos/$GITHUB_REPOSITORY/releases/$id/assets" --paginate \
+            --jq '.[].name' | sort > "$RUNNER_TEMP/attached.txt"
+
+          ls -1 dist/ | sort > "$RUNNER_TEMP/built.txt"
+
+          if ! diff -u "$RUNNER_TEMP/built.txt" "$RUNNER_TEMP/attached.txt"; then
+            echo "::error::the release does not carry what the build produced (- built, + attached)"
+            exit 1
+          fi
+
+          echo "::notice::all $(wc -l < "$RUNNER_TEMP/built.txt") files attached"
 
       # Every way a release can be broken, against the binary that is about to
       # ship: a wrong hash, a truncated download, a rate-limited API, a build
