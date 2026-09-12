@@ -179,10 +179,16 @@ func (d *deps) enroll(ctx context.Context, o enrollment) (eumaeuscreds.Enrollmen
 		return enrolled, err
 	}
 
-	if err := checkRepository(ctx, d.restic, enrolled); err != nil {
+	switch created, err := ensureRepository(ctx, d.restic, enrolled); {
+	case err != nil:
 		fmt.Fprintf(os.Stderr, "\nWARNING: %v\n", err)
 		fmt.Fprintln(os.Stderr, "The machine is enrolled; fix this before relying on it.")
-	} else {
+
+	case created:
+		fmt.Printf("Created the repository at %s, and it opened with these credentials.\n",
+			enrolled.RepositoryURL)
+
+	default:
 		fmt.Printf("The repository at %s opened with these credentials.\n", enrolled.RepositoryURL)
 	}
 
@@ -233,24 +239,45 @@ func (d *deps) storePlan(ctx context.Context, e eumaeuscreds.Enrollment) error {
 		}
 	}
 
-	if len(plan.Targets) == 0 {
-		// Not a problem to report: it is the ordinary state of a machine that
-		// has just been enrolled, and the page the handoff opens is where it
-		// is answered. Saying so here would read as a fault.
-		return nil
-	}
-
+	// Stored whether or not there are targets yet. Having none is the ordinary
+	// state of a machine that has just been enrolled, and the page the handoff
+	// opens is where it is answered -- but the node ID and the repository URL
+	// above are what the server just told this machine, and they have to
+	// survive the command that learned them.
+	//
+	// This used to return here instead, and the machine forgot both. What the
+	// owner then saw was the setup page saying their computer had never been
+	// enrolled, and `enroll` refusing to enrol it again because it had.
 	return d.plan.Put(ctx, plan, time.Now())
 }
 
-// checkRepository proves the credentials work while somebody is watching.
+// ensureRepository proves the credentials work while somebody is watching,
+// and creates the repository when this is a fresh provision and there is
+// none. It reports whether it created one.
 //
 // This is the whole reason enrollment is a command rather than a form
 // submission. A bucket in the wrong region, a policy that denies writes, a
 // clock so far out that S3 rejects the signature — every one of those is
 // silent until the first scheduled run, which is after the administrator has
 // left the building.
-func checkRepository(ctx context.Context, r *restic.Runner, e eumaeuscreds.Enrollment) error {
+//
+// # Why this creates a repository when nothing else in the program may
+//
+// [restic.Runner.Init] is otherwise never called, and the reason is worth
+// repeating: a backup that initialises a missing repository silently starts a
+// brand-new empty one when a URL is wrong, and reports success while doing
+// it. That failure needs three things — an unattended run, a URL nobody
+// checked, and no second opinion — and enrollment has none of them. A person
+// is standing at the machine, the URL came from Eumaeus rather than from
+// somebody typing it, and this happens exactly once.
+//
+// Eumaeus provisions the bucket, mints the keys and draws the password, and
+// stops there; before this, nothing in either program created the repository,
+// so a freshly provisioned machine enrolled green and could not back up. The
+// alternative was for the server to hold a restic of its own, which is a
+// larger thing to own for a step that belongs at the moment somebody is
+// watching anyway.
+func ensureRepository(ctx context.Context, r *restic.Runner, e eumaeuscreds.Enrollment) (bool, error) {
 	repo := restic.Repository{
 		URL:             e.RepositoryURL,
 		Password:        []byte(e.ResticPassword),
@@ -260,19 +287,49 @@ func checkRepository(ctx context.Context, r *restic.Runner, e eumaeuscreds.Enrol
 
 	exists, err := r.Exists(ctx, repo)
 	if err != nil {
-		return fmt.Errorf("could not reach the repository: %w", err)
+		return false, fmt.Errorf("could not reach the repository: %w", err)
 	}
 
-	if !exists {
-		// Never initialised from here. Eumaeus provisions the bucket and
-		// creates the repository; a client that could create one would create
-		// a second, empty one the first time a URL was mistyped, and report
-		// success while doing it.
-		return fmt.Errorf("there is no restic repository at %s yet — "+
-			"Eumaeus provisions it, so this needs fixing on the server", e.RepositoryURL)
+	if exists {
+		return false, nil
 	}
 
-	return nil
+	if e.RepositoryAdopted {
+		// The one case where creating it is the worst available action. The
+		// server says this bucket was taken over from a legacy install and
+		// holds years of snapshots; restic cannot find them. Either the URL
+		// is not the bucket those snapshots are in, or the password is not
+		// the one they were written with — and writing an empty repository
+		// over that question would turn a loud, fixable problem into a
+		// machine that backs up happily to the wrong place while the real
+		// history sits somewhere nobody is looking.
+		return false, fmt.Errorf("Eumaeus says %s was adopted and already holds backups, "+
+			"but there is no restic repository there — the URL or the password is wrong, "+
+			"and this needs fixing on the server before this machine runs",
+			e.RepositoryURL)
+	}
+
+	fmt.Printf("There is no repository at %s yet. Creating it.\n", e.RepositoryURL)
+
+	if err := r.Init(ctx, repo); err != nil {
+		return false, fmt.Errorf("could not create the repository at %s: %w", e.RepositoryURL, err)
+	}
+
+	// Read it back rather than trusting the exit code, which is the same
+	// argument the rest of this program makes about a backup: the thing that
+	// proves a repository is there is opening it, not the absence of an
+	// error while writing it.
+	switch opened, err := r.Exists(ctx, repo); {
+	case err != nil:
+		return true, fmt.Errorf("created the repository at %s but could not read it back: %w",
+			e.RepositoryURL, err)
+
+	case !opened:
+		return true, fmt.Errorf("created the repository at %s and it is still not there",
+			e.RepositoryURL)
+	}
+
+	return true, nil
 }
 
 // printRestoreCard writes the page the owner keeps.

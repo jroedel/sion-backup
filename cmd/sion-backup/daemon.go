@@ -482,6 +482,16 @@ func (d *deps) startRun(daemonCtx context.Context) func(context.Context) error {
 // once. They arrive over the network, live for the length of the run, and are
 // wiped on the way out — nothing reaches the disk.
 func (d *deps) backup(ctx context.Context, plan planbus.Plan) error {
+	// The one gate every way of starting a backup passes through: the
+	// scheduler, `sion-backup run`, and the status page's button. A plan with
+	// no targets can be stored -- it is what a machine holds between enrolment
+	// and somebody choosing folders -- and running one would upload nothing,
+	// record a success, and turn the dashboard green for a machine that is not
+	// backed up.
+	if err := plan.Runnable(); err != nil {
+		return err
+	}
+
 	// Before the credentials, and before anything is reported as started:
 	// this is the machine making sure it still has the program that does the
 	// work. Ordinarily it is one exec of `restic version` and nothing else.

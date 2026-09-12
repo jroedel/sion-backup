@@ -159,6 +159,46 @@ before running anything:
 sha256sum --ignore-missing -c SHA256SUMS
 ```
 
+### Installing on a Mac
+
+Run the installer as the person whose files are backed up, never with `sudo`:
+
+```sh
+./deploy/macos/install.sh
+```
+
+It picks the right binary for the processor, clears the download quarantine,
+installs into `~/.local/bin`, registers the launch agent, and stops before
+enrolling. Three things are worth knowing before the first one:
+
+**The binaries are not signed or notarized.** Double-clicking one, or running
+it straight out of `~/Downloads`, gets a Gatekeeper dialog — *"Apple could not
+verify that sion-backup is free of malware"* / *"Apple no pudo verificar que
+sion-backup no contenga software malicioso"* — whose two buttons are **Done**
+and **Move to Trash**. Press Done. Nothing is wrong with the download; verify
+it against `SHA256SUMS` and let the installer clear the flag, or clear it by
+hand with `xattr -d com.apple.quarantine ./sion-backup`.
+
+**Full Disk Access is not optional, and no script can grant it.** On macOS
+`~/Documents`, `~/Desktop` and Mail are protected by TCC rather than by file
+permissions. Without the grant the backup runs, succeeds, and contains none of
+them — the folders simply look empty to it, which is the quietest possible
+version of the failure this whole program is built against. Add
+`~/.local/bin/sion-backup` under  → System Settings → Privacy & Security →
+Full Disk Access (click `+`, then `⌘⇧G` to type the path), then
+`launchctl kickstart -k gui/$(id -u)/us.schoenstatt.sion-backup`.
+
+**The agent is a user agent, not a daemon.** It runs as the person whose files
+are backed up, which is what makes the Full Disk Access grant theirs to give;
+it also means the machine takes no backups while nobody is logged in. That is
+the trade macOS offers — the alternative is a LaunchDaemon and a PPPC profile
+pushed by MDM, which this organisation has no MDM to push.
+
+There is no legacy Mac install to take over: the old project scoped macOS and
+shipped nothing.
+
+### Installing on a machine that already backs up
+
 Before installing on a machine that is already backing up with the old
 scripts — which is most of them — look at what is there:
 
@@ -273,9 +313,12 @@ Nothing is backed up until that page is answered — see
 below. `--no-start` and `--no-open` turn off the last two steps, for an install
 being driven from a script or over SSH.
 
-macOS and Windows have their own files in `deploy/`. The Windows one is a
+macOS and Windows have their own installers in `deploy/`. The Windows one is a
 PowerShell script; run it elevated, with `-Elevated`, so Volume Shadow Copy is
-available and open files get backed up.
+available and open files get backed up. The macOS one is
+`deploy/macos/install.sh` and must NOT be run with sudo — see
+[Installing on a Mac](#installing-on-a-mac) above, including the Full Disk
+Access step that no installer can take for you.
 
 ---
 

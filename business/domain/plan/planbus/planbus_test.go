@@ -159,3 +159,97 @@ func TestAMissingPlanIsReportedAsSuch(t *testing.T) {
 		t.Errorf("got %v, want ErrNoPlan", err)
 	}
 }
+
+// TestAMachineJustEnrolledCanStoreWhatTheServerToldIt.
+//
+// The state between enrolment and somebody choosing folders: a node ID and a
+// repository URL, and no targets yet. It has to be storable, because those two
+// facts arrive in `enroll` and nothing else learns them.
+//
+// When it was not, a Mac enrolled, saved its token, silently failed to write
+// this plan, and then told its owner — on the page enrolment had just opened —
+// that the computer had never been enrolled. `enroll` meanwhile refused to run
+// again, correctly, because it had.
+func TestAMachineJustEnrolledCanStoreWhatTheServerToldIt(t *testing.T) {
+	ctx := context.Background()
+	store := &memory{}
+	b := planbus.NewBusiness(store)
+
+	plan := usable()
+	plan.Targets = nil
+
+	if err := b.Put(ctx, plan, time.Now()); err != nil {
+		t.Fatalf("a freshly enrolled machine could not store its own plan: %v", err)
+	}
+
+	got, err := b.Get(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if got.NodeID != plan.NodeID || got.Repository != plan.Repository {
+		t.Errorf("stored %+v, want the node ID and repository the server gave", got)
+	}
+}
+
+// TestAPlanWithNoTargetsIsStorableButNotRunnable is the split, stated once.
+func TestAPlanWithNoTargetsIsStorableButNotRunnable(t *testing.T) {
+	plan := usable()
+	plan.Targets = nil
+
+	if err := plan.Validate(); err != nil {
+		t.Errorf("a plan with no targets cannot be stored: %v", err)
+	}
+
+	if err := plan.Runnable(); err == nil {
+		t.Error("a plan with no targets is runnable; it would back up nothing and " +
+			"report success")
+	}
+}
+
+// TestConfirmingNeedsTargets, because confirming is what releases the
+// scheduler.
+func TestConfirmingNeedsTargets(t *testing.T) {
+	ctx := context.Background()
+	store := &memory{}
+	b := planbus.NewBusiness(store)
+
+	plan := usable()
+	plan.Targets = nil
+
+	if err := b.Put(ctx, plan, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := b.Confirm(ctx, time.Now()); err == nil {
+		t.Fatal("a plan with no targets was confirmed into the scheduler")
+	}
+}
+
+// TestAUsablePlanIsStillRunnable, so the split did not quietly let everything
+// through.
+func TestAUsablePlanIsStillRunnable(t *testing.T) {
+	if err := usable().Runnable(); err != nil {
+		t.Errorf("an ordinary plan is not runnable: %v", err)
+	}
+
+	for _, tc := range []struct {
+		name string
+		with func(*planbus.Plan)
+	}{
+		{"no node ID", func(p *planbus.Plan) { p.NodeID = "" }},
+		{"no repository", func(p *planbus.Plan) { p.Repository = "" }},
+		{"a negative size limit", func(p *planbus.Plan) { p.SkipLargerThanGB = -1 }},
+	} {
+		plan := usable()
+		tc.with(&plan)
+
+		if err := plan.Validate(); err == nil {
+			t.Errorf("a plan with %s was accepted for storage", tc.name)
+		}
+
+		if err := plan.Runnable(); err == nil {
+			t.Errorf("a plan with %s was accepted as runnable", tc.name)
+		}
+	}
+}
