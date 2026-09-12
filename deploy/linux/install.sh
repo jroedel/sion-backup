@@ -262,7 +262,21 @@ if [ "$NO_SERVICE" -eq 0 ]; then
   if [ -n "$UNIT_SRC" ]; then
     say "Installing the user service"
     mkdir -p "$UNIT_DIR"
-    install -m 0644 "$UNIT_SRC" "$UNIT_DIR/sion-backup.service"
+
+    # Rewritten rather than copied, for the same reason the macOS installer
+    # rewrites the plist: the shipped unit says %h/.local/bin/sion-backup,
+    # which is right for the default prefix and wrong for every other one.
+    # --prefix is a documented flag, and before this it produced a service
+    # that systemd accepted, enabled, and could never start -- pointing at a
+    # path where nothing had been installed.
+    sed "s|^ExecStart=.*|ExecStart=${INSTALLED} daemon|" \
+      "$UNIT_SRC" > "$UNIT_DIR/sion-backup.service"
+    chmod 0644 "$UNIT_DIR/sion-backup.service"
+
+    if ! grep -q "^ExecStart=${INSTALLED} daemon$" "$UNIT_DIR/sion-backup.service"; then
+      echo "install.sh: could not point the service at ${INSTALLED}" >&2
+      exit 1
+    fi
 
     systemctl --user daemon-reload
     systemctl --user enable sion-backup >/dev/null
