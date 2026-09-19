@@ -1,0 +1,639 @@
+#!/usr/bin/env bash
+#
+# run-rotation — one machine, two real repositories, one real cutover.
+#
+# Runs inside the same container image as run-machine and takes the same
+# environment, plus:
+#
+#   REPO_URL     the repository this machine starts on   (the old bucket)
+#   NEXT_URL     the repository it is offered and moves to (the new bucket)
+#   SPARE_URL    a URL with nothing at it, for the refusal at the end
+#
+# WHAT THIS TESTS THAT NOTHING ELSE DOES
+#
+# The whole rotation loop, against a bucket. run-machine proves a machine backs
+# up; the self-update harness proves it comes back after an upgrade. Neither
+# has ever watched a machine be moved — and moving a machine is the one
+# operation in this program that asks it to CREATE a repository, which is the
+# behaviour with the worst failure mode anywhere in the design.
+#
+# The order below is the order the loop happens in, and every step is asserted
+# from two sides: what the bucket contains, and what the machine told the
+# server. A cutover that moved the data and reported nothing is a machine that
+# has gone quiet on the dashboard mid-rotation, which is the one moment it can
+# least afford to.
+#
+# THE ASSERTION THAT MATTERS MOST
+#
+# Section 9. The machine is pointed at a URL with nothing at it, with the
+# repository still `active` and so with no permission to create anything, and
+# it must FAIL. A build that creates a repository there is a build that
+# silently starts a brand-new empty backup whenever a URL is wrong or a bucket
+# has been emptied, and reports success while doing it. That is the failure
+# this program's whole doctrine exists to prevent, and it now has a test that
+# runs against real storage.
+#
+# EXIT CODES: as run-machine. 0 pass, 1 the program misbehaved, 2 unreachable.
+
+set -uo pipefail
+
+: "${REPO_URL:?}"
+: "${NEXT_URL:?}"
+: "${SPARE_URL:?}"
+: "${KEY_ID:?}"
+: "${SECRET:?}"
+: "${NODE_ID:=gate-rotation}"
+
+USER_NAME=sion
+HOME_DIR="/home/${USER_NAME}"
+EXE=/usr/local/bin/sion-backup
+DATA="${HOME_DIR}/data"
+STUB_ADDR=127.0.0.1:8088
+PAGE_ADDR=127.0.0.1:7391
+
+fail=0
+readonly UNREACHABLE=2
+
+say()  { printf '\n\033[1m-- %s\033[0m\n' "$*"; }
+ok()   { printf '   \033[32mok\033[0m   %s\n' "$*"; }
+bad()  { printf '   \033[31mFAIL\033[0m %s\n' "$*"; fail=1; }
+note() { printf '        %s\n' "$*"; }
+
+as_user() { runuser -u "$USER_NAME" -- env HOME="$HOME_DIR" "$@"; }
+
+id "$USER_NAME" >/dev/null 2>&1 || useradd --create-home --shell /bin/bash "$USER_NAME"
+
+# --- talking to the two servers -------------------------------------------
+
+# stub_admin is the harness standing in for a person at /fleet. Deliberately
+# off the API prefix, so nothing it does could be something the client is
+# entitled to do for itself.
+stub_admin() {
+  curl -fsS --max-time 10 -X POST "http://${STUB_ADDR}/admin/$1" \
+    -H 'Content-Type: application/json' -d "$2"
+}
+
+stub_state() { curl -fsS --max-time 10 "http://${STUB_ADDR}/admin/state"; }
+
+# page fetches the machine's own status page the way a browser would.
+#
+# Host, Origin and Sec-Fetch-Site are all load-bearing rather than cargo: the
+# loopback guard refuses an unsafe method without them, which is what stops any
+# page on the internet repointing somebody's backups. Getting them right here
+# means the harness drives the same door a person does.
+page() {
+  curl -fsS --max-time 20 -H "Host: ${PAGE_ADDR}" "http://${PAGE_ADDR}$1"
+}
+
+page_post() {
+  local path=$1 body=$2
+  curl -fsS --max-time 60 -X POST "http://${PAGE_ADDR}${path}" \
+    -H "Host: ${PAGE_ADDR}" \
+    -H "Origin: http://${PAGE_ADDR}" \
+    -H 'Sec-Fetch-Site: same-origin' \
+    -H 'Content-Type: application/x-www-form-urlencoded' \
+    --data "$body"
+}
+
+# form_token scrapes the token out of a rendered page. There is no API here and
+# there should not be: the form token is the thing that proves a POST came from
+# a page this program served.
+form_token() { grep -oE 'name="form_token" value="[^"]+"' | head -1 | sed 's/.*value="//; s/"//'; }
+
+DAEMON_LOG=/tmp/daemon.log
+DAEMON_PID=
+
+daemon_start() {
+  # --no-schedule, because this harness starts its own runs and a daemon that
+  # also started one would put two backups on the same repository and report a
+  # lock contention as a bug in the program.
+  as_user "$EXE" daemon --no-schedule -v >>"$DAEMON_LOG" 2>&1 &
+  DAEMON_PID=$!
+
+  for _ in $(seq 1 100); do
+    curl -fsS --max-time 2 -H "Host: ${PAGE_ADDR}" "http://${PAGE_ADDR}/healthz" >/dev/null 2>&1 && return 0
+    sleep 0.2
+  done
+
+  return 1
+}
+
+daemon_stop() {
+  [ -n "$DAEMON_PID" ] || return 0
+
+  # Both, because the job this shell knows about is `runuser`, and a signal to
+  # it does not reliably reach the daemon underneath. A daemon left running
+  # would take a second backup against a repository this script is in the
+  # middle of asserting about, and the failure would look like a bug in the
+  # program rather than in the harness.
+  kill "$DAEMON_PID" 2>/dev/null
+  pkill -f 'sion-backup daemon' 2>/dev/null
+  wait "$DAEMON_PID" 2>/dev/null
+  DAEMON_PID=
+
+  for _ in $(seq 1 50); do
+    pgrep -f 'sion-backup daemon' >/dev/null 2>&1 || return 0
+    sleep 0.1
+  done
+}
+
+trap daemon_stop EXIT
+
+# ---------------------------------------------------------------------------
+# 0. Can the bucket be reached at all?
+#
+# Same question run-machine asks first, and for the same reason: everything
+# after this point is ambiguous, and a gate that cannot tell a broken release
+# from a broken network will eventually block a good one.
+# ---------------------------------------------------------------------------
+
+host=${REPO_URL#s3:https://}; host=${host%%/*}
+bucket=${REPO_URL#s3:https://"$host"/}; bucket=${bucket%%/*}
+
+if ! curl -fsS -o /dev/null --max-time 30 -I \
+  --aws-sigv4 "aws:amz:${AWS_REGION:-us-central-1}:s3" \
+  --user "${KEY_ID}:${SECRET}" \
+  "https://${host}/${bucket}" 2>/tmp/probe.err; then
+
+  printf '\n\033[33m-- the bucket could not be reached\033[0m\n'
+  sed 's/^/        /' /tmp/probe.err 2>/dev/null
+
+  exit "$UNREACHABLE"
+fi
+
+# ---------------------------------------------------------------------------
+# 1. A corpus, a server, a config, and one repository.
+#
+# Small on purpose. A cutover re-uploads everything, so the corpus is the
+# thing that decides how long this takes, and what is being tested here is
+# behaviour rather than bandwidth — run-machine measures the cost.
+# ---------------------------------------------------------------------------
+
+say "A corpus"
+
+as_user mkdir -p "$DATA"
+for i in $(seq 1 40); do printf 'document %d\n' "$i" > "$DATA/doc-$i.txt"; done
+head -c 262144 /dev/urandom > "$DATA/canary.bin"
+chown -R "$USER_NAME" "$DATA"
+
+ok "$(find "$DATA" -type f | wc -l) files"
+
+say "Eumaeus, on loopback"
+
+JOURNAL=/tmp/journal.jsonl
+: >"$JOURNAL"; chmod 666 "$JOURNAL"
+
+/harness/eumaeusstub \
+  -addr "$STUB_ADDR" -repo "$REPO_URL" \
+  -key-id "$KEY_ID" -secret "$SECRET" -node "$NODE_ID" \
+  -journal "$JOURNAL" -ready /tmp/stub-ready \
+  >/tmp/stub.log 2>&1 &
+
+for _ in $(seq 1 100); do [ -f /tmp/stub-ready ] && break; sleep 0.1; done
+[ -f /tmp/stub-ready ] || { bad "the stub never came up"; cat /tmp/stub.log; exit 1; }
+
+RESTIC_PW=$(cat /tmp/stub-ready)
+ok "serving ${REPO_URL}"
+
+CONFIG_DIR="${HOME_DIR}/.local/share/sion-backup"
+as_user mkdir -p "$CONFIG_DIR"
+
+cat > "$CONFIG_DIR/config.toml" <<TOML
+node_id    = "${NODE_ID}"
+repository = "${REPO_URL}"
+targets    = ["${DATA}"]
+confirmed  = true
+
+[eumaeus]
+url = "http://${STUB_ADDR}"
+
+[schedule]
+times = ["03:00"]
+jitter_minutes = 0
+min_interval = "0s"
+
+[update]
+enabled = false
+
+[server]
+addr = "${PAGE_ADDR}"
+TOML
+
+chown "$USER_NAME" "$CONFIG_DIR/config.toml"
+
+say "restic"
+
+if ! as_user "$EXE" restic >/tmp/restic-install.log 2>&1; then
+  printf '\n\033[33m-- restic could not be downloaded\033[0m\n'
+  tail -5 /tmp/restic-install.log | sed 's/^/        /'
+
+  exit "$UNREACHABLE"
+fi
+
+RESTIC="${CONFIG_DIR}/bin/restic"
+
+# restic_at opens a NAMED repository, because from here on this machine has
+# more than one and the interesting assertions are about which.
+restic_at() {
+  local repo=$1; shift
+  as_user env \
+    RESTIC_REPOSITORY="$repo" RESTIC_PASSWORD="$RESTIC_PW" \
+    AWS_ACCESS_KEY_ID="$KEY_ID" AWS_SECRET_ACCESS_KEY="$SECRET" \
+    "$RESTIC" "$@"
+}
+
+snapshots_at() { restic_at "$1" snapshots --json 2>/dev/null | jq 'length' 2>/dev/null || echo 0; }
+
+# The first repository, created here because creating it is the server's job
+# and the client is right to refuse. The SECOND one is created by the binary,
+# in section 6, and that is the whole point of this file.
+if restic_at "$REPO_URL" init >/tmp/init.log 2>&1; then
+  ok "the old bucket exists at ${REPO_URL}"
+else
+  bad "restic init failed"; tail -5 /tmp/init.log; exit 1
+fi
+
+# ---------------------------------------------------------------------------
+# 2. Enrol, back up once, and print the card.
+#
+# The ordinary life of a machine, so that the rotation below starts from a
+# machine that is actually backing up rather than from a fresh one.
+# ---------------------------------------------------------------------------
+
+say "Enrolling"
+
+if as_user "$EXE" enroll --code GATE-TEST >/tmp/enroll.log 2>&1; then
+  ok "enrolled as ${NODE_ID}"
+else
+  bad "enroll failed"; tail -20 /tmp/enroll.log; exit 1
+fi
+
+# Enrolment prints the owner's card and, since #52, says so. Every machine in
+# the fleet had a card printed and none of them ever reported it.
+if [ "$(stub_state | jq -r '.card_state')" = issued ]; then
+  ok "enrolment told the server the card was printed"
+else
+  bad "the card printed at enrolment was not reported"
+  note "card_state is $(stub_state | jq -r '.card_state')"
+fi
+
+say "First backup, to the old bucket"
+
+if as_user "$EXE" run -v >/tmp/run1.log 2>&1; then
+  ok "run 1 finished"
+else
+  bad "run 1 failed"; tail -20 /tmp/run1.log
+fi
+
+[ "$(snapshots_at "$REPO_URL")" = 1 ] && ok "one snapshot in the old bucket" \
+                                      || bad "expected 1 snapshot in the old bucket"
+
+# ---------------------------------------------------------------------------
+# 3. The machine asks, and an administrator provisions.
+# ---------------------------------------------------------------------------
+
+say "The machine asks for a fresh bucket"
+
+daemon_start || { bad "the daemon never served its page"; tail -20 "$DAEMON_LOG"; exit 1; }
+
+# The poll is what every step of the loop is reached through, and nothing asked
+# for it before #52. One at startup, so this is asserting the thing that was
+# missing rather than waiting six hours for the interval.
+if grep -c '"kind":"state"' "$JOURNAL" >/dev/null && \
+   [ "$(grep -c '"kind":"state"' "$JOURNAL")" -ge 1 ]; then
+  ok "the daemon asked the server about this machine at startup"
+else
+  bad "nothing asked for this machine's state"
+  note "every step below is reached through GET /machines/me"
+fi
+
+token=$(page /rotation | form_token)
+[ -n "$token" ] || { bad "the fresh-start page served no form token"; exit 1; }
+
+if page_post /rotation/request "form_token=${token}" >/tmp/request.html 2>&1; then
+  ok "the owner asked for a fresh bucket"
+else
+  bad "the request could not be posted"; tail -5 /tmp/request.html
+fi
+
+if [ "$(stub_state | jq -r '.rotation_asked')" = true ]; then
+  ok "the server has an open work item"
+else
+  bad "the server never heard the request"
+fi
+
+# Asking twice is an ordinary answer about the fleet's state and must not be
+# shown as a failure — one of the three 409s, and the one an owner is most
+# likely to produce by pressing the button again.
+if page_post /rotation/request "form_token=${token}" 2>/dev/null | grep -q 'already been asked'; then
+  ok "asking twice says so, and is not shown as a failure"
+else
+  bad "a second request was not reported as already open"
+fi
+
+say "An administrator provisions the second bucket"
+
+stub_admin offer "{\"url\":\"${NEXT_URL}\"}" >/dev/null \
+  && ok "offered ${NEXT_URL}" || { bad "the offer could not be made"; exit 1; }
+
+# An offer is not an order. The machine has to ask before it can see it, so the
+# daemon is restarted — which is also the startup poll doing its job.
+daemon_stop
+daemon_start || { bad "the daemon did not come back"; exit 1; }
+
+if grep -q 'a fresh bucket has been provisioned' "$DAEMON_LOG"; then
+  ok "the machine noticed the offer"
+else
+  bad "the machine never noticed the offer"
+  note "the offer is served correctly, to nobody — which is what #52 was about"
+fi
+
+# Nothing has moved. The bucket is still the old one, and the whole design
+# rests on that staying true until somebody presses a button.
+if [ "$(stub_state | jq -r '.current')" = "$REPO_URL" ]; then
+  ok "and has not moved: still writing to the old bucket"
+else
+  bad "provisioning a bucket moved the machine by itself"
+fi
+
+# ---------------------------------------------------------------------------
+# 4. What the owner is shown before being asked for days of their connection.
+# ---------------------------------------------------------------------------
+
+say "The page that asks"
+
+rotation_html=$(page /rotation)
+
+for want in "$(basename "$NEXT_URL")" "To upload" "What you lose" "Start moving"; do
+  printf '%s' "$rotation_html" | grep -qF "$want" \
+    && ok "the page says “${want}”" \
+    || bad "the page does not say “${want}”"
+done
+
+# Both halves of the trade in the same breath. A page that asked for days of
+# somebody's uplink without saying what it costs them would be the version of
+# this that gets machines switched off.
+printf '%s' "$rotation_html" | grep -q 'kept, and readable' \
+  && ok "and says the old backups are kept" \
+  || bad "the page does not say what happens to the old backups"
+
+# ---------------------------------------------------------------------------
+# 5. The cutover, which is the machine's decision and nobody else's.
+# ---------------------------------------------------------------------------
+
+say "Accepting"
+
+token=$(printf '%s' "$rotation_html" | form_token)
+offered=$(printf '%s' "$rotation_html" | grep -oE 'name="repository_url" value="[^"]+"' | head -1 | sed 's/.*value="//; s/"//')
+
+[ "$offered" = "$NEXT_URL" ] && ok "the form names the offered bucket" \
+                             || bad "the form names ${offered}"
+
+if page_post /rotation/cutover "form_token=${token}&repository_url=${offered}" >/tmp/cutover.html 2>&1; then
+  ok "accepted"
+else
+  bad "the cutover could not be posted"; tail -5 /tmp/cutover.html
+fi
+
+state=$(stub_state)
+
+[ "$(printf '%s' "$state" | jq -r '.current')" = "$NEXT_URL" ] \
+  && ok "the server has moved this machine to the new bucket" \
+  || bad "the server still has this machine on $(printf '%s' "$state" | jq -r '.current')"
+
+[ "$(printf '%s' "$state" | jq -r '.expect_empty')" = true ] \
+  && ok "and permits it to create a repository there, once" \
+  || bad "expect_empty is not set on the new bucket"
+
+# The open work item closes itself. Left open it would refuse this machine's
+# next rotation request a year from now — the kind of stale row nobody
+# remembers to clear.
+[ "$(printf '%s' "$state" | jq -r '.rotation_asked')" = false ] \
+  && ok "and closed the request that led here" \
+  || bad "the rotation request is still open after the cutover"
+
+# ---------------------------------------------------------------------------
+# 6. The seeding run: the one moment this program may create a repository.
+# ---------------------------------------------------------------------------
+
+say "The seeding run"
+
+daemon_stop
+
+if as_user "$EXE" run -v >/tmp/seed.log 2>&1; then
+  ok "the seeding run finished"
+else
+  bad "the seeding run failed"; tail -30 /tmp/seed.log
+fi
+
+grep -q 'has been moved to an empty bucket' /tmp/seed.log \
+  && ok "the machine said it had been moved, and why it was allowed to create" \
+  || bad "the run did not say it was creating the repository"
+
+if restic_at "$NEXT_URL" cat config >/dev/null 2>&1; then
+  ok "the new bucket holds a repository the password opens"
+else
+  bad "THE NEW REPOSITORY WAS NOT CREATED"
+  note "expect_empty was true and nothing was made of it"
+fi
+
+[ "$(snapshots_at "$NEXT_URL")" = 1 ] && ok "one snapshot in the new bucket" \
+                                      || bad "expected 1 snapshot in the new bucket"
+
+# The old bucket is the fallback throughout, and this is the promise the
+# owner-facing text makes. A rotation that ate the old snapshots the moment the
+# new one worked would be a rotation nobody could back out of.
+[ "$(snapshots_at "$REPO_URL")" = 1 ] && ok "and the old bucket is untouched and still readable" \
+                                      || bad "the old bucket changed during the cutover"
+
+# ---------------------------------------------------------------------------
+# 7. Letting go of the old bucket, which the machine says by itself.
+# ---------------------------------------------------------------------------
+
+say "Finished with the old bucket"
+
+released=$(stub_state | jq -r '.repositories[] | select(.release_asked_at != null) | .url' 2>/dev/null)
+
+if [ "$released" = "$REPO_URL" ]; then
+  ok "the machine said it no longer needs the old bucket"
+else
+  bad "the old bucket was never let go (released: ${released:-none})"
+  note "it rests on a VERIFIED run having landed, which is evidence, not a schedule"
+fi
+
+# Named the bucket it is on NOW, not the one being let go. That direction is
+# deliberate: a machine's memory of an earlier bucket is local state a reimage
+# takes with it while the token survives.
+named=$(jq -r 'select(.kind=="old-bucket") | .body.repository_url' "$JOURNAL" 2>/dev/null | tail -1)
+
+[ "$named" = "$NEXT_URL" ] && ok "and named where it is now, not where it was" \
+                           || bad "the release named ${named}"
+
+# It releases nothing. Both buckets are still there and both still open.
+restic_at "$REPO_URL" cat config >/dev/null 2>&1 \
+  && ok "the old bucket is still live and still readable" \
+  || bad "the old bucket stopped working when it was let go"
+
+# ---------------------------------------------------------------------------
+# 8. The second run onto the new bucket, and the window closing behind it.
+# ---------------------------------------------------------------------------
+
+say "Running on the new bucket"
+
+printf 'changed after the cutover\n' > "$DATA/changes.txt"
+chown "$USER_NAME" "$DATA/changes.txt"
+
+as_user "$EXE" run -v >/tmp/run3.log 2>&1
+
+[ "$(snapshots_at "$NEXT_URL")" = 2 ] && ok "two snapshots in the new bucket" \
+                                      || bad "the second run did not land in the new bucket"
+
+# The permission is for one fetch and closes when the seed lands. A window that
+# lasted as long as the state would mean every night of a stalled cutover was a
+# night on which an emptied bucket was silently recreated.
+last_permitted=$(jq -r 'select(.kind=="credentials") | .body.expect_empty' "$JOURNAL" 2>/dev/null | tail -1)
+
+[ "$last_permitted" = false ] && ok "and the permission to create has closed behind it" \
+                              || bad "expect_empty is still ${last_permitted} after the seed landed"
+
+# ---------------------------------------------------------------------------
+# 9. An administrator retires the old bucket, and the card is reprinted.
+#
+# Days or weeks after the cutover in real life, and the first moment at which
+# anything may tell the owner to destroy the paper they are holding.
+# ---------------------------------------------------------------------------
+
+say "The owner's card"
+
+# After a cutover the card state falls back to `never`: it is a fact about the
+# CURRENT repository, and the new bucket has had no card printed for it. That
+# is the signal a reprint is owed — not `superseded`, which cannot arrive while
+# the old bucket's keys still work and its card is the only way into the only
+# bucket holding any history.
+[ "$(stub_state | jq -r '.card_state')" = never ] \
+  && ok "after the cutover the new bucket has no card" \
+  || bad "card_state is $(stub_state | jq -r '.card_state') after a cutover"
+
+# Retirement is one transaction: the old row goes to retired, the successor is
+# promoted to active, and the old password is kept for ever.
+stub_admin retire '{}' >/dev/null && ok "an administrator retired the old bucket" \
+                                  || bad "the old bucket could not be retired"
+
+promoted=$(stub_state | jq -r --arg url "$NEXT_URL" '.repositories[] | select(.url==$url) | .state')
+
+[ "$(stub_state | jq -r '.current')" = "$NEXT_URL" ] && [ "$promoted" = active ] \
+  && ok "and promoted the new one in the same breath" \
+  || bad "the new bucket is ${promoted}; left cutting-over it would refuse every future rotation"
+
+[ "$(stub_state | jq -r '.card_state')" = superseded ] \
+  && ok "and only now does the server say the old card opens nothing" \
+  || bad "card_state is $(stub_state | jq -r '.card_state') after a retirement"
+
+daemon_start || bad "the daemon did not come back for the card check"
+
+page / | grep -q 'destroy the old' \
+  && ok "and the page tells the owner to destroy it" \
+  || bad "the page does not tell the owner to destroy the old card"
+
+daemon_stop
+
+if as_user "$EXE" card >/tmp/card.log 2>&1; then
+  ok "a new card was printed"
+else
+  bad "the card could not be printed"; tail -20 /tmp/card.log
+fi
+
+grep -q "$NEXT_URL" /tmp/card.log \
+  && ok "and it names the bucket this machine writes to now" \
+  || bad "the card does not name the new bucket"
+
+[ "$(stub_state | jq -r '.card_state')" = issued ] \
+  && ok "and the server was told" \
+  || bad "the printed card was not reported"
+
+# ---------------------------------------------------------------------------
+# 10. THE REFUSAL. The assertion this whole file is worth writing for.
+#
+# The machine is in its steady state on a bucket that has been retired out from
+# under nothing — and is then pointed at a URL with nothing at it. The
+# repository is `active`, so there is no permission to create anything, and the
+# only correct outcome is a loud failure.
+#
+# A build that creates a repository here is a build that silently starts a
+# brand-new empty backup whenever a URL is wrong or a bucket has been emptied,
+# and reports success while doing it.
+#
+# It comes after the retirement deliberately: `point-at` refuses during a
+# cutover, because a machine that IS being moved is a machine for which an
+# empty bucket may be exactly what the server meant. The first version of this
+# file got that order wrong and turned the most important assertion in the
+# harness into one that could not fail.
+# ---------------------------------------------------------------------------
+
+say "A bucket that is not there"
+
+stub_admin point-at "{\"url\":\"${SPARE_URL}\"}" >/dev/null \
+  || { bad "the machine could not be pointed at an empty bucket"; }
+
+# The precondition, asserted rather than assumed. If this is ever true the test
+# below is testing the opposite of what it says it is.
+if [ "$(stub_state | jq -r '.expect_empty')" = false ]; then
+  ok "the server grants no permission to create anything here"
+else
+  bad "expect_empty is set, so the refusal below would prove nothing"
+fi
+
+if as_user "$EXE" run -v >/tmp/refuse.log 2>&1; then
+  bad "THE RUN SUCCEEDED AGAINST A REPOSITORY THAT DOES NOT EXIST"
+  note "this is the failure the whole doctrine exists to prevent"
+else
+  ok "the run failed, which is the only correct answer"
+fi
+
+if restic_at "$SPARE_URL" cat config >/dev/null 2>&1; then
+  bad "A REPOSITORY WAS CREATED WITHOUT PERMISSION"
+  note "only expect_empty on the credential fetch may license that, and it was false"
+else
+  ok "and created nothing"
+fi
+
+# And it said which of the two things was wrong, rather than reporting a
+# general failure. A machine that cannot open its repository and says so is one
+# somebody can fix.
+grep -qi 'repositor' /tmp/refuse.log \
+  && ok "and said what it could not open" \
+  || bad "the failure does not mention the repository"
+
+# ---------------------------------------------------------------------------
+# 11. What the machine told the server across the whole rotation.
+# ---------------------------------------------------------------------------
+
+say "What was reported"
+
+for kind in state rotation-request cutover old-bucket card-issued; do
+  n=$(grep -c "\"kind\":\"${kind}\"" "$JOURNAL" 2>/dev/null || echo 0)
+  [ "${n:-0}" -ge 1 ] && ok "${kind}: ${n}" || bad "${kind}: never called"
+done
+
+# ---------------------------------------------------------------------------
+# 12. Doctor, on a machine that is deliberately broken.
+#
+# The machine is still pointed at the bucket that is not there, because that is
+# the more useful thing to look at: a machine that cannot open its repository
+# has to SAY which of the two things is wrong rather than reporting a general
+# failure, and this is the one place in the harness where that can be read.
+#
+# So two failing checks below are the expected output, not a problem.
+# ---------------------------------------------------------------------------
+
+say "Doctor, on a machine that cannot open its repository"
+note "two checks below are meant to fail: this machine is pointed at an empty bucket"
+
+as_user "$EXE" doctor >/tmp/doctor.log 2>&1
+sed 's/^/        /' /tmp/doctor.log
+
+grep -q 'there is no repository at' /tmp/doctor.log \
+  && ok "doctor names the repository as the thing that is wrong" \
+  || bad "doctor does not say the repository is missing"
+
+exit "$fail"
