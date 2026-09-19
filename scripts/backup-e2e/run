@@ -4,6 +4,8 @@
 #
 #     scripts/backup-e2e/run                  # every shape, in parallel
 #     scripts/backup-e2e/run --shapes 2       # fewer
+#     scripts/backup-e2e/run --rotation       # and one machine moved to a new bucket
+#     scripts/backup-e2e/run --rotation-only  # just that
 #     scripts/backup-e2e/run --corpus-mb 256  # enough data for the cost figures
 #     scripts/backup-e2e/run --full-read      # and what re-reading everything costs
 #     scripts/backup-e2e/run --keep           # leave the repositories behind
@@ -20,6 +22,13 @@
 # repository -- backup, cat config, snapshots, restore, unlock, stats -- plus
 # `check`, which the binary never calls and which is the only thing that
 # catches a pack file that is present, correctly named and wrong.
+#
+# --rotation adds a machine that is moved to a second bucket while it is
+# running: the state poll, the offer, the request, the cutover from the status
+# page, the seeding run that CREATES a repository, the release of the old
+# bucket, the card, and -- the one worth the whole file -- a run against a URL
+# with nothing at it, which must fail rather than create anything. See
+# run-rotation.
 #
 # PARALLELISM
 #
@@ -57,6 +66,8 @@ CORPUS_MB=${CORPUS_MB:-4}
 MEASURE_FULL_READ=${MEASURE_FULL_READ:-0}
 KEEP=0
 REAP_ONLY=0
+ROTATION=0
+ROTATION_ONLY=0
 REAP_DAYS=${REAP_DAYS:-7}
 
 while [ $# -gt 0 ]; do
@@ -66,6 +77,8 @@ while [ $# -gt 0 ]; do
     --full-read) MEASURE_FULL_READ=1; shift ;;
     --keep)      KEEP=1; shift ;;
     --reap-only) REAP_ONLY=1; shift ;;
+    --rotation)  ROTATION=1; shift ;;
+    --rotation-only) ROTATION=1; ROTATION_ONLY=1; SHAPES=0; shift ;;
     -h|--help)   sed -n '2,40p' "$0" | sed 's/^#\{0,1\} \{0,1\}//'; exit 0 ;;
     *)           echo "backup-e2e: unknown option $1" >&2; exit 2 ;;
   esac
@@ -165,6 +178,8 @@ cleanup() {
     docker rm -f "${IMAGE}-${i}" >/dev/null 2>&1 || true
   done
 
+  docker rm -f "${IMAGE}-rotation" >/dev/null 2>&1 || true
+
   if [ "$KEEP" -eq 1 ]; then
     printf '\n\033[1m==> kept: %s/%s/*\033[0m\n' "$BASE" "$PREFIX_ROOT"
     printf '    repository passwords are in %s/*.password\n' "$WORK"
@@ -186,7 +201,7 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath \
 CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags '-s -w' \
   -o "$WORK/ctx/eumaeusstub" ./scripts/backup-e2e/eumaeusstub
 
-cp scripts/backup-e2e/run-machine "$WORK/ctx/"
+cp scripts/backup-e2e/run-machine scripts/backup-e2e/run-rotation "$WORK/ctx/"
 
 cat > "$WORK/ctx/Dockerfile" <<'DOCKER'
 # A machine that can reach a real bucket.
@@ -208,7 +223,9 @@ RUN apt-get update -qq \
 COPY sion-backup /usr/local/bin/sion-backup
 COPY eumaeusstub /harness/eumaeusstub
 COPY run-machine /harness/run-machine
-RUN chmod 0755 /usr/local/bin/sion-backup /harness/eumaeusstub /harness/run-machine
+COPY run-rotation /harness/run-rotation
+RUN chmod 0755 /usr/local/bin/sion-backup /harness/eumaeusstub \
+                /harness/run-machine /harness/run-rotation
 
 ENTRYPOINT ["/harness/run-machine"]
 DOCKER
@@ -219,10 +236,39 @@ docker build -q -t "$IMAGE" "$WORK/ctx" >/dev/null
 # Run, in parallel, one repository each.
 # ---------------------------------------------------------------------------
 
-say "Backing up ${SHAPES} machine(s) to ${WASABI_BUCKET}"
-echo "    ${BASE}/${PREFIX_ROOT}/<shape>"
+if [ "$ROTATION_ONLY" -eq 1 ]; then
+  say "Rotating one machine to a fresh bucket in ${WASABI_BUCKET}"
+else
+  say "Backing up ${SHAPES} machine(s) to ${WASABI_BUCKET}"
+  echo "    ${BASE}/${PREFIX_ROOT}/<shape>"
+fi
 
 pids=()
+names=()
+
+# The rotation machine gets three prefixes of its own: the bucket it starts on,
+# the bucket it is moved to, and one that is never created, for the refusal at
+# the end. Three rather than two because "a URL with nothing at it" has to be a
+# URL nothing has ever been at.
+if [ "$ROTATION" -eq 1 ]; then
+  echo "    ${BASE}/${PREFIX_ROOT}/rotation-{old,new}"
+
+  docker run --rm --name "${IMAGE}-rotation" \
+    --entrypoint /harness/run-rotation \
+    -e "REPO_URL=${BASE}/${PREFIX_ROOT}/rotation-old" \
+    -e "NEXT_URL=${BASE}/${PREFIX_ROOT}/rotation-new" \
+    -e "SPARE_URL=${BASE}/${PREFIX_ROOT}/rotation-never-made" \
+    -e "KEY_ID=${WASABI_ACCESS_KEY_ID}" \
+    -e "SECRET=${WASABI_SECRET_ACCESS_KEY}" \
+    -e "NODE_ID=gate-${RUN_ID}-rotation" \
+    -e "AWS_REGION=${WASABI_REGION}" \
+    "$IMAGE" >"$WORK/rotation.log" 2>&1 &
+
+  pids+=("$!")
+  names+=("rotation")
+
+  echo "    started rotation"
+fi
 
 for i in $(seq 1 "$SHAPES"); do
   shape="machine-${i}"
@@ -242,6 +288,7 @@ for i in $(seq 1 "$SHAPES"); do
     "$IMAGE" >"$WORK/${shape}.log" 2>&1 &
 
   pids+=("$!")
+  names+=("${shape}")
 
   echo "    started ${shape}"
 done
@@ -262,13 +309,11 @@ for pid in "${pids[@]}"; do
   esac
 done
 
-# Printed after the wait rather than streamed, because three machines writing
+# Printed after the wait rather than streamed, because several machines writing
 # to one terminal at once is unreadable and the whole point is to be read.
-for i in $(seq 1 "$SHAPES"); do
-  shape="machine-${i}"
-
-  printf '\n\033[1m==================== %s ====================\033[0m\n' "$shape"
-  cat "$WORK/${shape}.log"
+for name in "${names[@]}"; do
+  printf '\n\033[1m==================== %s ====================\033[0m\n' "$name"
+  cat "$WORK/${name}.log"
 done
 
 # ---------------------------------------------------------------------------
@@ -277,18 +322,24 @@ say "Result"
 
 [ "$KEEP" -eq 0 ] && reap
 
+total=${#names[@]}
+
 if [ "$failed" -gt 0 ]; then
-  printf '\n  \033[31m%d of %d machine(s) failed a check\033[0m\n' "$failed" "$SHAPES"
+  printf '\n  \033[31m%d of %d machine(s) failed a check\033[0m\n' "$failed" "$total"
   printf '  This is about the build. Do not publish it.\n\n'
 
   exit 1
 fi
 
 if [ "$unreachable" -gt 0 ]; then
-  printf '\n  \033[33m%d of %d machine(s) could not reach the bucket\033[0m\n' "$unreachable" "$SHAPES"
+  printf '\n  \033[33m%d of %d machine(s) could not reach the bucket\033[0m\n' "$unreachable" "$total"
   printf '  Nothing was learned about the build, good or bad.\n\n'
 
   exit 2
 fi
 
-printf '\n  \033[32mall %d machine(s) backed up, restored and verified\033[0m\n\n' "$SHAPES"
+if [ "$ROTATION_ONLY" -eq 1 ]; then
+  printf '\n  \033[32mone machine was moved to a fresh bucket and kept working\033[0m\n\n'
+else
+  printf '\n  \033[32mall %d machine(s) backed up, restored and verified\033[0m\n\n' "$total"
+fi

@@ -1,0 +1,869 @@
+#!/usr/bin/env bash
+#
+# rotation-gate — the rotation loop against a real Eumaeus, not a stub.
+#
+#     scripts/rotation-gate/run              # the whole loop
+#     scripts/rotation-gate/run --keep       # leave the server and the repositories behind
+#     scripts/rotation-gate/run --reap-only  # just delete old test repositories
+#
+# WHAT THIS TESTS THAT NOTHING ELSE DOES
+#
+# Every other test of rotation in this repository — the unit tests, the
+# Docker harness, run-rotation — runs against a server written by the same
+# person who read the contract. They prove the client is consistent with one
+# reading of the specification. They cannot prove the reading is right, and a
+# misreading is exactly the failure that reaches an owner: both sides pass
+# their own tests, and a laptop is pointed at a bucket nobody meant.
+#
+# So this one runs real Eumaeus. Its binary, its vault, its domain code, its
+# ten endpoints, against this repository's binary and real storage.
+#
+# THE ASSERTION THAT PAID FOR THE FILE
+#
+# Section 4. `repository.created_at` is the field the whole rotation age
+# policy is built on — RotateAfter at a year, InsistAfter at two — and the
+# specification can be read two ways: the date the row was made, or the date
+# the owner's snapshots start. They differ by years for an adopted bucket, and
+# the two readings put a migrated machine at opposite ends of the policy: "brand
+# new, leave it alone" against "two years old, insist". Nothing in either
+# repository's tests can tell them apart, because each side is self-consistent
+# under both. This asks the server.
+#
+# WHAT IT FAKES, AND WHY EXACTLY THAT
+#
+# One call: Provisioner.Provision, which creates a bucket and mints two IAM
+# identities at Wasabi. See _eumactl/main.go for the argument. Briefly: it is
+# real money and a real key per run for something no client can observe, and
+# it is the one part of a rotation that is Eumaeus's business with a provider
+# rather than a contract between the two programs. Everything decided before
+# and after it is real.
+#
+# The storage is real and the two "buckets" are two prefixes inside the one
+# test bucket. Nothing in Eumaeus can delete a bucket, by policy, so a gate
+# that made one per run would leave a trail for a person to clean up by hand.
+# A prefix is a repository as far as restic and the contract are concerned,
+# and the reaper below can remove it.
+#
+# REQUIREMENTS
+#
+#   go, restic-capable network, curl, jq, script(1)
+#   an Eumaeus checkout — $EUMAEUS_DIR, or ../eumaeus
+#   Wasabi credentials — the same file the rest of the release path uses
+#
+# EXIT CODES
+#
+#   0  the loop ran and every assertion held
+#   1  something misbehaved — do not publish
+#   2  this could not be run here — nothing was learned either way
+#
+# 2 covers a missing Eumaeus checkout as well as an unreachable bucket, which
+# is deliberate: most machines that build this repository do not have the
+# server's source, and a gate that fails on them is a gate people learn to
+# ignore. It is the release path and the person with both checkouts who get
+# the answer.
+#
+# WHERE IT BELONGS
+#
+# Not in release.yml. A cutover re-uploads every byte the machine holds, and
+# adding that to every tag buys a slow release rather than a safe one. This is
+# a nightly, and a thing to run by hand when either side's rotation code
+# changes. See docs/eumaeus-api.md.
+
+set -uo pipefail
+
+cd "$(dirname "$0")/../.."
+
+KEEP=0
+REAP_ONLY=0
+REAP_DAYS=${REAP_DAYS:-7}
+EUMAEUS_DIR=${EUMAEUS_DIR:-$(cd .. 2>/dev/null && pwd)/eumaeus}
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --keep)      KEEP=1; shift ;;
+    --reap-only) REAP_ONLY=1; shift ;;
+    -h|--help)   sed -n '2,60p' "$0" | sed 's/^#\{0,1\} \{0,1\}//'; exit 0 ;;
+    *)           echo "rotation-gate: unknown option $1" >&2; exit 2 ;;
+  esac
+done
+
+fail=0
+readonly UNREACHABLE=2
+
+# The Go caches, pinned before HOME is moved out from under them.
+#
+# The client is run with HOME inside the work directory, because that is how it
+# finds its configuration and its token and there is no flag for it. Go reads
+# its module cache out of HOME too, so leaving this to default would download
+# every dependency again for each eumactl call and then leave a read-only tree
+# inside a directory this script deletes.
+export GOMODCACHE="${GOMODCACHE:-$(go env GOMODCACHE)}"
+export GOCACHE="${GOCACHE:-$(go env GOCACHE)}"
+export GOPATH="${GOPATH:-$(go env GOPATH)}"
+
+say()  { printf '\n\033[1m==> %s\033[0m\n' "$*"; }
+sub()  { printf '\n\033[1m-- %s\033[0m\n' "$*"; }
+ok()   { printf '   \033[32mok\033[0m   %s\n' "$*"; }
+bad()  { printf '   \033[31mFAIL\033[0m %s\n' "$*"; fail=1; }
+note() { printf '        %s\n' "$*"; }
+skip() { printf '\n\033[33m-- %s\033[0m\n' "$*"; exit "$UNREACHABLE"; }
+
+# ---------------------------------------------------------------------------
+# 0. Can this be run here at all?
+#
+# Asked before anything is built or created, so that the common answer on a
+# developer's machine — "no, and that is fine" — costs a second and leaves
+# nothing behind.
+# ---------------------------------------------------------------------------
+
+for tool in go curl jq script; do
+  command -v "$tool" >/dev/null 2>&1 || skip "${tool} is not installed; this gate needs it"
+done
+
+[ -f "${EUMAEUS_DIR}/go.mod" ] ||
+  skip "no Eumaeus checkout at ${EUMAEUS_DIR}; set EUMAEUS_DIR to one"
+
+grep -q 'jroedel/eumaeus' "${EUMAEUS_DIR}/go.mod" ||
+  skip "${EUMAEUS_DIR} is not the Eumaeus module"
+
+CREDENTIALS=${SION_DEPLOY_ENV:-$HOME/.config/sion-backup/sion-backup-deploy.env}
+
+if [ -z "${WASABI_ACCESS_KEY_ID:-}" ] && [ -f "$CREDENTIALS" ]; then
+  # shellcheck source=/dev/null
+  . "$CREDENTIALS"
+fi
+
+for required in WASABI_ACCESS_KEY_ID WASABI_SECRET_ACCESS_KEY WASABI_BUCKET WASABI_REGION; do
+  if [ -z "$(eval "printf '%s' \"\${${required}:-}\"")" ]; then
+    skip "${required} is not set; put it in ${CREDENTIALS}, or see 'make deploy-ready'"
+  fi
+done
+
+if [ "$WASABI_REGION" = us-east-1 ]; then
+  ENDPOINT="s3.wasabisys.com"
+else
+  ENDPOINT="s3.${WASABI_REGION}.wasabisys.com"
+fi
+
+sig="aws:amz:${WASABI_REGION}:s3"
+auth="${WASABI_ACCESS_KEY_ID}:${WASABI_SECRET_ACCESS_KEY}"
+
+# ---------------------------------------------------------------------------
+# Reaping, on the same terms as the backup harness: by the date in the key, so
+# that a run in progress elsewhere is never touched.
+# ---------------------------------------------------------------------------
+
+reap() {
+  local cutoff
+  cutoff=$(date -u -d "${REAP_DAYS} days ago" +%Y-%m-%d 2>/dev/null) || return 0
+
+  sub "Reaping rotation-gate repositories older than ${cutoff}"
+
+  local listing keys removed=0
+  listing=$(curl -fsS --aws-sigv4 "$sig" --user "$auth" \
+    "https://${ENDPOINT}/${WASABI_BUCKET}?list-type=2&prefix=rotation-gate/&max-keys=10000" 2>/dev/null) || {
+      note "could not list the bucket; nothing reaped"
+
+      return 0
+    }
+
+  keys=$(printf '%s' "$listing" |
+    grep -oE '<Key>[^<]+</Key>' | sed 's/<[^>]*>//g' |
+    awk -F/ -v cutoff="$cutoff" '$1 == "rotation-gate" && $2 < cutoff')
+
+  for key in $keys; do
+    curl -fsS -o /dev/null -X DELETE --aws-sigv4 "$sig" --user "$auth" \
+      "https://${ENDPOINT}/${WASABI_BUCKET}/${key}" 2>/dev/null && removed=$((removed + 1))
+  done
+
+  note "removed ${removed} object(s)"
+}
+
+if [ "$REAP_ONLY" -eq 1 ]; then
+  reap
+
+  exit 0
+fi
+
+reap
+
+# ---------------------------------------------------------------------------
+# 1. Somewhere to work.
+# ---------------------------------------------------------------------------
+
+RUN_ID="$(date -u +%Y%m%dT%H%M%SZ)-$$"
+ROOT="rotation-gate/$(date -u +%Y-%m-%d)/${RUN_ID}"
+
+OLD_URL="s3:https://${ENDPOINT}/${WASABI_BUCKET}/${ROOT}/old"
+NEW_URL="s3:https://${ENDPOINT}/${WASABI_BUCKET}/${ROOT}/new"
+
+WORK="$(mktemp -d)"
+SERVER_DATA="${WORK}/eumaeus"
+CLIENT_HOME="${WORK}/home"
+SERVER_ADDR=127.0.0.1:8791
+PAGE_ADDR=127.0.0.1:7392
+NODE_ID=rotation-gate
+VAULT_PASSWORD="gate-$(head -c 12 /dev/urandom | base64 | tr -dc 'a-zA-Z0-9')"
+
+mkdir -p "$SERVER_DATA" "$CLIENT_HOME"
+
+SERVER_PID=
+DAEMON_PID=
+
+cleanup() {
+  [ -n "$DAEMON_PID" ] && { kill "$DAEMON_PID" 2>/dev/null; wait "$DAEMON_PID" 2>/dev/null; }
+  pkill -f "sion-backup daemon" 2>/dev/null
+  [ -n "$SERVER_PID" ] && { kill "$SERVER_PID" 2>/dev/null; wait "$SERVER_PID" 2>/dev/null; }
+
+  if [ "$KEEP" -eq 1 ]; then
+    note "kept ${WORK}"
+  else
+    chmod -R u+w "$WORK" 2>/dev/null
+    rm -rf "$WORK"
+  fi
+}
+
+trap cleanup EXIT
+
+say "Working in ${WORK}"
+note "old bucket   ${OLD_URL}"
+note "new bucket   ${NEW_URL}"
+
+# ---------------------------------------------------------------------------
+# 2. A real Eumaeus, from source, with nothing in it.
+#
+# Built from the checkout rather than downloaded, so that what is under test
+# is the commit somebody is about to merge on either side.
+#
+# The two password prompts go through script(1) because Eumaeus reads them
+# from /dev/tty and deliberately not from stdin — a decision documented in its
+# foundation/termio, and a good one. A pseudo-terminal is the honest way past
+# it for a throwaway store with a throwaway password, and it leaves that rule
+# intact for every real deployment.
+# ---------------------------------------------------------------------------
+
+say "Building Eumaeus from ${EUMAEUS_DIR}"
+
+EUMAEUS_BIN="${WORK}/eumaeus-bin"
+
+if ! (cd "$EUMAEUS_DIR" && go build -o "$EUMAEUS_BIN" ./cmd/eumaeus) >"${WORK}/eumaeus-build.log" 2>&1; then
+  tail -20 "${WORK}/eumaeus-build.log" | sed 's/^/        /'
+
+  bad "Eumaeus did not build"
+  exit 1
+fi
+
+ok "built $("$EUMAEUS_BIN" version 2>/dev/null | head -1 || echo eumaeus)"
+
+export EUMAEUS_DATA_DIR="$SERVER_DATA"
+
+printf '%s\n%s\n' "$VAULT_PASSWORD" "$VAULT_PASSWORD" |
+  script -qec "$EUMAEUS_BIN vault init" /dev/null >"${WORK}/vault-init.log" 2>&1 ||
+  { bad "vault init failed"; tail -10 "${WORK}/vault-init.log"; exit 1; }
+
+printf '%s\n' "$VAULT_PASSWORD" |
+  script -qec "$EUMAEUS_BIN user add -primary gate" /dev/null >"${WORK}/user-add.log" 2>&1 ||
+  { bad "creating the owner account failed"; tail -10 "${WORK}/user-add.log"; exit 1; }
+
+"$EUMAEUS_BIN" backup init >"${WORK}/backup-init.log" 2>&1 ||
+  { bad "backup init failed"; tail -10 "${WORK}/backup-init.log"; exit 1; }
+
+ok "an empty fleet store, sealed under its own key"
+
+# eumactl runs inside the Eumaeus module, which is what makes it link against
+# the checkout above rather than against a version pinned here.
+EUMACTL="$(pwd)/scripts/rotation-gate/_eumactl/main.go"
+
+eumactl() { (cd "$EUMAEUS_DIR" && go run "$EUMACTL" "$@"); }
+
+"$EUMAEUS_BIN" serve -addr "$SERVER_ADDR" -insecure-cookies >"${WORK}/serve.log" 2>&1 &
+SERVER_PID=$!
+
+for _ in $(seq 1 120); do
+  curl -fsS -o /dev/null "http://${SERVER_ADDR}/" 2>/dev/null && break
+  sleep 0.25
+done
+
+if ! curl -fsS -o /dev/null "http://${SERVER_ADDR}/" 2>/dev/null; then
+  bad "Eumaeus never came up"; tail -20 "${WORK}/serve.log"; exit 1
+fi
+
+api() {
+  local method=$1 path=$2 body=${3:-}
+
+  if [ -n "$body" ]; then
+    curl -sS -X "$method" "http://${SERVER_ADDR}/api/backup/v1${path}" \
+      -H "Authorization: Bearer ${TOKEN}" \
+      -H 'Content-Type: application/json' -d "$body"
+  else
+    curl -sS -X "$method" "http://${SERVER_ADDR}/api/backup/v1${path}" \
+      -H "Authorization: Bearer ${TOKEN}"
+  fi
+}
+
+ok "serving the backup API on ${SERVER_ADDR}"
+
+# ---------------------------------------------------------------------------
+# 3. A fleet: one owner, one machine, one adopted bucket with a long history.
+#
+# Adopted, and with its snapshots starting two and a half years ago, because
+# that is the machine the age policy is written for and the one whose reading
+# of created_at is in doubt. A freshly provisioned bucket would agree under
+# both readings and prove nothing.
+# ---------------------------------------------------------------------------
+
+say "A machine with two and a half years of history"
+
+HORIZON=$(date -u -d '30 months ago' +%Y-%m-%dT%H:%M:%SZ)
+
+OWNER=$(eumactl person -name "Gate Owner" -email "gate@example.invalid") ||
+  { bad "could not create the owner"; exit 1; }
+
+ADOPTED=$(eumactl adopt \
+  -owner "$OWNER" -node "$NODE_ID" \
+  -bucket "$WASABI_BUCKET" -url "$OLD_URL" -region "$WASABI_REGION" \
+  -key-id "$WASABI_ACCESS_KEY_ID" -secret "$WASABI_SECRET_ACCESS_KEY" \
+  -restore-key-id "$WASABI_ACCESS_KEY_ID" -restore-secret "$WASABI_SECRET_ACCESS_KEY" \
+  -password "$(head -c 32 /dev/urandom | base64 | tr -d '=+/' | head -c 43)" \
+  -history-since "$HORIZON" -snapshots 412) ||
+  { bad "could not adopt the old bucket"; exit 1; }
+
+RESTIC_PW=$(printf '%s' "$ADOPTED" | jq -r .restic_password)
+
+[ "$(printf '%s' "$ADOPTED" | jq -r .state)" = active ] &&
+  ok "the first bucket is active" ||
+  bad "the first bucket is $(printf '%s' "$ADOPTED" | jq -r .state), not active"
+
+# ---------------------------------------------------------------------------
+# 4. The client, enrolled for real, backing up for real.
+# ---------------------------------------------------------------------------
+
+say "Building sion-backup"
+
+EXE="${WORK}/sion-backup"
+
+if ! go build -o "$EXE" ./cmd/sion-backup >"${WORK}/build.log" 2>&1; then
+  tail -20 "${WORK}/build.log" | sed 's/^/        /'
+
+  bad "sion-backup did not build"
+  exit 1
+fi
+
+ok "built"
+
+export HOME="$CLIENT_HOME"
+
+DATA="${CLIENT_HOME}/data"
+mkdir -p "$DATA"
+for i in $(seq 1 40); do printf 'document %d\n' "$i" > "${DATA}/doc-${i}.txt"; done
+head -c 262144 /dev/urandom > "${DATA}/canary.bin"
+
+CONFIG_DIR="${CLIENT_HOME}/.local/share/sion-backup"
+mkdir -p "$CONFIG_DIR"
+
+cat > "${CONFIG_DIR}/config.toml" <<TOML
+node_id    = "${NODE_ID}"
+repository = "${OLD_URL}"
+targets    = ["${DATA}"]
+confirmed  = true
+
+[eumaeus]
+url = "http://${SERVER_ADDR}"
+
+[schedule]
+times = ["03:00"]
+jitter_minutes = 0
+min_interval = "0s"
+
+[update]
+enabled = false
+
+[server]
+addr = "${PAGE_ADDR}"
+TOML
+
+if ! "$EXE" restic >"${WORK}/restic-install.log" 2>&1; then
+  tail -5 "${WORK}/restic-install.log" | sed 's/^/        /'
+
+  skip "restic could not be downloaded"
+fi
+
+RESTIC="${CONFIG_DIR}/bin/restic"
+
+restic_at() {
+  local repo=$1; shift
+  env RESTIC_REPOSITORY="$repo" RESTIC_PASSWORD="$RESTIC_PW" \
+    AWS_ACCESS_KEY_ID="$WASABI_ACCESS_KEY_ID" \
+    AWS_SECRET_ACCESS_KEY="$WASABI_SECRET_ACCESS_KEY" \
+    "$RESTIC" "$@"
+}
+
+snapshots_at() { restic_at "$1" snapshots --json 2>/dev/null | jq 'length' 2>/dev/null || echo 0; }
+
+# The first repository, created here because creating it is the administrator's
+# job and the client is right to refuse. The second is created by the binary.
+if ! restic_at "$OLD_URL" init >"${WORK}/init.log" 2>&1; then
+  tail -5 "${WORK}/init.log" | sed 's/^/        /'
+
+  skip "the old repository could not be created; the bucket may be unreachable"
+fi
+
+ok "the old repository exists"
+
+say "Enrolling against real Eumaeus"
+
+CODE=$(eumactl code -node "$NODE_ID") || { bad "could not issue an enrollment code"; exit 1; }
+
+if "$EXE" enroll --code "$CODE" >"${WORK}/enroll.log" 2>&1; then
+  ok "enrolled"
+else
+  tail -20 "${WORK}/enroll.log" | sed 's/^/        /'
+  bad "enrollment failed"
+  exit 1
+fi
+
+# The token the CLIENT holds, and no other.
+#
+# Read from its file rather than claimed separately, because a second claim is
+# a second enrolment: it mints a token and Eumaeus revokes the one before it,
+# so a gate that kept its own would spend the rest of the run reading 401s and
+# reporting them as rotation bugs. This way every assertion below is made
+# against exactly what the machine under test is authenticated as.
+TOKEN=$(cat "${CONFIG_DIR}/machine-token" 2>/dev/null)
+
+[ -n "$TOKEN" ] || { bad "the client stored no machine token"; exit 1; }
+
+if "$EXE" run -v >"${WORK}/run1.log" 2>&1; then
+  ok "backed up: $(snapshots_at "$OLD_URL") snapshot(s) in the old bucket"
+else
+  tail -20 "${WORK}/run1.log" | sed 's/^/        /'
+  bad "the first backup failed"
+  exit 1
+fi
+
+# ---------------------------------------------------------------------------
+# 5. What does created_at mean?
+#
+# The reason this file exists. See the header.
+# ---------------------------------------------------------------------------
+
+say "The field the age policy is built on"
+
+STATE=$(api GET /machines/me)
+SERVED_CREATED=$(printf '%s' "$STATE" | jq -r '.repository.created_at')
+SERVED_YEAR=${SERVED_CREATED%%-*}
+HORIZON_YEAR=${HORIZON%%-*}
+THIS_YEAR=$(date -u +%Y)
+
+if [ "$SERVED_YEAR" = "$HORIZON_YEAR" ]; then
+  ok "created_at is ${SERVED_CREATED} — where the snapshots start"
+  note "so an adopted bucket is old the day it is adopted, and planbus.Consider"
+  note "is measuring how long the owner's data has been accumulating. This is"
+  note "what README.md and docs/model.md say, and it is now checked."
+elif [ "$SERVED_YEAR" = "$THIS_YEAR" ]; then
+  bad "created_at is ${SERVED_CREATED} — the date the row was made, not the history horizon"
+  note "Every adopted machine in the fleet looks brand new to planbus.Consider,"
+  note "and no legacy bucket will ever reach RotateAfter on its own. The age"
+  note "policy in business/domain/plan/planbus/rotation.go is reading the wrong"
+  note "field, and docs/model.md §5.5 says the opposite of what the server does."
+else
+  bad "created_at is ${SERVED_CREATED}, which is neither the horizon nor today"
+fi
+
+# ---------------------------------------------------------------------------
+# 6. What the machine makes of a two-and-a-half-year-old bucket.
+#
+# The age policy's own output, against a real horizon served by a real server.
+# It is the sentence an owner reads, and the first place the two repositories
+# could disagree about what "old" means.
+# ---------------------------------------------------------------------------
+
+say "The page that asks"
+
+page()      { curl -fsS --max-time 20 -H "Host: ${PAGE_ADDR}" "http://${PAGE_ADDR}$1"; }
+form_token(){ grep -oE 'name="form_token" value="[^"]+"' | head -1 | sed 's/.*value="//; s/"//'; }
+
+page_post() {
+  local path=$1 body=$2
+  curl -fsS --max-time 120 -X POST "http://${PAGE_ADDR}${path}" \
+    -H "Host: ${PAGE_ADDR}" \
+    -H "Origin: http://${PAGE_ADDR}" \
+    -H 'Sec-Fetch-Site: same-origin' \
+    -H 'Content-Type: application/x-www-form-urlencoded' \
+    --data "$body"
+}
+
+daemon_start() {
+  "$EXE" daemon --no-schedule -v >>"${WORK}/daemon.log" 2>&1 &
+  DAEMON_PID=$!
+
+  for _ in $(seq 1 100); do
+    curl -fsS --max-time 2 -H "Host: ${PAGE_ADDR}" "http://${PAGE_ADDR}/healthz" >/dev/null 2>&1 && return 0
+    sleep 0.2
+  done
+
+  return 1
+}
+
+daemon_stop() {
+  [ -n "$DAEMON_PID" ] || return 0
+  kill "$DAEMON_PID" 2>/dev/null
+  pkill -f "sion-backup daemon" 2>/dev/null
+  wait "$DAEMON_PID" 2>/dev/null
+  DAEMON_PID=
+  sleep 0.3
+}
+
+daemon_start || { bad "the daemon never came up"; tail -20 "${WORK}/daemon.log"; exit 1; }
+
+ROTATION_HTML=$(page /rotation)
+
+printf '%s' "$ROTATION_HTML" | grep -qiE 'two years|2 years|insist|overdue' &&
+  ok "the machine says the bucket is old enough to insist about" ||
+  { bad "the page says nothing about the bucket's age"
+    printf '%s' "$ROTATION_HTML" | sed -n 's/<[^>]*>//gp' | grep -v '^\s*$' | head -20 | sed 's/^/        /'; }
+
+# ---------------------------------------------------------------------------
+# 7. The ask, against the real endpoint.
+# ---------------------------------------------------------------------------
+
+say "Asking for a new bucket"
+
+token=$(printf '%s' "$ROTATION_HTML" | form_token)
+[ -n "$token" ] || { bad "the page served no form token"; exit 1; }
+
+if page_post /rotation/request "form_token=${token}" >"${WORK}/request.html" 2>&1; then
+  ok "the request was accepted"
+else
+  bad "the request was refused"
+  tail -5 "${WORK}/request.html" | sed 's/^/        /'
+fi
+
+# Asking twice is a person clicking twice, and Eumaeus answers 409. It is not a
+# failure and must not be shown as one.
+token=$(page /rotation | form_token)
+
+if page_post /rotation/request "form_token=${token}" 2>/dev/null | grep -qi 'already'; then
+  ok "asking twice says it has already been asked"
+else
+  bad "asking twice does not say the request is already open"
+fi
+
+# ---------------------------------------------------------------------------
+# 8. The administrator provisions the second bucket.
+#
+# Nothing here asks for `offered`. Eumaeus decides that, in
+# stateForNewRepository, because the machine already has a repository — and
+# that decision is the hinge the whole loop turns on. A second bucket created
+# `active` would move a machine without asking it.
+# ---------------------------------------------------------------------------
+
+say "A second bucket"
+
+OFFERED=$(eumactl provision \
+  -owner "$OWNER" -node "$NODE_ID" \
+  -bucket "$WASABI_BUCKET" -url "$NEW_URL" -region "$WASABI_REGION" \
+  -key-id "$WASABI_ACCESS_KEY_ID" -secret "$WASABI_SECRET_ACCESS_KEY" \
+  -restore-key-id "$WASABI_ACCESS_KEY_ID" -restore-secret "$WASABI_SECRET_ACCESS_KEY") ||
+  { bad "could not provision the second bucket"; exit 1; }
+
+[ "$(printf '%s' "$OFFERED" | jq -r .state)" = offered ] &&
+  ok "Eumaeus made it offered, not active" ||
+  bad "the second bucket is $(printf '%s' "$OFFERED" | jq -r .state); a machine would have been moved without being asked"
+
+# The new repository's password. It is a different one, and it has to be: a
+# repository is sealed under it and restic cannot change it afterwards.
+NEW_PW=$(printf '%s' "$OFFERED" | jq -r .restic_password)
+
+[ "$NEW_PW" != "$RESTIC_PW" ] &&
+  ok "the new bucket has a password of its own" ||
+  bad "the new bucket reuses the old password"
+
+# ---------------------------------------------------------------------------
+# 9. The machine notices, and does not move.
+# ---------------------------------------------------------------------------
+
+say "The machine notices"
+
+daemon_stop
+daemon_start || { bad "the daemon did not restart"; exit 1; }
+
+ROTATION_HTML=$(page /rotation)
+
+printf '%s' "$ROTATION_HTML" | grep -q "${ROOT}/new" &&
+  ok "the page shows the offered bucket" ||
+  bad "the page does not mention the offered bucket"
+
+CREDS=$(api GET /machines/me/credentials)
+
+[ "$(printf '%s' "$CREDS" | jq -r '.repository.url')" = "$OLD_URL" ] &&
+  ok "and the machine is still backing up to the old one" ||
+  bad "the machine moved before anybody accepted"
+
+[ "$(printf '%s' "$CREDS" | jq -r '.repository.expect_empty // false')" = false ] &&
+  ok "with no permission to create anything" ||
+  bad "the server is offering expect_empty before a cutover"
+
+# ---------------------------------------------------------------------------
+# 10. The cutover.
+# ---------------------------------------------------------------------------
+
+say "Accepting"
+
+token=$(printf '%s' "$ROTATION_HTML" | form_token)
+
+if page_post /rotation/cutover "form_token=${token}&repository_url=${NEW_URL}" >"${WORK}/cutover.html" 2>&1; then
+  ok "the cutover was accepted"
+else
+  bad "the cutover was refused"
+  tail -10 "${WORK}/cutover.html" | sed 's/^/        /'
+  exit 1
+fi
+
+CREDS=$(api GET /machines/me/credentials)
+
+[ "$(printf '%s' "$CREDS" | jq -r '.repository.url')" = "$NEW_URL" ] &&
+  ok "credentials now open the new bucket" ||
+  bad "credentials still open $(printf '%s' "$CREDS" | jq -r '.repository.url')"
+
+STATE_NOW=$(printf '%s' "$CREDS" | jq -r '.repository.state')
+[ "$STATE_NOW" = cutting-over ] &&
+  ok "the repository is cutting-over" ||
+  bad "the repository is ${STATE_NOW}"
+
+[ "$(printf '%s' "$CREDS" | jq -r '.repository.expect_empty // false')" = true ] &&
+  ok "and NOW the machine may create it" ||
+  bad "expect_empty is not set; the seeding run will refuse"
+
+# The release, refused. Nothing has been written to the new bucket yet, so the
+# old one may hold the only readable copy of this machine's history, and
+# Eumaeus will not let go of it. Asserted here rather than assumed, because
+# this guard is the last thing standing between a rotation and an owner with
+# no backups at all.
+REFUSED=$(api POST /machines/me/old-bucket "{\"repository_url\":\"${NEW_URL}\"}")
+
+printf '%s' "$REFUSED" | jq -e '.release_asked_at' >/dev/null 2>&1 &&
+  bad "the old bucket was released before anything was written to the new one" ||
+  ok "releasing the old bucket is refused until the new one has a backup in it"
+
+# ---------------------------------------------------------------------------
+# 11. The seeding run: the one time this program creates a repository.
+# ---------------------------------------------------------------------------
+
+say "Seeding the new bucket"
+
+daemon_stop
+
+if "$EXE" run -v >"${WORK}/seed.log" 2>&1; then
+  ok "the seeding run finished"
+else
+  tail -30 "${WORK}/seed.log" | sed 's/^/        /'
+  bad "the seeding run failed"
+fi
+
+RESTIC_PW_SAVED=$RESTIC_PW
+RESTIC_PW=$NEW_PW
+
+n=$(snapshots_at "$NEW_URL")
+[ "$n" = 1 ] &&
+  ok "one snapshot in the new bucket" ||
+  bad "the new bucket holds ${n} snapshot(s), expected 1"
+
+RESTIC_PW=$RESTIC_PW_SAVED
+
+n=$(snapshots_at "$OLD_URL")
+[ "$n" = 1 ] &&
+  ok "the old bucket still holds its snapshot, untouched" ||
+  bad "the old bucket holds ${n} snapshot(s); seeding should not have written to it"
+
+# ---------------------------------------------------------------------------
+# 12. Releasing the old bucket, and the refusal that guards it.
+#
+# Eumaeus will not accept a release until a VERIFIED snapshot has landed in the
+# new bucket, because until then the old one may hold the only readable copy of
+# the machine's history. The run above wrote one; whether it was verified is
+# the server's judgement and not this script's, so both answers are read rather
+# than asserted, and only the second run's outcome is required.
+# ---------------------------------------------------------------------------
+
+say "Releasing the old bucket"
+
+RELEASE=$(api POST /machines/me/old-bucket "{\"repository_url\":\"${NEW_URL}\"}")
+
+# release_asked_at and not some field of the gate's choosing: this is what
+# business/domain/machine/sources/eumaeusmachine decodes, so an answer this
+# reads is an answer the client reads.
+if printf '%s' "$RELEASE" | jq -e '.release_asked_at' >/dev/null 2>&1; then
+  ok "released at $(printf '%s' "$RELEASE" | jq -r .release_asked_at)"
+
+  [ "$(printf '%s' "$RELEASE" | jq -r .url)" = "$OLD_URL" ] &&
+    ok "and the server named the bucket being let go, not the new one" ||
+    bad "the server named $(printf '%s' "$RELEASE" | jq -r .url)"
+else
+  bad "the old bucket could not be released"
+  printf '%s\n' "$RELEASE" | sed 's/^/        /'
+fi
+
+# Asking twice is settled rather than refused: the machine may retry, and a
+# release that failed the second time would strand a rotation halfway.
+printf '%s' "$(api POST /machines/me/old-bucket "{\"repository_url\":\"${NEW_URL}\"}")" |
+  jq -e '.release_asked_at' >/dev/null 2>&1 &&
+  ok "asking twice settles" ||
+  bad "asking twice fails, so a retry would strand the rotation"
+
+ROWS=$(eumactl show -node "$NODE_ID")
+
+printf '%s' "$ROWS" | jq -e --arg u "$OLD_URL" '.repositories[] | select(.url == $u) | .release_asked' >/dev/null 2>&1 &&
+  ok "the old row carries the release" ||
+  bad "the old row records no release"
+
+# ---------------------------------------------------------------------------
+# 13. Retirement, and the card.
+#
+# Retirement is the administrator's, and it is what turns the owner's card from
+# "never printed" into "the paper in your safe no longer opens anything".
+# ---------------------------------------------------------------------------
+
+say "Retiring the old bucket"
+
+CARD_BEFORE=$(api GET /machines/me | jq -r '.card.state')
+[ "$CARD_BEFORE" = never ] &&
+  ok "before retirement the card is never" ||
+  note "the card is ${CARD_BEFORE} before retirement"
+
+if RETIRED=$(eumactl retire -node "$NODE_ID" 2>"${WORK}/retire.err"); then
+  ok "retired $(printf '%s' "$RETIRED" | jq -r .retired)"
+else
+  bad "retirement failed"
+  sed 's/^/        /' "${WORK}/retire.err"
+fi
+
+CARD_AFTER=$(api GET /machines/me | jq -r '.card.state')
+[ "$CARD_AFTER" = superseded ] &&
+  ok "the card is now superseded — the owner must print a new one and destroy the old" ||
+  bad "the card is ${CARD_AFTER}, expected superseded"
+
+CREDS=$(api GET /machines/me/credentials)
+STATE_NOW=$(printf '%s' "$CREDS" | jq -r '.repository.state')
+
+[ "$STATE_NOW" = active ] &&
+  ok "the new bucket is active" ||
+  bad "the new bucket is ${STATE_NOW}"
+
+[ "$(printf '%s' "$CREDS" | jq -r '.repository.expect_empty // false')" = false ] &&
+  ok "and the permission to create closed behind it" ||
+  bad "expect_empty is still set after retirement"
+
+say "The card"
+
+daemon_start || note "the daemon did not restart; the card will be printed without it"
+
+if "$EXE" card >"${WORK}/card.log" 2>&1; then
+  ok "the card printed"
+
+  grep -q "${ROOT}/new" "${WORK}/card.log" &&
+    ok "and names the bucket the machine is on now" ||
+    bad "the card names the wrong bucket"
+else
+  bad "the card would not print"
+  tail -10 "${WORK}/card.log" | sed 's/^/        /'
+fi
+
+CARD_FINAL=$(api GET /machines/me | jq -r '.card.state')
+[ "$CARD_FINAL" = issued ] &&
+  ok "and the server recorded it as issued" ||
+  bad "the server still says ${CARD_FINAL}"
+
+# ---------------------------------------------------------------------------
+# 14. THE REFUSAL.
+#
+# The machine's own bucket is emptied underneath it — every object deleted,
+# the row in Eumaeus untouched and `active` — and it must fail rather than
+# start again.
+#
+# This is the failure in the real world, and the reason the whole doctrine
+# exists: a bucket emptied by a person cleaning up, or a lifecycle rule, or a
+# restore gone wrong. A build that creates a repository here reports a
+# successful backup every night afterwards, against an empty repository, and
+# nobody finds out until somebody needs a file.
+#
+# It is done by deleting objects rather than by pointing the machine somewhere
+# else, because with a real server there is nowhere else to point it: Eumaeus
+# will not offer an active machine an empty bucket, and a gate that reached
+# into the database to arrange one would be testing a state the system cannot
+# produce. Emptying the bucket is a state the system very much can produce.
+#
+# The precondition is asserted first. An assertion that cannot fail is worse
+# than no assertion, and this one would pass for the wrong reason if the server
+# were still offering expect_empty.
+# ---------------------------------------------------------------------------
+
+say "The bucket, emptied underneath it"
+
+daemon_stop
+
+PRE=$(api GET /machines/me/credentials | jq -r '.repository.expect_empty // false')
+
+if [ "$PRE" != false ]; then
+  bad "precondition: the server is still offering expect_empty, so this proves nothing"
+else
+  ok "precondition: the repository is active and nothing may be created"
+
+  listing=$(curl -fsS --aws-sigv4 "$sig" --user "$auth" \
+    "https://${ENDPOINT}/${WASABI_BUCKET}?list-type=2&prefix=${ROOT}/new/&max-keys=10000" 2>/dev/null)
+
+  emptied=0
+  for key in $(printf '%s' "$listing" | grep -oE '<Key>[^<]+</Key>' | sed 's/<[^>]*>//g'); do
+    curl -fsS -o /dev/null -X DELETE --aws-sigv4 "$sig" --user "$auth" \
+      "https://${ENDPOINT}/${WASABI_BUCKET}/${key}" 2>/dev/null && emptied=$((emptied + 1))
+  done
+
+  if [ "$emptied" -eq 0 ]; then
+    bad "nothing was deleted, so the repository is still there and this proves nothing"
+  else
+    ok "deleted ${emptied} object(s); the machine's repository is gone"
+
+    RESTIC_PW_SAVED=$RESTIC_PW
+    RESTIC_PW=$NEW_PW
+
+    if restic_at "$NEW_URL" cat config >/dev/null 2>&1; then
+      bad "the repository is still readable; the deletion did not take"
+    else
+      ok "and restic agrees there is nothing there"
+
+      if "$EXE" run -v >"${WORK}/refuse.log" 2>&1; then
+        bad "THE RUN SUCCEEDED AGAINST A REPOSITORY THAT DOES NOT EXIST"
+        note "a build that does this starts a brand-new empty backup whenever a"
+        note "bucket has been emptied, and reports success while doing it"
+      else
+        ok "the run failed, as it must"
+      fi
+
+      if restic_at "$NEW_URL" cat config >/dev/null 2>&1; then
+        bad "and it created a repository there"
+      else
+        ok "and created nothing"
+      fi
+    fi
+
+    RESTIC_PW=$RESTIC_PW_SAVED
+  fi
+fi
+
+# ---------------------------------------------------------------------------
+# 15. What the server saw.
+# ---------------------------------------------------------------------------
+
+say "The fleet, afterwards"
+
+eumactl show -node "$NODE_ID" | jq -r '
+  .repositories[] |
+  "        \(.state | (. + "            ")[0:13]) \(.url)"' 2>/dev/null
+
+if [ "$fail" -eq 0 ]; then
+  printf '\n\033[32m==> the rotation loop held against real Eumaeus\033[0m\n\n'
+else
+  printf '\n\033[31m==> something misbehaved\033[0m\n\n'
+fi
+
+exit "$fail"

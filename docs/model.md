@@ -687,6 +687,13 @@ password really did come from the old install — and it is exactly why a client
 that filed its own requests would put the whole migrated fleet into an
 administrator's queue on the day it shipped.
 
+That reading is checked and not assumed. `scripts/rotation-gate/run` adopts a
+bucket with a horizon thirty months back against a real Eumaeus and asserts
+what the server serves, because the alternative reading — the date the row was
+made — is equally consistent with everything else in both repositories, and
+under it no legacy bucket ever reaches the one-year threshold at all. The two
+readings differ by years and nothing but the server can settle which is meant.
+
 Measured weekly, after a successful backup, because `restic stats` walks the
 whole index and is not something to run nightly.
 

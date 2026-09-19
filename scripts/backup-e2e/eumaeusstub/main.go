@@ -19,11 +19,26 @@
 //
 // # What it does not do
 //
-// It does not create the repository. Neither does the client: restic.Init
-// exists in foundation/restic and nothing in the binary calls it, because
-// provisioning a bucket and initialising a repository in it are the server's
-// job. So the harness runs `restic init` itself, which is the one part of this
-// that stands in for something Eumaeus does rather than something it serves.
+// It does not create the FIRST repository. The harness runs `restic init`
+// itself for that, standing in for the provisioning step that is Eumaeus's
+// job rather than anything it serves.
+//
+// A rotation's second bucket is different, and it is the one place a client
+// may create a repository: `expect_empty` on the credential fetch says so, and
+// this decides that from the three conditions in the specification — see
+// rotation.go, which also holds the offer, the cutover, the release of the old
+// bucket and the card. So a rotation run really does watch the binary create a
+// repository, which is the behaviour with the worst failure mode in the whole
+// program.
+//
+// # What is still fake, and worth remembering
+//
+// Everything about people, and one reading of the contract. A second bucket
+// here is another prefix in the same bucket with the same key pair and the
+// same password; the real server provisions storage, mints new keys and draws
+// a new password. And this file agrees, by construction, with the reading of
+// the specification held by whoever wrote it — which is why
+// scripts/rotation-gate exists and runs the real server.
 package main
 
 import (
@@ -79,25 +94,58 @@ func main() {
 	}
 
 	s := &server{
-		repo:      *repoURL,
 		password:  pw,
 		keyID:     *keyID,
 		secret:    *secret,
 		node:      *nodeID,
 		journal:   *journal,
-		adopted:   *adopted,
 		snapshots: *snapshots,
 		since:     *since,
 	}
+
+	// The machine's first repository, active from the start. Every other row
+	// arrives through POST /admin/offer, which is the harness standing in for
+	// an administrator at /fleet.
+	created := time.Now().UTC()
+	if *since != "" {
+		if parsed, err := time.Parse("2006-01-02", *since); err == nil {
+			created = parsed
+		}
+	}
+
+	s.repos = []*repo{{
+		URL:       *repoURL,
+		State:     stateActive,
+		Bucket:    lastSegment(*repoURL),
+		Region:    "test",
+		CreatedAt: created,
+		Adopted:   *adopted,
+	}}
 
 	mux := http.NewServeMux()
 
 	const prefix = "/api/backup/v1"
 
-	mux.HandleFunc(prefix+"/enrollments/claim", s.claim)
-	mux.HandleFunc(prefix+"/machines/me/credentials", s.credentials)
-	mux.HandleFunc(prefix+"/runs", s.accept("run"))
-	mux.HandleFunc(prefix+"/diagnostics", s.accept("diagnostic"))
+	// All ten, because a client that asks what a deployment serves and is told
+	// the truth is a client whose api.serves handling is being exercised
+	// rather than assumed.
+	mux.HandleFunc("GET "+prefix+"/machines/me", s.state)
+	mux.HandleFunc("POST "+prefix+"/enrollments/claim", s.claim)
+	mux.HandleFunc("GET "+prefix+"/machines/me/credentials", s.credentials)
+	mux.HandleFunc("POST "+prefix+"/runs", s.accept("run"))
+	mux.HandleFunc("POST "+prefix+"/diagnostics", s.accept("diagnostic"))
+	mux.HandleFunc("POST "+prefix+"/machines/me/rotation-request", s.rotationRequest)
+	mux.HandleFunc("POST "+prefix+"/machines/me/cutover", s.cutover)
+	mux.HandleFunc("POST "+prefix+"/machines/me/old-bucket", s.oldBucket)
+	mux.HandleFunc("POST "+prefix+"/machines/me/card-issued", s.cardIssued)
+
+	// The administrator's half, deliberately off the versioned prefix so that
+	// nothing here can be mistaken for something the client may call.
+	mux.HandleFunc("POST /admin/offer", s.adminOffer)
+	mux.HandleFunc("POST /admin/retire", s.adminRetire)
+	mux.HandleFunc("POST /admin/point-at", s.adminPointAt)
+	mux.HandleFunc("GET /admin/state", s.adminState)
+
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		s.record("unhandled", map[string]any{"method": r.Method, "path": r.URL.Path})
 		log.Printf("eumaeusstub: 404 %s %s", r.Method, r.URL.Path)
@@ -107,7 +155,7 @@ func main() {
 	// The password is printed once, on purpose: without it the repository this
 	// run creates cannot be opened again by a person looking into a failure.
 	// It is a throwaway for a throwaway bucket.
-	log.Printf("eumaeusstub: %s -> %s (password %s)", *addr, s.repo, pw)
+	log.Printf("eumaeusstub: %s -> %s (password %s)", *addr, *repoURL, pw)
 
 	if *ready != "" {
 		if err := os.WriteFile(*ready, []byte(pw), 0o600); err != nil {
@@ -119,21 +167,48 @@ func main() {
 }
 
 // server holds what every response is built from.
+//
+// One machine, because that is what a stub on a machine's own loopback is:
+// every request is from the machine it is running beside, and there is no
+// token to tell apart.
 type server struct {
-	repo     string
 	password string
 	keyID    string
 	secret   string
 	node     string
 	journal  string
 
-	// adopted, snapshots and since describe a repository taken over from a
-	// legacy install rather than provisioned empty. See the -adopted flag.
-	adopted   bool
+	// snapshots and since describe a repository taken over from a legacy
+	// install rather than provisioned empty. See the -adopted flag; the
+	// adopted flag itself lives on the repository row.
 	snapshots int
 	since     string
 
-	mu sync.Mutex
+	// repos is every repository this machine has had, oldest first, and the
+	// state machine in rotation.go is entirely about which one is selected.
+	// rotationAsked is the open work item.
+	repos         []*repo
+	rotationAsked bool
+
+	// mu guards the rows above. jmu guards the journal file and nothing else,
+	// and the two are separate on purpose: every rotation handler records
+	// while holding mu, so one mutex for both would deadlock on the first
+	// request.
+	mu  sync.Mutex
+	jmu sync.Mutex
+}
+
+// repoURL is the repository the machine writes to now, for the log line and
+// for the claim. Callers that need the row take the lock and use current().
+func (s *server) repoURL() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if cur := s.current(); cur != nil {
+		return cur.URL
+	}
+
+	return ""
 }
 
 // record appends one line to the journal.
@@ -147,8 +222,8 @@ func (s *server) record(kind string, body any) {
 		return
 	}
 
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	s.jmu.Lock()
+	defer s.jmu.Unlock()
 
 	f, err := os.OpenFile(s.journal, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
 	if err != nil {
@@ -186,7 +261,7 @@ func (s *server) claim(w http.ResponseWriter, r *http.Request) {
 	s.record("claim", body)
 	log.Printf("eumaeusstub: claim from %v", body["hostname"])
 
-	if where := legacyRepository(body); where != "" && !sameRepository(where, s.repo) {
+	if where := legacyRepository(body); where != "" && !sameRepository(where, s.repoURL()) {
 		// The refusal that exists for one mistake: a code that enrols this
 		// machine against a bucket it has not been writing to. Answered here
 		// so the client's half of it can be exercised without the real
@@ -196,8 +271,8 @@ func (s *server) claim(w http.ResponseWriter, r *http.Request) {
 
 		writeJSON(w, http.StatusUnprocessableEntity, map[string]any{
 			"error": "this machine backs up to " + where + ", and that code enrols it " +
-				"against " + s.repo + ". The code has not been used: adopt the bucket the " +
-				"machine is already writing to, then present it again",
+				"against " + s.repoURL() + ". The code has not been used: adopt the bucket " +
+				"the machine is already writing to, then present it again",
 			"field": "legacy.repository_url",
 		})
 
@@ -261,14 +336,22 @@ func sameRepository(a, b string) bool {
 // restic", and a hard `"adopted": false` would be a denial the server is not
 // in a position to make.
 func (s *server) repository() map[string]any {
-	out := map[string]any{
-		"url":      s.repo,
-		"provider": "wasabi",
-		"region":   "test",
-		"bucket":   "test",
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	cur := s.current()
+	if cur == nil {
+		return map[string]any{}
 	}
 
-	if s.adopted {
+	out := map[string]any{
+		"url":      cur.URL,
+		"provider": "wasabi",
+		"region":   cur.Region,
+		"bucket":   cur.Bucket,
+	}
+
+	if cur.Adopted {
 		out["adopted"] = true
 	}
 
@@ -284,17 +367,53 @@ func (s *server) repository() map[string]any {
 }
 
 func (s *server) credentials(w http.ResponseWriter, r *http.Request) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	cur := s.current()
+	if cur == nil {
+		writeJSON(w, http.StatusNotFound, map[string]any{
+			"error": "this machine has no repository",
+		})
+
+		return
+	}
+
+	permitted := expectEmpty(cur)
+
 	// Every backup fetches these afresh, so this is the most-called endpoint
 	// and the one whose failure stops the fleet. Counted in the journal so a
-	// test can assert the client really does re-fetch rather than cache.
-	s.record("credentials", map[string]any{"auth": r.Header.Get("Authorization") != ""})
+	// test can assert the client really does re-fetch rather than cache — and
+	// the permission is recorded with it, so the harness can prove the client
+	// created a repository only on the fetch that allowed it.
+	s.record("credentials", map[string]any{
+		"auth":         r.Header.Get("Authorization") != "",
+		"url":          cur.URL,
+		"state":        cur.State,
+		"expect_empty": permitted,
+	})
+
+	repository := map[string]any{
+		"url":   cur.URL,
+		"state": cur.State,
+	}
+
+	// Omitted when false, and that polarity is the contract rather than an
+	// encoding detail: absence has to mean what it meant before the field
+	// existed, which is "create nothing".
+	if permitted {
+		repository["expect_empty"] = true
+	}
 
 	writeJSON(w, http.StatusOK, map[string]any{
 		"credentials_version": 1,
-		"repository":          map[string]string{"url": s.repo},
+		"repository":          repository,
 		"credentials": map[string]any{
 			"restic_password": s.password,
 			"machine":         keyPair{s.keyID, s.secret},
+			// One key pair in this harness, so the read-only card key is the
+			// same pair. Fine for a throwaway bucket and wrong anywhere else.
+			"restore": keyPair{s.keyID, s.secret},
 		},
 	})
 }
@@ -313,6 +432,12 @@ func (s *server) accept(kind string) http.HandlerFunc {
 		s.record(kind, body)
 
 		if kind == "run" {
+			// Where the server's own evidence comes from. expect_empty's third
+			// condition and the old-bucket refusal are both decided from what
+			// the machine reported landing, not from anything it asserts about
+			// itself — `seeding` on this event is deliberately read by nothing.
+			s.noteRun(body)
+
 			log.Printf("eumaeusstub: run %v %v", body["phase"], body["outcome"])
 		} else {
 			log.Printf("eumaeusstub: %s %v", kind, body["kind"])

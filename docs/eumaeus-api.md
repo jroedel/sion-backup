@@ -936,6 +936,35 @@ This document stays here. Half of it is this client's own reasoning and status
 — §11 and §11.1 — and it has a reason to live on this side that a
 machine-readable file does not.
 
+## 11.2 How this document is checked
+
+Two harnesses, and they answer different questions.
+
+`scripts/backup-e2e/run --rotation` runs the whole loop against
+`scripts/backup-e2e/eumaeusstub`, a server written from this document. It is
+fast, it runs in Docker, it needs nothing but the test bucket, and it proves
+the client is consistent with **one reading** of what is written here.
+
+`scripts/rotation-gate/run` runs it against real Eumaeus — its binary, its
+vault, its domain code, its ten endpoints — and proves the reading is right.
+That is a different and larger claim, and it is the only one that catches the
+failure that actually reaches an owner: both sides pass their own tests, both
+are internally coherent, and a laptop is pointed at a bucket nobody meant.
+
+The field that made it worth building is `repository.created_at`. The table in
+§5 states it is the history horizon and not the row's date; the two readings
+differ by years on an adopted bucket and put a migrated machine at opposite
+ends of the age policy, and **no test on either side could tell them apart**,
+because each side is self-consistent under both. The gate asks the server. The
+answer is the history horizon — `Business.State` serves `HistoryHorizon()` —
+and it is now asserted rather than remembered, because the day that becomes
+`CreatedAt` in a tidy-up, every adopted machine in the fleet silently becomes a
+new one and nothing goes red.
+
+The gate fakes exactly one call, `Provisioner.Provision`, which mints IAM
+identities at Wasabi and which no client can observe. See
+`scripts/rotation-gate/README.md`.
+
 ## 12. Still open
 
 1. **Does the client need to learn `paused_until` from the server?** Today
