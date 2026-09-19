@@ -283,6 +283,16 @@ jobs:
       # is the weather. It refuses to report exit 2 when it could not run the
       # probe at all, so a gate that never gates is not a state this can reach
       # quietly.
+      # --rotation, because a release that ships rotation should not be gated
+      # by a harness that never rotates. It adds a third container rather than
+      # a third step: they run in parallel and are waited on together, so the
+      # cost is whatever the rotation shape takes beyond the slowest machine
+      # shape, on a corpus kept small for exactly that reason.
+      #
+      # This is the stub harness. The gate that runs the same loop against a
+      # real Eumaeus is scripts/rotation-gate/run, and it is deliberately NOT
+      # here: it needs the server's source, and a cutover of anything but a toy
+      # corpus would add real wall-clock to every tag.
       - name: Gate — does it still back up, and can it be restored?
         env:
           WASABI_ACCESS_KEY_ID: ${{ secrets.WASABI_ACCESS_KEY_ID }}
@@ -298,7 +308,7 @@ jobs:
           fi
 
           set +e
-          scripts/backup-e2e/run --shapes 2
+          scripts/backup-e2e/run --shapes 2 --rotation
           status=$?
           set -e
 
