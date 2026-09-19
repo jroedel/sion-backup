@@ -107,6 +107,99 @@
   rather than from a web form.
 </p>
 
+<h2>The program</h2>
+<p class="hint">
+  The software taking the backups, rather than what it backs up. Nothing here
+  changes the plan above.
+</p>
+
+{{with .Program}}
+
+{{if .Restarting}}
+<div class="verdict warn">
+  <h1>Restarting</h1>
+  <p>
+    This page will come back on its own {{.RestartWait}}. Until it does there is
+    no status page and no scheduled backup. Nothing already in the repository is
+    affected.
+  </p>
+</div>
+{{else if .Installed}}
+<div class="verdict good">
+  <h1>{{.Installed}} was installed</h1>
+  <p>
+    It is on the disk, and this program is still running {{.Version}} — a
+    program cannot replace itself while it is running. Press <em>Restart
+    now</em> when it suits you; backups carry on either way.
+  </p>
+</div>
+{{else if .Newest}}
+<div class="verdict good">
+  <h1>{{.Version}} is the newest release</h1>
+  <p>There is nothing to install.</p>
+</div>
+{{else if .Unavailable}}
+<div class="verdict">
+  <h1>No update was installed</h1>
+  <p>{{.Unavailable}}</p>
+</div>
+{{end}}
+
+{{if .Problem}}
+<div class="verdict bad">
+  <h1>Not restarted</h1>
+  <p>{{.Problem}}</p>
+</div>
+{{end}}
+
+<dl class="facts">
+  <dt>Version</dt>
+  <dd>{{.Version}}{{if .Installed}} <span class="hint">({{.Installed}} installed, waiting for a restart)</span>{{end}}</dd>
+
+  <dt>Updates</dt>
+  <dd>
+    {{if .Source}}from <code>{{.Source}}</code>, checked after each backup
+    {{else}}switched off for this machine{{end}}
+  </dd>
+
+  {{if .Refused}}
+  <dt>Given up on</dt>
+  <dd>
+    {{range $i, $v := .Refused}}{{if $i}}, {{end}}<code>{{$v}}</code>{{end}}
+    <p class="hint">
+      These installed and would not stay running, so they were put back and
+      will not be installed again. This is the usual answer to why a machine
+      sits a version behind. <code>sion-backup update --forget</code> clears
+      the list.
+    </p>
+  </dd>
+  {{end}}
+</dl>
+
+<div class="actions">
+  {{if $.Program.CanCheck}}
+  <form method="post" action="/settings/update">
+    <input type="hidden" name="form_token" value="{{$.Token}}">
+    <button type="submit">Check for updates</button>
+  </form>
+  {{end}}
+
+  <form method="post" action="/settings/restart">
+    <input type="hidden" name="form_token" value="{{$.Token}}">
+    <button type="submit"{{if .Installed}} class="primary"{{end}}>Restart now</button>
+  </form>
+</div>
+
+<p class="hint">
+  Restarting stops this program and lets the service manager start it again —
+  that is how an installed version begins running. A backup in progress is
+  never interrupted: the restart is refused while one is going. If this
+  program was started by hand rather than by a service manager, it will stop
+  and not come back.
+</p>
+
+{{end}}
+
 </main>
 {{template "page-foot" .}}
 </body>

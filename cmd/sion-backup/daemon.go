@@ -87,6 +87,7 @@ func daemonCmd(args []string) error {
 	defer d.close()
 
 	d.updated = make(chan struct{}, 1)
+	d.restarting = make(chan struct{}, 1)
 
 	listen := d.cfg.Addr()
 	if *addr != "" {
@@ -131,6 +132,9 @@ func daemonCmd(args []string) error {
 		RefreshState:            d.pollState,
 		Metered:                 d.metered,
 		StartRun:                d.startRun(ctx),
+		UpdateSource:            d.updateSource,
+		CheckForUpdate:          d.checkForUpdate,
+		Restart:                 d.restart,
 		Guard:                   guard,
 		Paths:                   d.paths,
 		Version:                 version,
@@ -220,6 +224,15 @@ func daemonCmd(args []string) error {
 		d.log.Info("a newer version was installed; exiting so the service manager starts it")
 
 		return errUpdated
+
+	case <-d.restarting:
+		// The same exit for a different reason: somebody pressed the button
+		// on the status page. It is a separate case so that the log says
+		// which, because these two look identical from outside the process
+		// and only one of them is a version change.
+		d.log.Info("restarting on request; exiting so the service manager starts it")
+
+		return errRestarted
 
 	case <-ctx.Done():
 		d.log.Info("shutting down")
