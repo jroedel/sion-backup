@@ -138,6 +138,21 @@ func (i Integrity) Due(repository string, now time.Time) bool {
 	return now.Sub(i.CheckedAt) >= CheckEvery
 }
 
+// Failed reports a check that ran and found the repository unsound.
+//
+// Deliberately not the negation of OK. A check that never ran, and one that
+// was skipped because the machine was on a phone, both have OK false and
+// neither of them is evidence of anything — reading either as damage would put
+// every machine that has been travelling for a fortnight into an urgent
+// rotation. This is the narrow case: restic read the repository back and could
+// not put it together.
+//
+// It is what lifts rotation to planbus.RotationUrgent, and it is the only
+// thing in this program that does. See Consider.
+func (i Integrity) Failed() bool {
+	return !i.CheckedAt.IsZero() && i.SkippedReason == "" && !i.OK
+}
+
 // Describe is one line for doctor and the status page.
 func (i Integrity) Describe(now time.Time) string {
 	if i.CheckedAt.IsZero() {

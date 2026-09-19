@@ -32,6 +32,12 @@ const (
 	// integrityKey holds the last repository check. Same reasoning as the
 	// measurement: one row, read and written whole, nothing queries inside it.
 	integrityKey = "repository_integrity"
+
+	// machineStateKey holds the last answer to GET /machines/me. Same
+	// reasoning again, and one more of its own: the shape of that answer is
+	// the server's and will grow fields this client does not yet decode, so a
+	// table would be a migration every time Eumaeus adds one.
+	machineStateKey = "machine_state"
 )
 
 // Migrate brings the schema up to date.
@@ -363,6 +369,51 @@ func (s *Store) PutIntegrity(ctx context.Context, i planbus.Integrity) error {
 		 ON CONFLICT (key) DO UPDATE SET value = excluded.value`,
 		integrityKey, string(raw)); err != nil {
 		return fmt.Errorf("plandb: writing the integrity check: %w", err)
+	}
+
+	return nil
+}
+
+// GetMachineState returns the stored copy of the server's answer, or a zero
+// value.
+func (s *Store) GetMachineState(ctx context.Context) (planbus.MachineState, error) {
+	var raw string
+
+	err := s.db.QueryRowContext(ctx,
+		`SELECT value FROM plan_meta WHERE key = ?`, machineStateKey).Scan(&raw)
+
+	switch {
+	case errors.Is(err, sql.ErrNoRows):
+		return planbus.MachineState{}, nil
+	case err != nil:
+		return planbus.MachineState{}, fmt.Errorf("plandb: reading the machine state: %w", err)
+	}
+
+	var got planbus.MachineState
+
+	if err := json.Unmarshal([]byte(raw), &got); err != nil {
+		// A machine whose stored answer cannot be decoded has, as far as
+		// anybody can tell, never asked. Which is the safe reading: the poller
+		// asks again shortly and overwrites it, and nothing in between acts on
+		// a half-decoded offer.
+		return planbus.MachineState{}, nil
+	}
+
+	return got, nil
+}
+
+// PutMachineState replaces the stored answer.
+func (s *Store) PutMachineState(ctx context.Context, state planbus.MachineState) error {
+	raw, err := json.Marshal(state)
+	if err != nil {
+		return fmt.Errorf("plandb: encoding the machine state: %w", err)
+	}
+
+	if _, err := s.db.ExecContext(ctx,
+		`INSERT INTO plan_meta (key, value) VALUES (?, ?)
+		 ON CONFLICT (key) DO UPDATE SET value = excluded.value`,
+		machineStateKey, string(raw)); err != nil {
+		return fmt.Errorf("plandb: writing the machine state: %w", err)
 	}
 
 	return nil

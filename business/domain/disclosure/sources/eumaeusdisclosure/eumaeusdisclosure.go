@@ -98,9 +98,9 @@ func (s *Source) List(ctx context.Context, limit int) (disclosurebus.Log, error)
 		// 401 and only 401. This file was written with a 403 folded in here
 		// too, copied from eumaeuscreds where it was a deliberate exception —
 		// and the last of three places to carry a branch for a status that
-		// does not arrive. Eumaeus answers 403 in exactly one place in the
-		// whole API, a rotation request refusing because fresh buckets are
-		// off, and holds that with a test (jroedel/eumaeus#144).
+		// does not arrive. There is now no 403 anywhere in that API at all,
+		// and Eumaeus sweeps every route with a test to keep it that way
+		// (jroedel/eumaeus#174).
 		return disclosurebus.Log{}, fmt.Errorf(
 			"eumaeusdisclosure: %w: %w", disclosurebus.ErrNotEnrolled, err)
 

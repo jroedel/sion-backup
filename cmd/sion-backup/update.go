@@ -96,6 +96,14 @@ func superviseLastUpdate(ctx context.Context, log *slog.Logger) (*selfupdate.Upd
 			Detail: fmt.Sprintf("%s would not stay running after %d starts; went back to %s",
 				start.Failed, start.Starts, start.Version),
 			PriorVersion: start.Failed,
+
+			// Said rather than left to be deduced. Agent on this report is
+			// the build being given up on — it is stamped from the binary
+			// doing the queuing, which is this one — so the server cannot
+			// tell this outcome from the one below without being told. See
+			// diagbus.Report.RollbackOutcome.
+			RollbackOutcome: diagbus.RollbackRecovered,
+			RestoredVersion: start.Version,
 		})
 
 		return u, start, true
@@ -112,6 +120,12 @@ func superviseLastUpdate(ctx context.Context, log *slog.Logger) (*selfupdate.Upd
 				"and there is no working previous binary to go back to",
 				start.Failed, start.Starts),
 			PriorVersion: start.Failed,
+
+			// No restored version, because there is none. The field is
+			// omitted rather than sent empty: "we went back to nothing" and
+			// "we did not say" are the same thing here and the shorter one is
+			// honest.
+			RollbackOutcome: diagbus.RollbackStuck,
 		})
 	}
 

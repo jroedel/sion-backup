@@ -46,18 +46,29 @@ var ErrUnauthorised = errors.New("eumaeusapi: the token was refused")
 // refused anyway.
 //
 // The two statuses look alike and mean opposite things to a machine. A 401
-// says this machine is finished and should stop. A 403 says the fleet is not
-// set up for what was just asked — Eumaeus answers one when fresh buckets are
-// not on offer, which is the ordinary state of a fleet where nobody has
-// turned them on. Folded together, as they were until now, the rotation
-// button would have told an owner their machine had been de-enrolled because
-// an administrator had never run `eumaeus backup settings -fresh-buckets=on`.
+// says this machine is finished and should stop. A 403 says the token was
+// fine and the fleet is not set up for what was just asked. Folded together,
+// as they were until this was untangled, a fleet setting would have told an
+// owner their machine had been de-enrolled.
 //
-// So nothing may treat this as terminal for the machine's identity. Whether
-// it is terminal for the request is the endpoint's business and is left to
-// the domain that knows: eumaeuscreds does treat it as de-enrolment, because
-// a token that may not read its own credentials is finished whichever status
-// says so.
+// # This can no longer arrive, and it is kept anyway
+//
+// There is now no 403 anywhere in the backup API. The rotation request was
+// the only route that ever answered one — refusing because fresh buckets were
+// switched off fleet-wide — and both the switch and the status are withdrawn
+// (jroedel/eumaeus#174). Eumaeus sweeps every route with a test to keep it
+// that way, and still describes the response in its specification,
+// deliberately, because a status a client treats as terminal is worth a
+// definition even when it cannot occur.
+//
+// So this stays, along with the branch on it and the tests that pin what this
+// client does when one arrives: from a deployment older than the change, from
+// a proxy, or from a route that does not exist yet. What changed is only the
+// reason, not the handling — nothing may treat this as terminal for the
+// machine's identity. Whether it is terminal for the request is the
+// endpoint's business and is left to the domain that knows: eumaeuscreds does
+// treat it as de-enrolment, because a token that may not read its own
+// credentials is finished whichever status says so.
 var ErrForbidden = errors.New("eumaeusapi: the server refused this request")
 
 // ErrBadRequest is a 400: the server could not parse what was sent, and says

@@ -43,6 +43,73 @@ func (r *Runner) Exists(ctx context.Context, repo Repository) (bool, error) {
 	return false, err
 }
 
+// ErrAbsent reports a URL with no repository at it.
+//
+// Its own error because the two readings of that fact are opposite and the
+// caller is the only one that can choose between them. During enrolment, and
+// during the one seeding run of a cutover, absence is expected and creating
+// one is right. On every other run absence means the URL is wrong or the
+// bucket has been emptied, and the only safe answer is to fail loudly.
+var ErrAbsent = errors.New("restic: there is no repository at that URL")
+
+// Ensure opens a repository, creating it only when the caller says it should
+// not be there yet.
+//
+// It reports whether it created one.
+//
+// # Why this is one function with a flag rather than two
+//
+// Because the sequence is the same in both cases and the sequence is the part
+// worth getting right: prove it is not there, create it, and then prove it IS
+// there by opening it again. The read-back is the argument this whole program
+// makes about backups applied to repositories — what proves a repository
+// exists is opening it, not the absence of an error while writing it — and it
+// deserves exactly one copy.
+//
+// The daemon needs that copy more than enrolment does, because at enrolment
+// somebody is standing at the machine and at one in the morning nobody is.
+//
+// # mayCreate is a permission and never an inference
+//
+// It comes from the server, on the credential fetch, for the one moment the
+// server knows a bucket is empty on purpose. Nothing local may set it: this
+// machine cannot tell "I have been rotated" from "my repository has vanished",
+// because a reimage takes the local record and leaves the token behind.
+//
+// An Exists that fails for any reason other than "no repository there" fails
+// the call. It is never read as "not there, so create it": that is how a
+// timeout, a wrong region or an expired key would turn into an empty
+// repository written over a real one.
+func (r *Runner) Ensure(ctx context.Context, repo Repository, mayCreate bool) (bool, error) {
+	exists, err := r.Exists(ctx, repo)
+	if err != nil {
+		return false, fmt.Errorf("could not reach the repository at %s: %w", repo.URL, err)
+	}
+
+	if exists {
+		return false, nil
+	}
+
+	if !mayCreate {
+		return false, fmt.Errorf("%w: %s", ErrAbsent, repo.URL)
+	}
+
+	if err := r.Init(ctx, repo); err != nil {
+		return false, fmt.Errorf("could not create the repository at %s: %w", repo.URL, err)
+	}
+
+	switch opened, err := r.Exists(ctx, repo); {
+	case err != nil:
+		return true, fmt.Errorf("created the repository at %s but could not read it back: %w",
+			repo.URL, err)
+
+	case !opened:
+		return true, fmt.Errorf("created the repository at %s and it is still not there", repo.URL)
+	}
+
+	return true, nil
+}
+
 // Snapshot is one entry from `restic snapshots`.
 type Snapshot struct {
 	ID       string    `json:"id"`

@@ -99,9 +99,27 @@ type Run struct {
 	Repository string
 
 	// Seeding marks the first backup into a newly provisioned repository: the
-	// one that uploads everything and that the server's cutover guard waits
-	// on. See docs/eumaeus-api.md §7 — it is not "full vs incremental", which
-	// is a distinction restic does not have.
+	// one that uploads everything. Not "full vs incremental", which is a
+	// distinction restic does not have.
+	//
+	// # Nothing on the server reads it, and that is settled rather than
+	// pending
+	//
+	// This used to say the cutover guard waited on it. It never did. The
+	// permission that lets a client create a repository is Eumaeus's own
+	// `expectEmpty`, which waits on a reported snapshot in its runs table; the
+	// carve-out that stops a seeding machine being called overdue is its
+	// `seedingSince`, which waits on its own `began_cutover_at` column.
+	//
+	// This field is stored, served back and read by nothing there, on purpose:
+	// a flag a machine sets about itself must not be able to switch off
+	// alerting about that machine having gone quiet.
+	//
+	// So it is a fact for whoever reads a run, and the local answer to "is
+	// this the run that fills a new bucket?" — which this program does need,
+	// because both events one run produces have to say the same thing about
+	// it. It is emphatically not a permission: see credentialbus.Set for the
+	// one field in that API which is.
 	Seeding bool
 
 	StartedAt  time.Time

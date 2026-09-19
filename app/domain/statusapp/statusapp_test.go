@@ -64,8 +64,12 @@ func harnessWith(t *testing.T, source credentialbus.Source) *harness {
 // harnessWithDisclosures is the same machine with a record of who has opened
 // its repository password, which most page tests do not need and the Access
 // page test is entirely about.
+// tweak adjusts the wiring for one test. Variadic so that the twenty existing
+// callers, none of which care about rotation, stay as they are.
+type tweak func(*statusapp.Config)
+
 func harnessWithDisclosures(t *testing.T, source credentialbus.Source,
-	discl *disclosurebus.Business) *harness {
+	discl *disclosurebus.Business, tweaks ...tweak) *harness {
 	t.Helper()
 
 	dir := t.TempDir()
@@ -127,7 +131,7 @@ func harnessWithDisclosures(t *testing.T, source credentialbus.Source,
 	h.survey = surveybus.NewBusiness(slog.New(slog.NewTextHandler(io.Discard, nil)), nil,
 		[]surveybus.Choice{h.offered})
 
-	app, err := statusapp.New(statusapp.Config{
+	cfg := statusapp.Config{
 		Plan:        h.plan,
 		Backups:     h.backups,
 		Credentials: credentialbus.NewBusiness(source),
@@ -139,7 +143,13 @@ func harnessWithDisclosures(t *testing.T, source credentialbus.Source,
 		Paths:       p,
 		Version:     "test",
 		Log:         slog.New(slog.NewTextHandler(io.Discard, nil)),
-	})
+	}
+
+	for _, tw := range tweaks {
+		tw(&cfg)
+	}
+
+	app, err := statusapp.New(cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -467,22 +477,30 @@ func TestTheRotationCardAppearsOnlyWhenItIsWorthIt(t *testing.T) {
 			body := h.get(t, "/").Body.String()
 
 			if got := strings.Contains(body, "A fresh start would free"); got != c.want {
-				t.Errorf("card shown = %v, want %v", got, c.want)
+				t.Errorf("banner shown = %v, want %v", got, c.want)
 			}
 
 			if !c.want {
 				return
 			}
 
+			// The front page carries the headline and a way through; the
+			// argument itself is on the page that asks for the decision.
+			if !strings.Contains(body, `href="/rotation"`) {
+				t.Error("the banner does not lead anywhere")
+			}
+
+			page := h.get(t, "/rotation").Body.String()
+
 			// Both halves of the trade, in front of the person being asked.
-			for _, want := range []string{"190.0 GiB", "Would be lost", "Would need uploading"} {
-				if !strings.Contains(body, want) {
-					t.Errorf("the card does not show %q", want)
+			for _, want := range []string{"190.0 GiB", "What you lose", "To upload"} {
+				if !strings.Contains(page, want) {
+					t.Errorf("the page does not show %q", want)
 				}
 			}
 
 			// No price is configured in this harness, so no money is quoted.
-			if strings.Contains(body, "a month") {
+			if strings.Contains(page, "a month") {
 				t.Error("a saving was quoted with no storage price configured")
 			}
 		})

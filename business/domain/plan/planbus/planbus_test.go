@@ -13,6 +13,7 @@ import (
 type memory struct {
 	plan   planbus.Plan
 	stored bool
+	state  planbus.MachineState
 }
 
 func (m *memory) Get(context.Context) (planbus.Plan, error) {
@@ -39,6 +40,15 @@ func (m *memory) GetIntegrity(context.Context) (planbus.Integrity, error) {
 	return planbus.Integrity{}, nil
 }
 func (m *memory) PutIntegrity(context.Context, planbus.Integrity) error { return nil }
+func (m *memory) GetMachineState(context.Context) (planbus.MachineState, error) {
+	return m.state, nil
+}
+
+func (m *memory) PutMachineState(_ context.Context, s planbus.MachineState) error {
+	m.state = s
+
+	return nil
+}
 
 func usable() planbus.Plan {
 	return planbus.Plan{

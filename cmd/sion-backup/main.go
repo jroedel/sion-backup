@@ -66,6 +66,7 @@ Commands:
   enroll     Fetch this machine's credentials from Eumaeus and store them
   adopt-enroll
              Take over the backup already running here, keeping its bucket
+  card       Print the page the owner keeps, for restoring without us
   doctor     Check everything a backup needs, and say what is wrong
   recon      Report what is already on this machine, including the old scripts
   restic     Install or check the pinned restic this fleet runs
@@ -127,6 +128,8 @@ func run() error {
 		return enrollCmd(args)
 	case "adopt-enroll":
 		return adoptEnrollCmd(args)
+	case "card":
+		return cardCmd(args)
 	case "doctor":
 		return doctorCmd(args)
 	case "recon":

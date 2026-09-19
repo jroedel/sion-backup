@@ -432,13 +432,26 @@ the admin's account. That is defence against a mistake rather than against an
 attacker — see the escalation problem above — but mistakes are the more common
 failure.
 
-**S3 key rotation becomes a scheduled job.** The sheet's `Last key rotation`
-column was manual and therefore aspirational. With Eumaeus holding IAM, machine
-and restore keys can rotate every 90 days automatically: mint the new key, push
-it to the machine, delete the old. This is cheap precisely because it is *not*
-the repository password — the keys are replaceable and the password is not.
-A rotated restore key does mean reissuing the owner's card (§6.4), which argues
-for rotating restore keys on the bucket cycle rather than the 90-day one.
+**S3 key rotation was going to be a scheduled job, and is not.** The sheet's
+`Last key rotation` column was manual and therefore aspirational, and the plan
+was a 90-day cycle with Eumaeus holding IAM: mint the new key, push it to the
+machine, delete the old. It was designed, never scheduled, never tested, and is
+now deleted. **Keys change when the bucket changes and at no other time.**
+
+The paragraph this replaces already contained the argument against itself: a
+rotated restore key means reissuing the owner's card (§6.4), "which argues for
+rotating restore keys on the bucket cycle rather than the 90-day one". That
+argument is now applied to both keys. A 90-day cycle would have asked every
+owner to reprint their card four times a year for a rotation that moves no
+data, reclaims no space, and closes no leaked repository password — and against
+a threat the design already works hard to keep theoretical, since a machine
+never holds its S3 keys on disk and fetches them per run.
+
+What protects the keys instead: bucket rotation (§5.5), which replaces them
+along with everything else; teardown, which deletes both identities when a
+machine's life ends; retirement, which withdraws the keys that reached a
+superseded bucket; and a report of any credential at the provider that Eumaeus
+did not create — the case rotation would never have caught anyway.
 
 ### 5.3 The lock-file carve-out, which is still necessary
 
@@ -552,25 +565,28 @@ Anything needing multi-year retention — accounts, legal records — is a
 different problem with a different tool, and should not be smuggled in as a
 backup policy that nothing enforces.
 
-### 5.5 Rotation: triggered by growth, not by the calendar
+### 5.5 Rotation: triggered by growth, by age, or by doubt
 
 Provision a new bucket, ask the owner to run a fresh backup from scratch when
-they next have decent upload bandwidth, verify it, then delete the old bucket
-in the console.
+they next have decent upload bandwidth, verify it, then let the old bucket go.
 
-"Once a year" is the current practice and a reasonable default, but a poor
-rule on its own. A machine holding
-documents that barely change can go years before its repository is meaningfully
-larger than the data in it; a machine with a large mailbox or a VM image
-rewritten daily can double in weeks. Asking both owners for three days of
+"Once a year" is a reasonable default and a poor rule on its own. A machine
+holding documents that barely change can go years before its repository is
+meaningfully larger than the data in it; a machine with a large mailbox or a VM
+image rewritten daily can double in weeks. Asking both owners for three days of
 upload bandwidth on the same schedule is wrong in both directions.
 
-Eumaeus already collects the number that decides it (§5.6). **Rotate when the
-repository exceeds roughly twice its restore size**, checked monthly, with a
-year as a backstop for machines that never trip it. That also means the ask
-comes with its own justification attached: *"your backup is 340 GB and your
-files are 150 GB — a fresh start would save 190 GB, and needs about two days of
-uploading."*
+So growth is one trigger of three, and the machine holds all three (§5.6).
+**Rotate when the repository exceeds roughly twice its restore size**, or when
+the bucket is a year old — because the password and both key pairs are exactly
+that old and nothing else replaces them — or at once when a `restic check`
+could not read the repository back. Two years is where the suggestion stops
+being polite.
+
+That also means the ask comes with its own justification attached: *"your
+backup is 340 GB and your files are 150 GB — a fresh start would save 190 GB,
+and needs about fourteen hours of uploading on the connection this computer
+last measured."*
 
 **Be clear about what this buys, because it is not mainly space.**
 
@@ -587,10 +603,14 @@ does it in minutes rather than in three days of somebody's upstream bandwidth.
 
 What rotation genuinely buys, and these are real:
 
-1. **A new repository password every six months.** A password that has been on
-   a laptop, on a printed sheet and in an escrow for five years has had five
-   years of opportunities to leak. This is the strongest argument for the
-   cycle, and it has nothing to do with size.
+1. **A new repository password, and two new S3 key pairs.** A password that has
+   been on a laptop, on a printed sheet and in an escrow for five years has had
+   five years of opportunities to leak, and a restic password cannot be changed
+   — changing it means rewriting every snapshot. This is the strongest argument
+   for the cycle and it has nothing to do with size, and it is now the *only*
+   thing that replaces any of the three: Eumaeus's separate 90-day rotation of
+   the key pairs is deleted, so keys change when the bucket changes and at no
+   other time.
 2. **Proof that every source file is still readable.** A fresh full backup
    reads everything. An incremental one only reads what changed, so a file that
    became unreadable in 2024 is quietly absent from every snapshot since.
@@ -600,12 +620,21 @@ What rotation genuinely buys, and these are real:
    recovery procedure nobody performs is a recovery procedure that does not
    work.
 
-Framed that way, the six-month cycle is a *key rotation and verification*
-exercise that happens to reclaim space, and it should be scheduled as one.
+Framed that way, the cycle is a *key rotation and verification* exercise that
+happens to reclaim space, and it should be scheduled as one.
+
+**The cycle is a year, not six months**, and the reason is the chore's cost to
+the person who pays it. A cutover is every byte the machine holds, uploaded
+again, over days, by somebody who has to remember to leave the lid open. The
+failure this system is actually built against is not a key living too long — it
+is an owner deciding the whole thing is a nuisance and quietly stopping, and
+every chore spends goodwill needed for the one message that cannot be skipped,
+which is "your computer has not backed up in three weeks". So: a year to raise
+it, two years to stop being polite, and a failed integrity check at any age.
 
 ### 5.6 Making it the owner's idea
 
-Rotation costs the owner two days of upload and every snapshot they have. It
+Rotation costs the owner days of upload and every snapshot they have. It
 saves the organisation money. Anyone being asked to trade the first for the
 second should see both numbers in the same sentence, and should be able to say
 no — which is also the only version of this that works in practice. An
@@ -614,7 +643,7 @@ organisation that imposes a rotation day finds machines switched off on it.
 So the suggestion appears on the machine's own status page, and it does
 nothing but suggest.
 
-#### Why the machine computes it and the server only permits it
+#### Why the machine decides, and the server only provisions
 
 The figures come from `restic stats` against the repository, and the machine is
 the only party already holding credentials to read it. Both calls are
@@ -629,18 +658,34 @@ The difference is what rotation reclaims — and it is *exactly* the history
 rotation discards. There is no third figure to compare against, because there
 is no prune (§5.4).
 
-The server contributes two things it alone knows: whether the organisation is
-willing to provision another bucket (`fresh_bucket_available`), and what
-storage costs. The machine does the arithmetic and decides whether the subject
-is worth raising at all.
+The server contributes one thing it alone knows: the bucket's own age, as
+`repository.created_at`. It contributes no judgement at all, and it used to
+contribute two — whether the organisation was willing to provision another
+bucket, and what storage costs. Both are withdrawn. An organisation unwilling
+to pay says so by not provisioning when asked, which is the same no said once
+instead of twice; and what a gigabyte is worth to an owner belongs in that
+machine's own `config.toml`, beside the thresholds it is compared against.
 
-#### The three thresholds, and why one alone is not enough
+So the whole policy is `business/domain/plan/planbus/rotation.go`, and a
+threshold changed there changes the fleet's behaviour with no server change at
+all.
 
-| Condition | Alone it would |
-|---|---|
-| repository older than 90 days | nag the owner of a machine whose files never change, where history is nearly free |
-| ≥ 30% superseded data | fire in week two, when a few large deletions briefly make the ratio look dreadful |
-| ≥ 5 GiB reclaimable | mention savings not worth two days of somebody's uplink |
+#### Three arguments, any one of which is enough
+
+| Argument | Threshold | Why it is not the others |
+|---|---|---|
+| **Space** | 90 days, ≥ 30% superseded, ≥ 5 GiB reclaimable — all three together | age alone nags the owner of a machine whose files never change; fraction alone fires in week two, when a few large deletions make the ratio look dreadful; and a floor keeps it quiet about savings not worth days of somebody's uplink |
+| **Age** | a year to raise it, two years to insist | the password and both key pairs are exactly as old as the bucket, and nothing else replaces them. Independent of the measurement, because it is not an argument about the bill |
+| **Integrity** | the last `restic check` read the repository back and failed | not about cost at all. A repository that cannot be read back may not give the files back either, and the repair is a fresh bucket filled from the files themselves — which are still on the disk, and are the one copy nobody doubts |
+
+**Nothing acts, at any level.** No threshold files a request and none starts an
+upload. That matters most at the loudest one: on a bucket adopted from a legacy
+install `created_at` is where the *snapshots* start, so every migrated machine
+is past the two-year mark the first time this code runs. That reading is
+correct — such a bucket really has been accumulating for years, and its
+password really did come from the old install — and it is exactly why a client
+that filed its own requests would put the whole migrated fleet into an
+administrator's queue on the day it shipped.
 
 Measured weekly, after a successful backup, because `restic stats` walks the
 whole index and is not something to run nightly.
@@ -655,15 +700,24 @@ whole index and is not something to run nightly.
 >
 > **Stored now** 340 GiB across 200 backups
 > **Your files today** 150 GiB
-> **Would need uploading** 150 GiB — best started on a Friday, on a connection
-> you are not paying for by the gigabyte
+> **To upload** 150 GiB — about 14 hours at the 24 Mbit/s this computer last
+> measured to its bucket. It has to stay on and awake for that long, and this
+> is best done on a connection you are not paying for by the gigabyte
 > **Would be lost** the ability to recover a file as it was at any point in the
 > last 200 days. Everything you have *now* is kept.
 >
 > Nothing happens unless you ask.
 
 The last line is the design. A button posts a request; an administrator
-provisions the bucket. Nothing on the machine can create one.
+provisions the bucket; a second button, on a second page, accepts it and starts
+the upload. Nothing on the machine can create a bucket, and nothing starts an
+upload that a person did not press.
+
+**The time estimate is the number the decision actually turns on**, and it is
+the one the server could not compute if it wanted to. The same byte count is
+fourteen hours on office fibre and nine days on rural broadband. "161 GiB"
+means nothing to the person being asked; "about four days, and the computer has
+to stay on for them" is the whole question.
 
 > **Quote money carefully or not at all.** Below a configured price the card
 > talks in gigabytes only. Storage is billed in ways this program does not
@@ -685,34 +739,63 @@ same blobs the old packs hold.
 
 The only repository that contains just the current data is one that has never
 held anything else. That is what a new bucket is, and it is why the old one is
-deleted whole rather than cleaned up.
+deleted whole rather than cleaned up — by a person, later, and never by this
+program. See §5.7.
 
 `TestMeasureAgainstRealRestic` pins this against the actual binary: two backups
 of unchanged data leave zero reclaimable bytes.
 
 ### 5.7 The cutover, and its two guards
 
+Both guards exist and this section describes behaviour rather than design. The
+loop is [`eumaeus/docs/bucket-rotation.md`](https://github.com/jroedel/eumaeus/blob/main/docs/bucket-rotation.md);
+this machine's half is `business/domain/plan/planbus/rotation.go` and
+`cmd/sion-backup/rotate.go`.
+
 ```
-  active ──▶ cutting-over ──▶ (old bucket emptied and deleted) ──▶ active
-             │
-             ├── new bucket + three keys provisioned
-             ├── new password generated and escrowed
-             ├── owner asked to run a full backup on good bandwidth
-             └── BOTH buckets exist; only the new one receives backups
+  active ──▶ offered ──▶ cutting-over ──▶ retired ──▶ (bucket deleted by a person)
+             │           │                │
+             │           │                └── keys deleted; PASSWORD KEPT FOR EVER
+             │           ├── new password and two new key pairs already minted
+             │           ├── the machine's own decision, never an administrator's
+             │           └── BOTH buckets readable; only the new one receives backups
+             └── provisioned, and nothing has moved
 ```
 
-1. **Eumaeus refuses to retire the old repository until the new one has at
-   least one `verified` run**, and by default until it has seven days of them.
-   A cutover deleted the same afternoon has proven that the new bucket accepts
-   writes, not that it can be restored from.
+1. **Nothing may create a repository at the new bucket except on the server's
+   say-so.** `expect_empty` on the credential fetch is the only field in the
+   API that permits it, and it is true only while the repository is
+   `cutting-over`, was not adopted, and holds nothing yet. The third condition
+   is what closes the window as the seeding run lands, so a bucket emptied
+   later is reported rather than silently recreated.
 
-2. **The bucket is emptied and deleted before the escrow entry is.** The other
-   order leaves a bucket nobody can read, still billing, forever — with no way
-   to check what was in it.
+2. **Eumaeus refuses to record that the machine is finished with the old bucket
+   until something `verified` has landed in the new one.** A cutover let go the
+   same afternoon has proven that the new bucket accepts writes, not that it
+   can be restored from.
 
-The old owner sheet is destroyed at the same time, and a new one printed. A
-drawer with three superseded sheets in it is a drawer where nobody knows which
-one is live.
+**Retirement is one transaction, and "retired" and "deleted" are different
+days.** The superseded row goes to `retired` with `retired_at` stamped, the
+successor is promoted to `active` in the same unit, the two superseded S3 keys
+are deleted at the provider, and the disclosure log gets a `keys-retired`
+entry. Promoting in the same transaction is not an optimisation: leaving the
+successor `cutting-over` would refuse every future rotation request from that
+machine for ever.
+
+**The old password is kept for ever**, and that is the whole security argument
+for rotating at all. It is the only thing that can read the snapshots that
+already exist, and none of them are being deleted by this — the bucket itself
+is removed later, by a person, in the provider's console, because nothing in
+Eumaeus is allowed to delete storage and its provisioning key is explicitly
+denied `s3:DeleteBucket`.
+
+The old owner sheet is destroyed when the old bucket is retired and not before.
+Until then its keys still work, and it is the only way into the only bucket
+holding any history — which is exactly why `card.state` says `superseded` only
+after retirement, and why a machine mid-cutover reads `never` instead. A drawer
+with three superseded sheets in it is a drawer where nobody knows which one is
+live; a drawer with none, because somebody shredded the live one on the day of
+a cutover, is worse.
 
 ## 6. Recovery: what survives Eumaeus
 
@@ -949,8 +1032,12 @@ restic binary rather than anything of ours (§9).
    over 24 hours on a gigabit uplink. This removed the prune key, the scheduled
    Eumaeus job, the retention policy, and the snapshot-injection attack that
    count-based retention would have enabled.
-5. **Decided: rotation is the reclamation mechanism**, roughly yearly, or when
-   the repository passes twice its restore size (§5.5).
+5. **Decided: rotation is the reclamation mechanism**, and it is now also the
+   only credential rotation there is — the separate 90-day key cycle is
+   deleted (§5.2). A year, or when the repository passes twice its restore
+   size, or at once on a failed integrity check (§5.5). **Decided: when a
+   machine moves is the machine's decision**, and the whole policy lives in
+   this repository rather than on the server (§5.6).
 6. **What happens when Eumaeus finds a snapshot it has no Run for?** §5.4 makes
    this the *only* remaining detection of a compromised machine key, since
    nothing can be deleted any more — an attacker's options are reduced to

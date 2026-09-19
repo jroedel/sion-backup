@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/jroedel/sion-backup/business/domain/backup/backupbus"
+	"github.com/jroedel/sion-backup/business/domain/plan/planbus"
 )
 
 // funcs are the template helpers.
@@ -19,6 +20,7 @@ var funcs = template.FuncMap{
 	"bytes":    humanBytes,
 	"ago":      func(t time.Time) string { return humanDuration(time.Since(t)) },
 	"duration": humanDuration,
+	"span":     planbus.Span,
 	"clock":    clock,
 	"day":      day,
 	"pill":     pill,
@@ -27,6 +29,10 @@ var funcs = template.FuncMap{
 	"join":     strings.Join,
 	"nonzero":  func(t time.Time) bool { return !t.IsZero() },
 }
+
+// span is planbus.Span, so the sentences that package writes about a
+// repository's age and the figures this page prints beside them cannot
+// disagree by a day.
 
 // humanBytes renders a byte count the way a person reads one.
 func humanBytes(n int64) string {
