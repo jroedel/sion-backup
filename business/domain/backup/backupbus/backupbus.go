@@ -502,18 +502,62 @@ func (b *Runner) writeNonce(now time.Time) (nonce []byte, path string, err error
 // Byte for byte, and not "the file exists". The legacy Windows script checked
 // only existence and left a TODO saying so, which means it would have passed
 // against a zero-length file — the exact thing a half-broken restore produces.
+//
+// # The bytes are the verdict, and restic's exit status is not
+//
+// This used to return as soon as the restore command failed, which sounds
+// like the careful order and is the wrong one. The question a verification
+// asks is "did the repository give the bytes back". A non-zero exit from
+// `restic restore` is evidence about that question and not an answer to it,
+// because restore does more than read: it recreates the directory chain under
+// --target and restores ownership on every level of it.
+//
+// That is what broke a real machine. Backing up /home/someone puts the
+// root-owned /home in the snapshot, so a restore running as an ordinary user
+// tries to chown it inside the scratch directory and cannot. restic reports
+// "ignoring error for /home" and then exits 1 with "There were 1 errors" —
+// having ignored it. Every run on that machine was marked unverified for two
+// years' worth of nights, over a directory nobody was restoring, while the
+// file itself came back perfectly every single time.
+//
+// The cost of that is not cosmetic. `verified` is what Eumaeus's
+// VerifiedSnapshotSince reads, and a machine that never verifies can never
+// release its old bucket or have it retired — so a rotation would cut over,
+// seed, and stall there with two live buckets.
+//
+// So the restore error is kept and reported, and the bytes decide. Reading
+// the file back is a stronger test than the exit status ever was: it cannot
+// pass unless restic actually fetched the pack, decrypted it and wrote the
+// content out. A restore that failed in a way that mattered fails the read or
+// the comparison below.
 func (b *Runner) verify(ctx context.Context, repo restic.Repository, want []byte, source string) error {
-	err := b.restic.Restore(ctx, repo, restic.RestoreOptions{
+	restoreErr := b.restic.Restore(ctx, repo, restic.RestoreOptions{
 		Snapshot: "latest",
 		Target:   b.paths.Scratch,
 		Include:  []string{SnapshotPath(source)},
 	})
-	if err != nil {
-		return err
+
+	// Logged rather than swallowed. Something that makes restore unhappy every
+	// night is worth somebody seeing, even when the file came back — it is
+	// how the ownership problem above would be noticed next time instead of
+	// being discovered from a stalled rotation.
+	if restoreErr != nil {
+		b.log.Warn("restore reported errors during verification",
+			"err", restoreErr,
+			"note", "the verification file is checked below; this is not itself a verdict")
 	}
 
 	got, err := os.ReadFile(RestoredPath(b.paths.Scratch, source))
 	if err != nil {
+		// Both, when there are both. The missing file is the failure and the
+		// restore error is almost always why, and reporting only the first
+		// would send somebody looking in the wrong place.
+		if restoreErr != nil {
+			return fmt.Errorf(
+				"the verification file was not in the restore: %w (the restore also failed: %w)",
+				err, restoreErr)
+		}
+
 		return fmt.Errorf("the verification file was not in the restore: %w", err)
 	}
 

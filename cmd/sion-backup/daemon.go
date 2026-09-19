@@ -752,7 +752,63 @@ func (d *deps) checkRepository(ctx context.Context, plan planbus.Plan, set crede
 
 	repo := set.Credentials.Repository(plan.Repository, plan.PackSizeMiB, plan.ReadConcurrency)
 
-	if err := d.restic.Check(ctx, repo, restic.ReadDataSubset(subset)); err != nil {
+	err = d.restic.Check(ctx, repo, restic.ReadDataSubset(subset))
+
+	// A lock is not damage, and this is the distinction the whole branch
+	// exists to make.
+	//
+	// A laptop suspended mid-check leaves a lock behind, and every check after
+	// it fails with exit 11. Recorded as a failure, that reads as "this
+	// repository may not give the files back" -- and once the rotation policy
+	// is looking at it, business/domain/plan/planbus.Consider turns it into
+	// the loudest thing this program says: rotate now, re-upload everything.
+	// For a bucket holding two years of history that is days of somebody's
+	// uplink spent on a stale file.
+	//
+	// The backup path has cleared these automatically since the beginning --
+	// see backupbus.Runner.run and the comment on restic.Runner.Unlock, which
+	// calls it the single most common way a machine in this fleet quietly
+	// stops backing up. The check path never learned. On a machine whose
+	// backups are succeeding, the backup path never runs, so nothing clears
+	// the lock and every check from then on reports damage.
+	var rerr *restic.Error
+
+	if errors.As(err, &rerr) && rerr.Retryable() {
+		d.log.Info("the repository was locked; clearing the lock and checking again")
+
+		if unlockErr := d.restic.Unlock(ctx, repo); unlockErr != nil {
+			// Skipped, not failed. Integrity.Failed is what the rotation
+			// policy reads, and nothing has been learned about this
+			// repository -- which is the same state a metered connection
+			// leaves, and is recorded the same way.
+			record(planbus.Integrity{
+				Subset:        subset,
+				SkippedReason: "the repository was locked and the lock could not be cleared",
+			})
+
+			d.log.Warn("could not clear the repository lock", "err", unlockErr)
+
+			return
+		}
+
+		err = d.restic.Check(ctx, repo, restic.ReadDataSubset(subset))
+	}
+
+	// Still locked after clearing one. Somebody else is genuinely working in
+	// this repository -- another machine, or a restore in progress -- and the
+	// answer is to check later rather than to conclude anything.
+	if errors.As(err, &rerr) && rerr.Retryable() {
+		record(planbus.Integrity{
+			Subset:        subset,
+			SkippedReason: "the repository was locked by something still running",
+		})
+
+		d.log.Info("the repository is in use; leaving the check for next time")
+
+		return
+	}
+
+	if err != nil {
 		d.log.Error("the repository did not pass its check", "err", err)
 
 		record(planbus.Integrity{Subset: subset, Detail: err.Error()})
@@ -761,6 +817,10 @@ func (d *deps) checkRepository(ctx context.Context, plan planbus.Plan, set crede
 		// means the backups already taken may not be worth anything. Every
 		// other report says a backup did not happen; this one says the ones
 		// that did may not come back.
+		//
+		// Which is exactly why a lock must not arrive here. This report is
+		// read as an emergency on the fleet page, and an emergency that turns
+		// out to be a stale file is how people learn to ignore the real one.
 		_ = d.diag.Record(diagbus.Report{
 			Kind:   diagbus.KindRepositoryDamaged,
 			Step:   "repository-check",

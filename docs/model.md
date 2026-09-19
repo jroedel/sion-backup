@@ -676,7 +676,16 @@ all.
 |---|---|---|
 | **Space** | 90 days, ≥ 30% superseded, ≥ 5 GiB reclaimable — all three together | age alone nags the owner of a machine whose files never change; fraction alone fires in week two, when a few large deletions make the ratio look dreadful; and a floor keeps it quiet about savings not worth days of somebody's uplink |
 | **Age** | a year to raise it, two years to insist | the password and both key pairs are exactly as old as the bucket, and nothing else replaces them. Independent of the measurement, because it is not an argument about the bill |
-| **Integrity** | the last `restic check` read the repository back and failed | not about cost at all. A repository that cannot be read back may not give the files back either, and the repair is a fresh bucket filled from the files themselves — which are still on the disk, and are the one copy nobody doubts |
+| **Integrity** | the last `restic check` read the repository back and **failed** | not about cost at all. A repository that cannot be read back may not give the files back either, and the repair is a fresh bucket filled from the files themselves — which are still on the disk, and are the one copy nobody doubts |
+
+Failed, and not "did not pass". A check that could not take the lock has
+learned nothing, and a laptop suspended mid-check leaves a lock behind — the
+single most common way a machine here quietly stops. Recorded as a failure it
+becomes the loudest sentence this program says, on the strength of a stale
+file, and asks for days of somebody's uplink. So `checkRepository` clears the
+lock and checks again, exactly as the backup path has always done, and a lock
+it cannot clear is recorded as a skip with a reason. `Integrity.Failed` is what
+[Consider] reads, and "we could not look" must never answer "is it damaged".
 
 **Nothing acts, at any level.** No threshold files a request and none starts an
 upload. That matters most at the loudest one: on a bucket adopted from a legacy

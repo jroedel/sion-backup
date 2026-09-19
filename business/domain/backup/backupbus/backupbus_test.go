@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 	"time"
 
@@ -56,6 +57,25 @@ restore)
     corrupt) mkdir -p "$(dirname "$DEST")"; printf 'not the nonce' > "$DEST" ;;
     empty)   mkdir -p "$(dirname "$DEST")"; : > "$DEST" ;;
     missing) : ;;
+
+    # The real machine. restic recreates the directory chain under --target
+    # and restores ownership on every level of it, including the root-owned
+    # /home -- which fails for a daemon running as an ordinary user. restic
+    # says it is ignoring the error and then exits non-zero having ignored it,
+    # while the file itself comes back perfectly.
+    noisy)
+      mkdir -p "$(dirname "$DEST")"; cp "$INCLUDE" "$DEST"
+      echo "ignoring error for /home: lchown $TARGET/home: invalid argument" >&2
+      echo "Fatal: There were 1 errors" >&2
+      exit 1
+      ;;
+
+    # The same noise, and this time the file really is absent.
+    noisy-missing)
+      echo "ignoring error for /home: lchown $TARGET/home: invalid argument" >&2
+      echo "Fatal: There were 1 errors" >&2
+      exit 1
+      ;;
   esac
   exit 0
   ;;
@@ -441,5 +461,58 @@ func TestSeedingIsTrueUntilTheRepositoryHasASnapshot(t *testing.T) {
 
 	if !seeding {
 		t.Error("a freshly rotated repository is not reported as seeding")
+	}
+}
+
+// TestARestoreThatComplainsButReturnsTheBytesIsVerified is a real machine's
+// two years of nights.
+//
+// Backing up /home/someone puts the root-owned /home in the snapshot, so the
+// verification restore -- running as that ordinary user -- tries to chown it
+// inside the scratch directory and cannot. restic prints "ignoring error for
+// /home" and then exits non-zero having ignored it. The nonce came back
+// correctly every single time, and every single run was marked unverified.
+//
+// That is not cosmetic. `verified` is what Eumaeus's VerifiedSnapshotSince
+// reads, and a machine that never verifies can never release its old bucket
+// or have it retired -- so a rotation would cut over, seed the new bucket and
+// stall there, with two live buckets and nothing able to move it on.
+func TestARestoreThatComplainsButReturnsTheBytesIsVerified(t *testing.T) {
+	b, _, _ := harness(t, fakeRestic(t, 0, "noisy"))
+
+	run, err := b.Run(context.Background(), request(), time.Now)
+	if err != nil {
+		t.Fatalf("Run = %v", err)
+	}
+
+	if run.Outcome != backupbus.OutcomeSuccess {
+		t.Errorf("Outcome = %q (%s), want success: the verification file came back",
+			run.Outcome, run.Message)
+	}
+}
+
+// TestARestoreThatComplainsAndReturnsNothingIsNotVerified is the other half,
+// and the reason the one above is not simply "ignore the exit status".
+//
+// The bytes are the verdict. When they are absent the run fails, and the
+// message has to carry the restore's own complaint as well -- it is almost
+// always why, and reporting only "the file was not there" sends somebody
+// looking in the wrong place.
+func TestARestoreThatComplainsAndReturnsNothingIsNotVerified(t *testing.T) {
+	b, _, _ := harness(t, fakeRestic(t, 0, "noisy-missing"))
+
+	run, err := b.Run(context.Background(), request(), time.Now)
+	if err != nil {
+		t.Fatalf("Run = %v", err)
+	}
+
+	if run.Outcome != backupbus.OutcomeUnverified {
+		t.Fatalf("Outcome = %q, want unverified", run.Outcome)
+	}
+
+	for _, want := range []string{"was not in the restore", "the restore also failed"} {
+		if !strings.Contains(run.Message, want) {
+			t.Errorf("the message does not mention %q: %s", want, run.Message)
+		}
 	}
 }
