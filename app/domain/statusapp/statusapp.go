@@ -129,6 +129,28 @@ type Config struct {
 	// package that renders HTML.
 	StartRun func(context.Context) error
 
+	// UpdateSource describes where updates come from and which versions this
+	// machine has given up on. Empty source means none come from anywhere,
+	// which is a configuration and not a fault.
+	UpdateSource func() (source string, refused []string)
+
+	// CheckForUpdate installs a newer build if there is one, now.
+	//
+	// Now, and not "on the next schedule": the automatic path throttles
+	// itself to one check an hour, and somebody who pressed a button means
+	// this minute. See cmd/sion-backup/update.go, where the command-line form
+	// clears the same throttle for the same reason.
+	CheckForUpdate func(context.Context) (UpdateOutcome, error)
+
+	// Restart schedules the exit that this machine's service manager turns
+	// into a start, and reports how long that is expected to take.
+	//
+	// It returns as soon as the exit is booked rather than performing it, so
+	// that the page saying "your daemon is coming back" is written by a
+	// process that still exists. Refusals come back as errors carrying a
+	// sentence: a backup in progress, or nothing that would start it again.
+	Restart func(context.Context) (time.Duration, error)
+
 	// Guard supplies the form token.
 	Guard *loopback.Guard
 
@@ -193,6 +215,8 @@ func New(cfg Config) (*Server, error) {
 	mux.HandleFunc("GET /access", s.access)
 	mux.HandleFunc("GET /settings", s.settings)
 	mux.HandleFunc("POST /settings", s.saveSettings)
+	mux.HandleFunc("POST /settings/update", s.checkForUpdate)
+	mux.HandleFunc("POST /settings/restart", s.restart)
 	mux.HandleFunc("GET /setup", s.setup)
 	mux.HandleFunc("POST /setup", s.saveSetup)
 	mux.HandleFunc("POST /setup/speed", s.retestSpeed)
@@ -490,6 +514,9 @@ type settingsView struct {
 
 	// MeteredKnown reports whether this platform can tell. See Config.
 	MeteredKnown bool
+
+	// Program is the section about the software rather than the plan.
+	Program programView
 }
 
 func (s *Server) settings(w http.ResponseWriter, r *http.Request) {
@@ -510,6 +537,14 @@ func (s *Server) settings(w http.ResponseWriter, r *http.Request) {
 func (s *Server) renderSettings(w http.ResponseWriter, r *http.Request,
 	plan planbus.Plan, saved bool, problem string) {
 
+	s.renderSettingsWith(w, r, plan, saved, problem, s.program())
+}
+
+// renderSettingsWith is renderSettings with the program section already
+// having something to say — a version installed, a restart booked, a refusal.
+func (s *Server) renderSettingsWith(w http.ResponseWriter, r *http.Request,
+	plan planbus.Plan, saved bool, problem string, program programView) {
+
 	view := settingsView{
 		chrome:   s.chromeFor("Settings", "/settings"),
 		Plan:     plan,
@@ -520,9 +555,16 @@ func (s *Server) renderSettings(w http.ResponseWriter, r *http.Request,
 		Problem:  problem,
 
 		MeteredKnown: s.cfg.MeteredKnown,
+		Program:      program,
 	}
 
 	view.NodeID = plan.NodeID
+
+	// The one page that reloads itself, and only while a restart is pending.
+	// A redirect would be served by a process that is about to stop existing.
+	if secs := program.RestartSeconds(); secs > 0 {
+		view.Refresh = secs
+	}
 
 	s.render(w, r, "settings.html", view)
 }

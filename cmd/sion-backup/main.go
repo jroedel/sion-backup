@@ -92,7 +92,7 @@ func main() {
 
 		// Not a failure: the daemon replaced itself and stopped so that the
 		// service manager would start the new binary.
-		if errors.Is(err, errUpdated) {
+		if errors.Is(err, errUpdated) || errors.Is(err, errRestarted) {
 			os.Exit(updateExitCode)
 		}
 
@@ -107,6 +107,14 @@ var errUsage = errors.New("see usage above")
 // errUpdated reports a daemon that stopped because it replaced itself. See
 // updateExitCode.
 var errUpdated = errors.New("a newer version was installed")
+
+// errRestarted reports a daemon that stopped because somebody asked it to.
+//
+// A second sentinel for the same exit code, because the code is about what
+// the service manager should do and these two are about why. One log line
+// saying "a newer version was installed" after somebody pressed Restart would
+// be a small lie in the one record anybody reads after a machine goes quiet.
+var errRestarted = errors.New("a restart was asked for")
 
 func run() error {
 	if len(os.Args) < 2 {
@@ -182,6 +190,11 @@ type deps struct {
 	// daemon can exit into the new one. Nil outside the daemon, where there
 	// is nothing to restart.
 	updated chan struct{}
+
+	// restarting is signalled when somebody asks for a restart from the
+	// status page. Separate from updated so the log can say which happened;
+	// the exit is the same either way. See deps.restart.
+	restarting chan struct{}
 
 	plan    *planbus.Business
 	backups *backupbus.Runner
