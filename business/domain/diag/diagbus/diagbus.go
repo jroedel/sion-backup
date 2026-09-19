@@ -119,8 +119,47 @@ type Report struct {
 	// on one version and not another becomes visible.
 	PriorVersion string `json:"prior_version,omitempty"`
 
+	// RollbackOutcome and RestoredVersion say what a rollback actually did.
+	//
+	// # Why these exist, which is a bug this program shipped
+	//
+	// An update-rolled-back report used to carry no way of telling the two
+	// outcomes apart. Agent is stamped from the binary doing the queuing, and
+	// that binary is the build being given up on rather than the one restored:
+	// Record is called by a program on its way out, which is why it does not
+	// make an HTTP round trip, and Flush sends the report as stored without
+	// re-stamping it. So `agent == prior_version` on the wire for BOTH
+	// outcomes, and they differed only in the Detail prose.
+	//
+	// Eumaeus was reading `agent == prior_version` as "nothing was restored",
+	// on an answer this project gave it in writing — which was wrong about its
+	// own code. Every clean rollback was therefore escalated as a stranded
+	// machine, and the message written for the stranded case was the only one
+	// that ever went out: it told an owner their laptop was running a
+	// withdrawn release and was not backing up, when in fact it had recovered
+	// by itself.
+	//
+	// So the client says it rather than the server deducing it. Both are
+	// optional and older servers ignore them.
+	//
+	// RollbackOutcome is "rolled-back" or "stuck". RestoredVersion is the
+	// build it went back to, omitted when there is none.
+	RollbackOutcome string `json:"rollback_outcome,omitempty"`
+	RestoredVersion string `json:"restored_version,omitempty"`
+
 	Detail string `json:"detail"`
 }
+
+// The two things an update-rolled-back report can mean.
+const (
+	// RollbackRecovered is a machine that went back to the previous build and
+	// is running it now.
+	RollbackRecovered = "rolled-back"
+
+	// RollbackStuck is a machine still on the build it gave up on, because
+	// there was no working previous binary to return to.
+	RollbackStuck = "stuck"
+)
 
 // Sink is somewhere reports go. Implemented by the Eumaeus source.
 type Sink interface {
