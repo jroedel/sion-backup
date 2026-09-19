@@ -96,10 +96,76 @@ type Set struct {
 	RepositoryURL string
 	Version       int
 	Credentials   Credentials
+
+	// RepositoryState is "active" or "cutting-over", as the server spells
+	// them, and is descriptive only. Empty from a deployment older than the
+	// field.
+	//
+	// It is NOT the permission to create anything, and the two are next to
+	// each other here precisely because they are so easy to confuse: a
+	// cutting-over bucket can be one that was adopted with ten years of
+	// somebody's snapshots already in it, and a client acting on the state
+	// alone would write an empty repository over that history.
+	RepositoryState string
+
+	// ExpectEmpty is the server asserting that there is nothing at
+	// RepositoryURL yet and that it meant to send this machine there.
+	//
+	// **The only thing in this API that permits this program to create a
+	// repository outside enrolment.** Four things about it are load-bearing
+	// and none of them may be softened:
+	//
+	//   - It is true only for THIS fetch. Nothing stores it. A cached
+	//     permission outlives a reimage and defeats the server's own third
+	//     condition, which closes the window the moment the seeding run lands.
+	//   - It arrives here and not on the state call, because which repository
+	//     the credentials open and the permission to create that repository
+	//     have to be one atomic answer. A client pairing a state from
+	//     /machines/me with a URL from here could initialise the wrong bucket.
+	//   - Absence is false, which is byte for byte what this program did
+	//     before the field existed: create nothing.
+	//   - The local Seeding flag is not a second opinion and must never be
+	//     read as one. It is computed from local history and is true both when
+	//     this machine was deliberately moved and when its repository has
+	//     vanished — a reimage takes the local record and leaves the token.
+	//     Only the server knows which, and this is how it says so.
+	//
+	// There is deliberately no `adopted` beside it: the server folds that into
+	// this field itself, so on the run path there is no second opinion to
+	// check, and a reader should not conclude that one is being checked.
+	ExpectEmpty bool
+
+	// Restore is the read-only key pair that goes on the owner's printed card.
+	//
+	// Fetched on every run because the response carries it and there is no way
+	// to ask for less; used only by the card command. A lost card exposes
+	// somebody's own data and cannot destroy it, which is the whole reason the
+	// card carries this pair and not the machine's.
+	Restore RestoreKey
+}
+
+// RestoreKey is the read-only S3 pair printed on the owner's card.
+type RestoreKey struct {
+	AccessKeyID     []byte
+	SecretAccessKey []byte
+}
+
+// Complete reports whether both halves are present.
+func (r RestoreKey) Complete() bool {
+	return len(r.AccessKeyID) > 0 && len(r.SecretAccessKey) > 0
+}
+
+// Wipe overwrites both.
+func (r RestoreKey) Wipe() {
+	token.Wipe(r.AccessKeyID)
+	token.Wipe(r.SecretAccessKey)
 }
 
 // Wipe clears the secrets in the set.
-func (s Set) Wipe() { s.Credentials.Wipe() }
+func (s Set) Wipe() {
+	s.Credentials.Wipe()
+	s.Restore.Wipe()
+}
 
 // Source is where credentials come from: Eumaeus.
 //

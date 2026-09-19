@@ -40,14 +40,20 @@ const path = "/machines/me/credentials"
 type payload struct {
 	Version    int `json:"credentials_version"`
 	Repository struct {
-		URL string `json:"url"`
+		URL   string `json:"url"`
+		State string `json:"state"`
+
+		// ExpectEmpty is omitted when false, and that polarity is the
+		// contract rather than an encoding detail: absence means what it
+		// meant before the field existed, which is "create nothing". Only an
+		// explicit true is new information, so a plain bool decodes correctly
+		// against every server that has ever answered this call.
+		ExpectEmpty bool `json:"expect_empty"`
 	} `json:"repository"`
 	Credentials struct {
-		ResticPassword string `json:"restic_password"`
-		Machine        struct {
-			AccessKeyID     string `json:"access_key_id"`
-			SecretAccessKey string `json:"secret_access_key"`
-		} `json:"machine"`
+		ResticPassword string  `json:"restic_password"`
+		Machine        keyPair `json:"machine"`
+		Restore        keyPair `json:"restore"`
 	} `json:"credentials"`
 }
 
@@ -76,10 +82,9 @@ func (s *Source) Fetch(ctx context.Context) (credentialbus.Set, error) {
 		// 401 alone. This used to accept a 403 here as well, on the argument
 		// that a machine which may not read its own credentials cannot back up
 		// whichever status says so. That argument was sound and the branch was
-		// still dead: Eumaeus answers 403 in exactly one place in the whole
-		// API — the rotation request, when fresh buckets are switched off —
-		// and never on this endpoint, which they hold with a test
-		// (jroedel/eumaeus#144). A branch that cannot run is a branch nobody
+		// still dead: there is now no 403 anywhere in this API at all, and
+		// Eumaeus sweeps every route with a test to keep it that way
+		// (jroedel/eumaeus#174). A branch that cannot run is a branch nobody
 		// can check, and it was copied into two more sources before anybody
 		// asked whether the status it guards against ever arrives.
 		return credentialbus.Set{}, &credentialbus.Unauthorised{Err: err}
@@ -93,12 +98,18 @@ func (s *Source) Fetch(ctx context.Context) (credentialbus.Set, error) {
 	}
 
 	return credentialbus.Set{
-		RepositoryURL: got.Repository.URL,
-		Version:       got.Version,
+		RepositoryURL:   got.Repository.URL,
+		RepositoryState: got.Repository.State,
+		ExpectEmpty:     got.Repository.ExpectEmpty,
+		Version:         got.Version,
 		Credentials: credentialbus.Credentials{
 			AccessKeyID:     []byte(got.Credentials.Machine.AccessKeyID),
 			SecretAccessKey: []byte(got.Credentials.Machine.SecretAccessKey),
 			ResticPassword:  []byte(got.Credentials.ResticPassword),
+		},
+		Restore: credentialbus.RestoreKey{
+			AccessKeyID:     []byte(got.Credentials.Restore.AccessKeyID),
+			SecretAccessKey: []byte(got.Credentials.Restore.SecretAccessKey),
 		},
 	}, nil
 }

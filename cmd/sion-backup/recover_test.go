@@ -19,12 +19,52 @@ type server struct {
 	state machinebus.State
 	err   error
 	asked int
+
+	// The four calls a machine makes about its own repository, recorded rather
+	// than answered. Their own behaviour is tested in rotate_test.go; here
+	// they exist so that this stub satisfies the interface.
+	requested []machinebus.Measured
+	accepted  []string
+	released  []string
+	cards     []string
+
+	// rotateErr is returned by all four, for the tests that care what happens
+	// when the server refuses.
+	rotateErr error
 }
 
 func (s *server) State(context.Context) (machinebus.State, error) {
 	s.asked++
 
 	return s.state, s.err
+}
+
+func (s *server) RequestRotation(_ context.Context, m machinebus.Measured) error {
+	s.requested = append(s.requested, m)
+
+	return s.rotateErr
+}
+
+func (s *server) Cutover(_ context.Context, url string) error {
+	s.accepted = append(s.accepted, url)
+
+	return s.rotateErr
+}
+
+func (s *server) ReleaseOldBucket(_ context.Context, url string) (machinebus.Released, error) {
+	s.released = append(s.released, url)
+
+	if s.rotateErr != nil {
+		return machinebus.Released{}, s.rotateErr
+	}
+
+	return machinebus.Released{Bucket: "old-bucket", URL: url, AskedAt: time.Now()}, nil
+}
+
+func (s *server) CardIssued(_ context.Context, url string, _ time.Time) error {
+	s.cards = append(s.cards, url)
+
+	return s.rotateErr
 }
 
 // machineFor builds a deps with a real database and a stubbed server.

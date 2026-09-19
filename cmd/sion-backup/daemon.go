@@ -18,6 +18,7 @@ import (
 	"github.com/jroedel/sion-backup/business/domain/credential/credentialbus"
 	"github.com/jroedel/sion-backup/business/domain/diag/diagbus"
 	"github.com/jroedel/sion-backup/business/domain/fleet/fleetbus"
+	"github.com/jroedel/sion-backup/business/domain/machine/machinebus"
 	"github.com/jroedel/sion-backup/business/domain/plan/planbus"
 	"github.com/jroedel/sion-backup/business/domain/survey/surveybus"
 	"github.com/jroedel/sion-backup/foundation/restic"
@@ -126,6 +127,9 @@ func daemonCmd(args []string) error {
 		Survey:                  survey,
 		Background:              ctx,
 		MeteredKnown:            meteredKnown(d.cfg),
+		Machine:                 d.machine,
+		RefreshState:            d.pollState,
+		Metered:                 d.metered,
 		StartRun:                d.startRun(ctx),
 		Guard:                   guard,
 		Paths:                   d.paths,
@@ -199,6 +203,11 @@ func daemonCmd(args []string) error {
 	}
 
 	go supervise(d.log, "flusher", func() { d.flusher(ctx) })
+
+	// The one thing in this program that asks the server about this machine
+	// on its own. Until it existed a bucket provisioned for a machine was
+	// offered, correctly, to nobody. See pollEvery.
+	go supervise(d.log, "poller", func() { d.poller(ctx) })
 
 	select {
 	case err := <-errs:
@@ -551,6 +560,14 @@ func (d *deps) backup(ctx context.Context, plan planbus.Plan) error {
 		Options:    backupOptions(plan),
 	}
 
+	// The one gate that can create a repository, and the only one that runs
+	// before the fleet is told anything. A machine that cannot open the bucket
+	// the server just named has not started a backup, so it must not report
+	// one. See openRepository for the rule it holds.
+	if err := d.openRepository(ctx, plan, set); err != nil {
+		return err
+	}
+
 	// The dashboard is told a run has started before it starts, so a machine
 	// that dies mid-backup leaves a start with no end rather than no trace.
 	_ = d.fleet.Report(ctx, startEvent(plan, runUUID, seeding))
@@ -580,6 +597,20 @@ func (d *deps) backup(ctx context.Context, plan planbus.Plan) error {
 	if run.SnapshotID != "" {
 		d.measure(ctx, plan, set)
 		d.checkRepository(ctx, plan, set)
+	}
+
+	// The other end of a cutover, and the only step of a rotation this daemon
+	// takes without somebody clicking. It rests on evidence rather than on a
+	// schedule: a run that produced a snapshot AND read one back out of the
+	// new bucket is the whole of what "the new bucket works" can mean from
+	// here. The state comes from the credential fetch rather than the stored
+	// poll, because that is the answer that is atomic with the URL.
+	//
+	// Deliberately after the report above: the server refuses this until its
+	// own runs table has seen the verified run, so asking first would spend a
+	// round trip on a guaranteed 409.
+	if run.SnapshotID != "" && run.Verified && set.RepositoryState == machinebus.StateCuttingOver {
+		d.releaseOldBucket(ctx, plan.Repository)
 	}
 
 	// Last, and only now that the backup is over: see selfUpdate on why this

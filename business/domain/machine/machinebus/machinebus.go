@@ -83,7 +83,144 @@ type State struct {
 	// Named Routes rather than Serves so that [State.Serves] can be the
 	// question a caller actually asks.
 	Routes []string
+
+	// OwnerName and OwnerEmail are whose computer this is. Used on the
+	// restore card, which names the person it belongs to so that a page found
+	// in a filing cabinet in four years is traceable to somebody.
+	OwnerName  string
+	OwnerEmail string
+
+	// RepositoryState is "active" or "cutting-over", as the server spells
+	// them. Empty from a deployment older than the field.
+	//
+	// Descriptive and never a permission. A cutting-over bucket may be one
+	// that was adopted with ten years of somebody's snapshots in it, so
+	// nothing may read this as "that bucket is empty and I may create a
+	// repository there" — the only field in the API that says so is
+	// expect_empty, and it arrives on the credential fetch. See credentialbus.
+	RepositoryState string
+
+	// RepositoryAdopted reports a bucket taken over from a legacy install
+	// rather than provisioned empty. Repeated on this call so that a machine
+	// reinstalled from nothing but its token learns it without re-enrolling.
+	RepositoryAdopted bool
+
+	// Offer is a bucket provisioned for this machine that it has NOT been
+	// moved to, or nil — which is the answer for almost every machine almost
+	// always.
+	//
+	// A pointer rather than a value with a zero test, because the distinction
+	// carries weight: an offer is a thing an administrator did, and a client
+	// that could not tell "no offer" from "an offer with empty fields" would
+	// eventually accept the second.
+	Offer *Offer
+
+	// Card is what the server says about the owner's printed restore card.
+	Card Card
 }
+
+// Repository states, as the server spells them.
+//
+// `offered` and `retired` never appear here. The first is the state of a
+// bucket this machine has not been moved to, which arrives as [State.Offer] on
+// the same response; the second belongs to a bucket the machine has finished
+// with. The query behind this endpoint cannot select either.
+const (
+	StateActive      = "active"
+	StateCuttingOver = "cutting-over"
+)
+
+// CuttingOver reports whether this machine is being moved to a new bucket.
+//
+// False from a server that does not send the field. That is the right answer
+// rather than an unknown: everything gated on this is an extra step in a
+// rotation, and a deployment that cannot describe a rotation is not running
+// one.
+func (s State) CuttingOver() bool { return s.RepositoryState == StateCuttingOver }
+
+// Offer is storage waiting for this machine to accept it.
+//
+// Not an instruction. A cutover is a seeding run — everything this machine
+// holds, uploaded again, usually over days — and every fact that decides when
+// to spend them is on this side of the API. Nothing expires an offer and
+// nothing happens if it is ignored, so a bucket sitting here for two months is
+// a conversation rather than a fault.
+type Offer struct {
+	// URL is the repository this machine would move to. It is named back on
+	// the cutover call, which refuses any URL that is not the offer currently
+	// standing.
+	URL string
+
+	Provider string
+	Region   string
+	Bucket   string
+
+	// OfferedAt is when the storage was created, which is when it became
+	// available. A status page is entitled to say this has been sitting here
+	// for two months.
+	OfferedAt time.Time
+
+	// Adopted says the offered bucket already holds snapshots. It changes the
+	// length of the seeding run and it changes the sentence shown to the
+	// owner, which is why the server sends it on the offer rather than only
+	// after the move.
+	Adopted bool
+}
+
+// Card states, as the server spells them.
+const (
+	// CardNever means nobody has printed a card for the bucket this machine
+	// writes to now.
+	//
+	// This is what a machine reads immediately after a cutover, because the
+	// card state is a fact about the current repository and a new bucket has
+	// had no card printed for it. So the signal that a reprint is owed is this
+	// word arriving while the repository URL changes — not [CardSuperseded],
+	// which arrives days or weeks later when an administrator retires the old
+	// bucket.
+	CardNever = "never"
+
+	// CardIssued means the current bucket's card has been rendered.
+	CardIssued = "issued"
+
+	// CardSuperseded means the owner is holding paper that no longer opens
+	// anything: print a new card, and destroy the old one.
+	//
+	// It cannot arrive while the old bucket's keys still work, which is the
+	// whole reason it is worth telling apart from [CardNever]. Until a bucket
+	// is retired its card is the only way into the only bucket holding any
+	// history, and telling an owner to shred that would be the worst advice
+	// this program could give.
+	CardSuperseded = "superseded"
+)
+
+// Card is what the server says about the owner's printed restore card.
+type Card struct {
+	// State is one of the three words above, or empty from a deployment older
+	// than the field.
+	State string
+
+	// IssuedAt is when the CURRENT bucket's card was rendered, and is
+	// therefore zero whenever State is [CardSuperseded] — the card that was
+	// rendered names a bucket that has since been retired.
+	//
+	// Never a second way to ask whether a card exists. State is the signal and
+	// this is only its date.
+	IssuedAt time.Time
+}
+
+// Owed reports whether a card should be printed for the bucket this machine
+// writes to now.
+func (c Card) Owed() bool { return c.State == CardNever || c.State == CardSuperseded }
+
+// DestroyTheOld reports whether the paper the owner is holding opens nothing
+// any more.
+//
+// Only [CardSuperseded] says so. [CardNever] never does, and the difference is
+// the point: during a cutover the card state falls back to "never" while the
+// old bucket's keys still work, and its card is then the only way into the
+// only bucket holding any history.
+func (c Card) DestroyTheOld() bool { return c.State == CardSuperseded }
 
 // KnowsWhatItServes reports whether the server said what it implements.
 //
@@ -120,11 +257,6 @@ func (s State) Serves(method, path string) bool {
 // produce a plan, and half-writing one would leave a machine that looks
 // repaired and is not.
 func (s State) Usable() bool { return s.NodeID != "" && s.RepositoryURL != "" }
-
-// Source reads the state from wherever it lives, which is the server.
-type Source interface {
-	State(ctx context.Context) (State, error)
-}
 
 // Business is the machine-state domain.
 type Business struct {

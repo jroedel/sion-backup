@@ -42,6 +42,7 @@ import (
 	"github.com/jroedel/sion-backup/business/domain/backup/backupbus"
 	"github.com/jroedel/sion-backup/business/domain/credential/credentialbus"
 	"github.com/jroedel/sion-backup/business/domain/disclosure/disclosurebus"
+	"github.com/jroedel/sion-backup/business/domain/machine/machinebus"
 	"github.com/jroedel/sion-backup/business/domain/plan/planbus"
 	"github.com/jroedel/sion-backup/business/domain/survey/surveybus"
 	"github.com/jroedel/sion-backup/foundation/paths"
@@ -90,6 +91,35 @@ type Config struct {
 	// Windows and macOS cannot yet. The setup page says so beside the
 	// checkbox rather than offering a protection the machine will not give.
 	MeteredKnown bool
+
+	// Machine is what the server says about this machine, and the four calls
+	// this machine makes about its own repository.
+	//
+	// Nil on a machine that is not enrolled. Only the POST handlers use it: a
+	// page render reads the stored answer the daemon's poller wrote, because a
+	// status page that makes an HTTP call to render is a status page that
+	// hangs when the server is down — which is exactly when somebody opens it.
+	Machine *machinebus.Business
+
+	// RefreshState asks the server about this machine again and stores the
+	// answer.
+	//
+	// A closure because the conversion between what the server says and what
+	// is stored belongs to the composition root, and because nothing that
+	// renders HTML should be able to decide when this program talks to
+	// Eumaeus. Called only after a button has been pressed, so the page that
+	// follows shows what the person just did rather than the poll from four
+	// hours ago.
+	RefreshState func(context.Context)
+
+	// Metered reports whether somebody is paying for these bytes right now,
+	// and who said so.
+	//
+	// The single most useful thing the fresh-start page can tell a person
+	// about to commit to a multi-day upload. A closure for the same reason
+	// StartRun is one: it asks the operating system, which is not this
+	// package's business.
+	Metered func(context.Context) (bool, string)
 
 	// StartRun begins a backup now.
 	//
@@ -167,6 +197,9 @@ func New(cfg Config) (*Server, error) {
 	mux.HandleFunc("POST /setup", s.saveSetup)
 	mux.HandleFunc("POST /setup/speed", s.retestSpeed)
 	mux.HandleFunc("POST /setup/measure", s.remeasure)
+	mux.HandleFunc("GET /rotation", s.rotation)
+	mux.HandleFunc("POST /rotation/request", s.requestRotation)
+	mux.HandleFunc("POST /rotation/cutover", s.cutover)
 	mux.HandleFunc("POST /run", s.runNow)
 
 	s.handler = mux
@@ -231,11 +264,30 @@ type statusView struct {
 	Repository string
 	Targets    []string
 
-	// Rotation is the "a fresh start would reclaim this much" suggestion, and
+	// Rotation is the "a fresh start would reclaim this much" assessment, and
 	// the measurement behind it. Rotation.Show decides whether it appears.
+	//
+	// The front page carries the banner and the whole argument is on
+	// /rotation. Two reasons: the argument is long — three kinds of reason,
+	// two numbers and a time estimate — and the page somebody opens at nine in
+	// the evening to find out whether their laptop is backed up should answer
+	// that question first.
 	Rotation    planbus.Offer
 	Measurement planbus.Measurement
 	Saving      string
+
+	// Offered is a bucket waiting for this computer to accept it, or nil. It
+	// appears on the front page whatever the assessment says, because
+	// somebody has done work and is waiting for an answer.
+	Offered *planbus.Offered
+
+	// CuttingOver is a move already under way: the new bucket is being filled
+	// and the old one is still readable.
+	CuttingOver bool
+
+	// CardOwed and CardSay are the owner's printed restore page.
+	CardOwed bool
+	CardSay  string
 }
 
 // verdict is the sentence at the top of the page and the colour behind it.
@@ -317,13 +369,38 @@ func (s *Server) status(w http.ResponseWriter, r *http.Request) {
 		s.cfg.Log.Warn("could not read the run history", "err", err)
 	}
 
-	if m, err := s.cfg.Plan.Measurement(ctx, plan.Repository, time.Now()); err == nil {
+	now := time.Now()
+
+	if m, err := s.cfg.Plan.Measurement(ctx, plan.Repository, now); err == nil {
 		view.Measurement = m
-		view.Rotation = m.ConsiderRotation(time.Now())
-		view.Saving = view.Rotation.MonthlySaving(s.cfg.StoragePricePerTiBMonth)
 	} else {
 		s.cfg.Log.Warn("could not read the repository measurement", "err", err)
 	}
+
+	var integrity planbus.Integrity
+	if i, err := s.cfg.Plan.Integrity(ctx, plan.Repository); err == nil {
+		integrity = i
+	}
+
+	// The stored answer the poller wrote, never a call from here. Facts naming
+	// a different repository than the plan does are dropped, by the same rule
+	// the measurement follows: they describe a bucket this machine has left.
+	var bucket planbus.Bucket
+
+	if state, err := s.cfg.Plan.MachineState(ctx); err == nil {
+		view.Offered = state.Offer
+		view.CardOwed, view.CardSay = cardAdvice(state.Card)
+
+		if state.Describes(plan.Repository) {
+			bucket = state.Bucket
+			view.CuttingOver = state.Bucket.CuttingOver()
+		}
+	} else {
+		s.cfg.Log.Warn("could not read the stored machine state", "err", err)
+	}
+
+	view.Rotation = planbus.Consider(now, bucket, view.Measurement, integrity)
+	view.Saving = view.Rotation.MonthlySaving(s.cfg.StoragePricePerTiBMonth)
 
 	view.NextRun = plan.Schedule.Next(plan.NodeID, time.Now())
 	view.Verdict = verdictFor(plan, view.Last, view.HasLast, running, time.Now())
@@ -543,6 +620,7 @@ func (s *Server) chromeFor(title, current string) chrome {
 		{Href: "/", Label: "Status"},
 		{Href: "/setup", Label: "Set up"},
 		{Href: "/settings", Label: "Settings"},
+		{Href: "/rotation", Label: "Fresh start"},
 		{Href: "/access", Label: "Access"},
 	}
 

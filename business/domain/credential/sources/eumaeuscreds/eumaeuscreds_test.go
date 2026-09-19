@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -34,9 +35,10 @@ func client(t *testing.T, h http.HandlerFunc) *eumaeusapi.Client {
 // 401 and only 401. This used to accept a 403 here too, on the argument that a
 // machine which may not read its own credentials cannot back up whichever
 // status says so — sound, and describing something that never happens.
-// Eumaeus answers 403 in exactly one place in the whole API, the rotation
-// request refusing because fresh buckets are switched off, and never on this
-// endpoint; they hold that with a test of their own (jroedel/eumaeus#144).
+// There is now no 403 anywhere in this API at all — the rotation request was
+// the last route that answered one, and the fleet-wide switch it refused on
+// has been withdrawn. Eumaeus sweeps every route with a test to keep it that
+// way (jroedel/eumaeus#174).
 //
 // The pair is worth remembering rather than just deleting, because it was
 // copied into two later sources before anybody asked whether the status it
@@ -263,5 +265,111 @@ func TestTheOtherReasonForA422IsNotAMismatch(t *testing.T) {
 
 	if eumaeuscreds.RepositoryMismatch(err) {
 		t.Errorf("RepositoryMismatch = true for %v", err)
+	}
+}
+
+// TestExpectEmptyIsOffUnlessTheServerSaysOtherwise.
+//
+// The only field in this API that permits a client to create a repository, and
+// the polarity is the contract: it is omitted when false, so absence has to
+// mean exactly what it meant before the field existed. A client that read a
+// missing key as anything but "create nothing" would, against a server that
+// predates the field, silently write an empty repository over a real one.
+func TestExpectEmptyIsOffUnlessTheServerSaysOtherwise(t *testing.T) {
+	cases := []struct {
+		name  string
+		repo  string
+		want  bool
+		state string
+	}{
+		{
+			name: "a server that predates the field",
+			repo: `{"url": "s3:https://s3.example/b"}`,
+		},
+		{
+			name:  "an ordinary run",
+			repo:  `{"url": "s3:https://s3.example/b", "state": "active"}`,
+			state: "active",
+		},
+		{
+			name:  "cutting over, but something has already landed",
+			repo:  `{"url": "s3:https://s3.example/b", "state": "cutting-over"}`,
+			state: "cutting-over",
+		},
+		{
+			name:  "the one moment a client may create a repository",
+			repo:  `{"url": "s3:https://s3.example/b", "state": "cutting-over", "expect_empty": true}`,
+			state: "cutting-over",
+			want:  true,
+		},
+	}
+
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			s := eumaeuscreds.NewSource(client(t, func(w http.ResponseWriter, r *http.Request) {
+				fmt.Fprintf(w, `{
+				  "credentials_version": 3,
+				  "repository": %s,
+				  "credentials": {
+				    "restic_password": "p",
+				    "machine": {"access_key_id": "A", "secret_access_key": "S"},
+				    "restore": {"access_key_id": "R", "secret_access_key": "T"}
+				  }
+				}`, c.repo)
+			}))
+
+			set, err := s.Fetch(context.Background())
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer set.Wipe()
+
+			if set.ExpectEmpty != c.want {
+				t.Errorf("ExpectEmpty = %v, want %v", set.ExpectEmpty, c.want)
+			}
+
+			if set.RepositoryState != c.state {
+				t.Errorf("RepositoryState = %q, want %q", set.RepositoryState, c.state)
+			}
+		})
+	}
+}
+
+// TestTheRestoreKeyComesBackForTheCard.
+//
+// The card carries the read-only pair and never the machine's own, so that a
+// page found in a filing cabinet exposes somebody's data and cannot destroy
+// it. Nothing but `sion-backup card` reads it, and it is wiped with the rest.
+func TestTheRestoreKeyComesBackForTheCard(t *testing.T) {
+	s := eumaeuscreds.NewSource(client(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(`{
+		  "credentials_version": 3,
+		  "repository": {"url": "s3:https://s3.example/b", "state": "active"},
+		  "credentials": {
+		    "restic_password": "p",
+		    "machine": {"access_key_id": "A", "secret_access_key": "S"},
+		    "restore": {"access_key_id": "R", "secret_access_key": "T"}
+		  }
+		}`))
+	}))
+
+	set, err := s.Fetch(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if !set.Restore.Complete() {
+		t.Fatal("the read-only pair did not come back")
+	}
+
+	if string(set.Restore.AccessKeyID) != "R" {
+		t.Errorf("the card would carry %q", set.Restore.AccessKeyID)
+	}
+
+	// And wiping the set wipes it, like every other secret here.
+	set.Wipe()
+
+	if set.Restore.Complete() && string(set.Restore.AccessKeyID) == "R" {
+		t.Error("the read-only key survived the wipe")
 	}
 }

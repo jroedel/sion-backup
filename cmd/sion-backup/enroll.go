@@ -170,6 +170,16 @@ func (d *deps) enroll(ctx context.Context, o enrollment) (eumaeuscreds.Enrollmen
 		return eumaeuscreds.Enrollment{}, err
 	}
 
+	// Rewired now that there is a token, so that the card printed at the
+	// bottom of this function can be reported. Everything above this line ran
+	// against an anonymous client because it had to: claiming a code is the
+	// call that produces the token.
+	d.machineToken = enrolled.MachineToken
+
+	if err := d.wireEumaeus(); err != nil {
+		return eumaeuscreds.Enrollment{}, err
+	}
+
 	fmt.Printf("Enrolled %s for %s.\n", enrolled.NodeID, enrolled.OwnerName)
 
 	// The plan is written before the repository is checked, so that a machine
@@ -192,7 +202,8 @@ func (d *deps) enroll(ctx context.Context, o enrollment) (eumaeuscreds.Enrollmen
 		fmt.Printf("The repository at %s opened with these credentials.\n", enrolled.RepositoryURL)
 	}
 
-	printRestoreCard(enrolled)
+	printRestoreCard(cardFor(enrolled))
+	d.sayCardIssued(ctx, enrolled.RepositoryURL)
 
 	return enrolled, nil
 }
@@ -285,51 +296,33 @@ func ensureRepository(ctx context.Context, r *restic.Runner, e eumaeuscreds.Enro
 		SecretAccessKey: []byte(e.MachineKeySecret),
 	}
 
-	exists, err := r.Exists(ctx, repo)
-	if err != nil {
-		return false, fmt.Errorf("could not reach the repository: %w", err)
-	}
+	// An adopted bucket is the one case where creating it is the worst
+	// available action, so the permission is withheld before the sequence
+	// starts rather than checked inside it. The server says this bucket was
+	// taken over from a legacy install and holds years of snapshots; restic
+	// cannot find them. Either the URL is not the bucket those snapshots are
+	// in, or the password is not the one they were written with — and writing
+	// an empty repository over that question would turn a loud, fixable
+	// problem into a machine that backs up happily to the wrong place while
+	// the real history sits somewhere nobody is looking.
+	created, err := r.Ensure(ctx, repo, !e.RepositoryAdopted)
 
-	if exists {
-		return false, nil
-	}
-
-	if e.RepositoryAdopted {
-		// The one case where creating it is the worst available action. The
-		// server says this bucket was taken over from a legacy install and
-		// holds years of snapshots; restic cannot find them. Either the URL
-		// is not the bucket those snapshots are in, or the password is not
-		// the one they were written with — and writing an empty repository
-		// over that question would turn a loud, fixable problem into a
-		// machine that backs up happily to the wrong place while the real
-		// history sits somewhere nobody is looking.
+	switch {
+	case errors.Is(err, restic.ErrAbsent) && e.RepositoryAdopted:
 		return false, fmt.Errorf("Eumaeus says %s was adopted and already holds backups, "+
 			"but there is no restic repository there — the URL or the password is wrong, "+
 			"and this needs fixing on the server before this machine runs",
 			e.RepositoryURL)
-	}
 
-	fmt.Printf("There is no repository at %s yet. Creating it.\n", e.RepositoryURL)
-
-	if err := r.Init(ctx, repo); err != nil {
-		return false, fmt.Errorf("could not create the repository at %s: %w", e.RepositoryURL, err)
-	}
-
-	// Read it back rather than trusting the exit code, which is the same
-	// argument the rest of this program makes about a backup: the thing that
-	// proves a repository is there is opening it, not the absence of an
-	// error while writing it.
-	switch opened, err := r.Exists(ctx, repo); {
 	case err != nil:
-		return true, fmt.Errorf("created the repository at %s but could not read it back: %w",
-			e.RepositoryURL, err)
-
-	case !opened:
-		return true, fmt.Errorf("created the repository at %s and it is still not there",
-			e.RepositoryURL)
+		return created, err
 	}
 
-	return true, nil
+	if created {
+		fmt.Printf("There was no repository at %s yet. Created it.\n", e.RepositoryURL)
+	}
+
+	return created, nil
 }
 
 // printRestoreCard writes the page the owner keeps.
@@ -340,7 +333,40 @@ func ensureRepository(ctx context.Context, r *restic.Runner, e eumaeuscreds.Enro
 // repository and the person whose files they are holds read-only credentials
 // to it. If this organisation and its server both vanish, they still get their
 // files back.
-func printRestoreCard(e eumaeuscreds.Enrollment) {
+// restoreCard is everything the owner's page needs, from wherever it came.
+//
+// Claim-shaped, because enrolment was the first thing to render one — but it
+// is deliberately not eumaeuscreds.Enrollment. A card has to be printable
+// again, years later, from a credential fetch and a state call, and after a
+// cutover it must be: both the password and the restore key have changed, and
+// the paper in somebody's filing cabinet opens a bucket that is on its way to
+// being deleted. See the card command.
+type restoreCard struct {
+	NodeID     string
+	OwnerEmail string
+
+	RepositoryURL    string
+	RepositoryBucket string
+
+	ResticPassword   string
+	RestoreKeyID     string
+	RestoreKeySecret string
+}
+
+// cardFor builds one from a fresh enrolment.
+func cardFor(e eumaeuscreds.Enrollment) restoreCard {
+	return restoreCard{
+		NodeID:           e.NodeID,
+		OwnerEmail:       e.OwnerEmail,
+		RepositoryURL:    e.RepositoryURL,
+		RepositoryBucket: e.RepositoryBucket,
+		ResticPassword:   e.ResticPassword,
+		RestoreKeyID:     e.RestoreKeyID,
+		RestoreKeySecret: e.RestoreKeySecret,
+	}
+}
+
+func printRestoreCard(e restoreCard) {
 	setEnv, exportEnv := "$env:", "export "
 
 	line := strings.Repeat("─", 72)
@@ -412,3 +438,27 @@ func localAccount() string {
 
 // unused keeps the context import honest if the checks above are ever trimmed.
 var _ = context.Background
+
+// sayCardIssued tells the fleet that the owner's card has been rendered.
+//
+// Best effort, always, and never fatal: the card is printed and on the desk
+// whether or not the server hears about it, and a machine that has just been
+// enrolled must not fail its enrolment over a report. What the report buys is
+// that a machine whose repository password exists in exactly one database is
+// visible as such on the fleet pages, which is the failure this record exists
+// to catch.
+//
+// Enrolment did not do this at all until now, so every machine in the fleet
+// has had a card printed and none of them said so.
+func (d *deps) sayCardIssued(ctx context.Context, repositoryURL string) {
+	if !d.machine.Available() {
+		return
+	}
+
+	if err := d.machine.CardIssued(ctx, repositoryURL, time.Now()); err != nil {
+		fmt.Fprintf(os.Stderr,
+			"\nNote: the card was printed but Eumaeus was not told (%v).\n"+
+				"Nothing is wrong with the card. Run \"sion-backup card\" again "+
+				"when this machine can reach the server.\n", err)
+	}
+}

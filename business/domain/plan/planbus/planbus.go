@@ -194,6 +194,9 @@ type Storer interface {
 
 	GetIntegrity(ctx context.Context) (Integrity, error)
 	PutIntegrity(ctx context.Context, i Integrity) error
+
+	GetMachineState(ctx context.Context) (MachineState, error)
+	PutMachineState(ctx context.Context, s MachineState) error
 }
 
 // Business is the plan domain.
@@ -360,4 +363,48 @@ func (b *Business) Integrity(ctx context.Context, repositoryURL string) (Integri
 // RecordIntegrity stores the result of a check, or of a check not taken.
 func (b *Business) RecordIntegrity(ctx context.Context, i Integrity) error {
 	return b.store.PutIntegrity(ctx, i)
+}
+
+// MachineState returns the stored copy of what the server last said about this
+// machine.
+//
+// Unlike the measurement and the integrity check, this is NOT discarded when
+// it names a different repository, and the difference is the point of it: an
+// answer that names a bucket the plan does not know about is how this machine
+// finds out it has been moved. [MachineState.Describes] is the question a
+// caller asks when it wants the other reading.
+//
+// A machine that has never asked, or whose stored answer cannot be decoded,
+// gets a zero value. Nothing here fails a backup: this is what a page shows
+// and what a suggestion is computed from, and neither is worth refusing to
+// back up over.
+func (b *Business) MachineState(ctx context.Context) (MachineState, error) {
+	return b.store.GetMachineState(ctx)
+}
+
+// RecordMachineState stores an answer from the server.
+func (b *Business) RecordMachineState(ctx context.Context, s MachineState) error {
+	return b.store.PutMachineState(ctx, s)
+}
+
+// RecordStateFailure keeps the last answer and records that asking is now
+// failing.
+//
+// Two facts rather than one. How old the answer is and whether the server can
+// currently be reached are different questions, and a person looking at a
+// rotation that has not moved for three weeks needs both: an answer from three
+// weeks ago with no error means nobody has provisioned anything, and the same
+// answer with an error means this machine has not been able to ask.
+//
+// AskedAt is deliberately left alone, so the stored answer does not appear to
+// have been refreshed by the attempt that failed.
+func (b *Business) RecordStateFailure(ctx context.Context, reason string) error {
+	state, err := b.store.GetMachineState(ctx)
+	if err != nil {
+		return err
+	}
+
+	state.Error = reason
+
+	return b.store.PutMachineState(ctx, state)
 }

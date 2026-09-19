@@ -34,31 +34,45 @@
   {{end}}
 </form>
 
-{{if .Rotation.Show}}
+{{if .CardOwed}}
 <div class="verdict warn">
-  <h1>A fresh start would free {{bytes .Rotation.Reclaimable}}</h1>
+  <h1>The page you keep needs printing</h1>
+  <p>{{.CardSay}}</p>
+</div>
+{{end}}
+
+{{if .CuttingOver}}
+<div class="verdict warn">
+  <h1>Moving to a new bucket</h1>
   <p>
-    This backup has been running for {{duration .Rotation.Discards}}, and
-    {{percent .Rotation.Fraction}} of what it stores is old versions of files that
-    have since changed or been deleted.
-    {{if .Saving}}Starting again in a new bucket would save {{.Saving}}.{{end}}
+    Backups are filling a brand-new bucket from scratch, so they will take much
+    longer than usual for a while. Leave this computer on and awake when you
+    can. Your old backups stay readable until a person deletes them.
   </p>
+  <p class="actions"><a class="button" href="/rotation">What is happening</a></p>
 </div>
 
-<dl class="facts">
-  <dt>Stored now</dt><dd>{{bytes .Measurement.Now}} across {{.Measurement.Snapshots}} backups</dd>
-  <dt>Your files today</dt><dd>{{bytes .Measurement.Fresh}}</dd>
-  <dt>Would need uploading</dt>
-  <dd>{{bytes .Rotation.Upload}} — best started on a Friday, on a connection you are not paying for by the gigabyte</dd>
-  <dt>Would be lost</dt>
-  <dd>The ability to recover a file as it was at any point in the last {{duration .Rotation.Discards}}. Everything you have <em>now</em> is kept.</dd>
-</dl>
+{{else if .Offered}}
+<div class="verdict warn">
+  <h1>A new bucket is waiting for this computer</h1>
+  <p>
+    <code>{{.Offered.Bucket}}</code> was set up {{ago .Offered.OfferedAt}} ago and
+    nothing happens until you say so. Moving to it means one long upload and
+    losing the ability to go further back than the day you do it.
+  </p>
+  <p class="actions"><a class="button primary" href="/rotation">See what it would cost</a></p>
+</div>
 
-<p class="hint">
-  Nothing happens unless you ask. If the trade looks worth it, tell whoever
-  looks after your backups and they will set up a new bucket — you would then
-  run one long backup, and the old one is deleted once the new one is proven.
-</p>
+{{else if .Rotation.Show}}
+<div class="verdict {{if .Rotation.Insisting}}bad{{else}}warn{{end}}">
+  <h1>
+    {{if .Rotation.Urgent}}These backups should be started again somewhere new
+    {{else if .Rotation.Insisting}}This backup is overdue for a fresh start
+    {{else}}A fresh start would free {{bytes .Rotation.Reclaimable}}{{end}}
+  </h1>
+  {{with index .Rotation.Reasons 0}}<p>{{.}}</p>{{end}}
+  <p class="actions"><a class="button{{if .Rotation.Insisting}} primary{{end}}" href="/rotation">What a fresh start would cost</a></p>
+</div>
 {{end}}
 
 <h2>This computer</h2>
