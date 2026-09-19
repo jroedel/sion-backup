@@ -33,6 +33,18 @@
 # this program's whole doctrine exists to prevent, and it now has a test that
 # runs against real storage.
 #
+# WHAT IT CANNOT PROVE
+#
+# That the specification was read correctly. The server here is eumaeusstub,
+# written from docs/eumaeus-api.md by the same person who wrote the client, so
+# everything below is the client being consistent with one reading of the
+# contract. A misreading passes this file and every unit test, on both sides,
+# and reaches an owner as a laptop pointed at a bucket nobody meant.
+#
+# scripts/rotation-gate/run is the answer to that: the same loop against real
+# Eumaeus. It is slower, it needs the server's source, and it is where the
+# claim "and the reading is right" is made.
+#
 # EXIT CODES: as run-machine. 0 pass, 1 the program misbehaved, 2 unreachable.
 
 set -uo pipefail

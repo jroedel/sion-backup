@@ -168,6 +168,10 @@ backup-e2e: ## Real backups to a real bucket, several machines at once (needs do
 rotation-e2e: ## Move one real machine to a fresh bucket and prove it keeps working (docker + Wasabi)
 	scripts/backup-e2e/run --rotation-only
 
+.PHONY: rotation-gate
+rotation-gate: ## The rotation loop against a real Eumaeus, not a stub (needs an Eumaeus checkout + Wasabi)
+	scripts/rotation-gate/run
+
 .PHONY: selfupdate-e2e
 selfupdate-e2e: ## Every way a release can be wrong, in containers (needs docker)
 	scripts/selfupdate-e2e/run
