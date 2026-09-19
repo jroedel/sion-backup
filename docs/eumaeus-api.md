@@ -367,7 +367,10 @@ The machine's own state, with no secrets in it. **This is also the heartbeat**
 — it is what populates `last_seen_ip` and proves a paused machine is still
 alive.
 
-Polled hourly and at startup.
+Polled every six hours and at startup. **How often is the client's decision**,
+and the server has stopped having an opinion about it: `poll_after_seconds` is
+withdrawn, along with the two other fields that told a machine how to run its
+own backups. See `cmd/sion-backup/rotate.go` for how six hours is argued.
 
 ### Response `200`
 
@@ -385,48 +388,78 @@ Polled hourly and at startup.
   },
   "credentials_version": 3,
   "card": { "state": "issued", "issued_at": "2026-03-14T09:12:00+01:00" },
-  "fresh_bucket_available": true,
-  "storage_price_per_tib_month": 6.99,
-  "server_time": "2026-09-09T21:40:11+02:00"
+  "offer": {
+    "url": "s3:https://s3.us-central-1.wasabisys.com/office-laptop-2027",
+    "provider": "wasabi",
+    "region": "us-central-1",
+    "bucket": "office-laptop-2027",
+    "offered_at": "2026-09-13T09:00:00Z"
+  },
+  "disclosures": { "count": 412, "hash": "9f2c…", "at": "2026-09-09T01:14:02+02:00" },
+  "agent": { "version": "v1.4.0", "minimum": "v1.2.0", "artifacts": { } },
+  "server_time": "2026-09-09T21:40:11+02:00",
+  "api": { "serves": ["GET /machines/me", "…"] }
 }
 ```
 
 | Field | Notes |
 |---|---|
 | `state` | `active` or `retired`. A retired machine's client should stop backing up and say so |
-| `repository.state` | `active`, `cutting-over`, `retired`. During a cutover the URL is already the **new** one |
+| `repository.state` | `active` or `cutting-over`. During a cutover the URL is already the **new** one. `offered` and `retired` never appear here — neither is a repository the machine is using |
+| `repository.adopted` | A bucket taken over from a legacy install. Omitted when false |
 | `credentials_version` | Increments whenever any credential changes. Informational now that the client fetches per run — it is what the audit log records, and what a support call can compare against |
-| `repository.created_at` | The history horizon. The client shows "backups available since …" from this |
-| `fresh_bucket_available` | Whether the organisation is willing to provision a new bucket for this machine. **A permission, not a recommendation** — see §5.1 |
-| `storage_price_per_tib_month` | What storage costs, so the machine can turn reclaimable bytes into money. Omitted or `0` means the status page talks in gigabytes only |
+| `repository.created_at` | The history horizon. The client shows "backups available since …" from this, and measures the bucket's age from it — **on an adopted bucket that is where the snapshots start**, years before Eumaeus heard of the machine |
+| `card.state` | `never`, `issued` or `superseded`. `never` is what a machine reads immediately after a cutover; `superseded` arrives only once an administrator has retired the old bucket, and is the one word that makes it safe to tell an owner to destroy the paper they are holding. `issued_at` is the **current** bucket's date and is null alongside `superseded`, so it is never a presence test |
+| `offer` | A bucket provisioned for this machine that it has **not** been moved to. Absent for almost every machine almost always. Accepted with §8.1 |
+| `disclosures` | The witness for the Access page |
+| `agent` | What this fleet should be running. Absent when nobody has decided, which is not the same as an empty version |
 | `server_time` | So the client can detect its own clock being wrong, which would otherwise corrupt snapshot timestamps and the alerting silently |
+| `api.serves` | Every route this deployment answers. Absent from a deployment older than the field, which means "assume nothing" rather than "serves nothing" |
+
+**Three fields have been withdrawn** (eumaeus#174) and no client should be
+written against them: `fresh_bucket_available`, `storage_price_per_tib_month`
+and `poll_after_seconds`. Each was the server holding a judgement that belongs
+to the machine — whether an owner may ask, what their storage is worth to them,
+and how often their laptop should talk to a server.
 
 ### 5.1 Who decides to rotate, and why it is split in two
 
-The server says whether a fresh bucket is *allowed*. The machine decides
-whether it is *worth it*, and only the machine can: the figures come from
-`restic stats` against the repository, and the machine is the thing already
-holding credentials to read it.
+The split is unchanged and it is not the one this section used to describe.
+**The machine asks; an administrator mints.** What is gone is a fleet-wide
+refusal that used to sit in between: ask, and an administrator either
+provisions a bucket or does not. An organisation unwilling to pay says so by
+not minting one, which is the same no said once instead of twice.
 
-So `fresh_bucket_available` is a permission. The client combines it with its
-own weekly measurement and raises the subject only when all three of these
-hold:
+The machine decides whether a fresh start is worth it, and only the machine
+can. The figures come from `restic stats` against the repository, and every
+fact that decides *when* — what link this laptop is on, how much there is to
+send, whether its owner can leave it running for three days — exists nowhere
+else. The whole policy is `business/domain/plan/planbus/rotation.go`, and the
+server holds none of it.
 
-| Condition | Why on its own it is not enough |
-|---|---|
-| repository older than 90 days | a machine whose files never change has cheap history and should not be nagged |
-| ≥ 30% of it is superseded data | a few large deletions make a young repository look terrible for a fortnight |
-| ≥ 5 GiB reclaimable | below that it is not worth two days of somebody's uplink |
+Three independent arguments, any one of which is enough:
 
-The card then shows both halves of the trade in the same breath — what would be
-saved, and that everything older than today would be discarded — and does
-nothing. **Rotation is always the owner's idea**, which is the only version of
-this that works: the person who pays the bandwidth is the person who has to
-agree, and an organisation that imposes it will find machines mysteriously
-switched off on rotation day.
+| Argument | Threshold | Why it is not the others |
+|---|---|---|
+| **Space** | 90 days old, ≥ 30% superseded, ≥ 5 GiB reclaimable | all three together, because age alone nags an owner whose files never change, fraction alone fires in week two, and a floor keeps it quiet about savings not worth a conversation |
+| **Age** | a year to raise it, two years to stop being polite | the repository password and both S3 key pairs are exactly as old as the bucket, and rotating it is the only operation that replaces any of them. Eumaeus's separate 90-day key rotation is deleted |
+| **Integrity** | the last `restic check` read the repository back and failed | not about cost at all. A repository that cannot be read back may not give the files back, and the repair is a fresh bucket filled from the files themselves |
 
-Support `ETag`/`If-None-Match` and answer `304`. An hourly poll from thirty
-machines that changes twice a year should not be thirty full responses an hour.
+**Nothing in that file ever acts**, at any level. The request is a click and
+the cutover is a click. That matters most at the loudest level: on an adopted
+bucket `created_at` is where the snapshots start, so every machine migrated off
+a legacy script is past the two-year threshold the first time this code runs —
+a client that filed its own requests would put the whole migrated fleet into an
+administrator's queue on the day it shipped.
+
+The page shows both halves of the trade in the same breath: what would be
+saved, what would be discarded, and **how long the upload would take at the
+speed this machine last measured to its own bucket**. The same byte count is
+fourteen hours on office fibre and nine days on rural broadband, which is the
+single clearest reason this is not decided on the other side of an API.
+
+Support `ETag`/`If-None-Match` and answer `304`. A poll from thirty machines
+that changes twice a year should not be thirty full responses each time.
 
 Because this contains no secrets, it may be logged in full — unlike §6.
 
@@ -452,7 +485,11 @@ having: it is the only place a stolen machine token shows up.
 ```json
 {
   "credentials_version": 3,
-  "repository": { "url": "s3:https://…/example-node-bucket" },
+  "repository": {
+    "url": "s3:https://…/office-laptop-2027",
+    "state": "cutting-over",
+    "expect_empty": true
+  },
   "credentials": {
     "restic_password": "kQ8v…",
     "machine": { "access_key_id": "…", "secret_access_key": "…" },
@@ -464,6 +501,47 @@ having: it is the only place a stolen machine token shows up.
 `repository.url` is repeated here deliberately: fetching credentials and
 learning which repository they open must be one atomic answer, or a client that
 polled across a rotation could pair the new password with the old bucket.
+
+### 6.1 `expect_empty`, the one field that permits a client to create anything
+
+`state` is descriptive — `active` or `cutting-over`, the same values §5 serves.
+`expect_empty` is the permission, and the two are **not** interchangeable: a
+`cutting-over` bucket may be one that was adopted with ten years of somebody's
+snapshots in it, and a client acting on the state alone would write an empty
+repository over that history.
+
+It exists because the client cannot work this out for itself. After a cutover a
+machine is handed a new URL and follows it without re-enrolling, so it meets an
+empty bucket on the backup path — where it is right to refuse to create
+anything, because an empty bucket otherwise means the URL is wrong or the
+bucket has been emptied. From the machine, "I have been rotated" and "my
+repository has vanished" are the same picture; a reimage takes the local record
+and leaves the token. Only the server knows which.
+
+Four things about it are load-bearing, and this client holds all four in
+`deps.openRepository`:
+
+- **It is here and not on §5.** Which repository the credentials open and the
+  permission to create that repository belong in one answer, for the same
+  reason the URL does. A client pairing a state from §5 with a URL from here
+  could initialise the wrong bucket.
+- **It is omitted when false**, and absence means what it meant before the
+  field existed: create nothing. A client that has never heard of it, or one
+  talking to an older server, behaves exactly as it always did.
+- **Nothing caches it.** It is true for one fetch. A stored permission outlives
+  a reimage and defeats the server's own third condition below.
+- **The local seeding flag is not a second opinion**, and must never be read as
+  one.
+
+The server sets it only when all three hold: the repository is `cutting-over`,
+it was **not** adopted, and nothing has been written into it yet. The third
+closes the window the moment the seeding run reports a snapshot — without it,
+every night of a stalled cutover would be a night on which an emptied bucket
+was silently recreated.
+
+Note that the response carries no `adopted`: the server folds `!adopted` into
+`expect_empty` itself, so there is no second opinion on the run path and this
+client checks for none.
 
 ### Server rules
 
@@ -540,9 +618,17 @@ nothing.
 binary: two backups of unchanged data leave zero reclaimable bytes.
 
 What is genuinely worth distinguishing is the **seeding** run — the first
-backup into a newly provisioned repository, which uploads everything, takes
-hours or days, and is the one the cutover guard waits on. That is what
-`seeding` carries.
+backup into a newly provisioned repository, which uploads everything and takes
+hours or days. That is what `seeding` carries.
+
+**Nothing on the server reads it, and that is deliberate rather than pending.**
+This document used to say the cutover guard waited on it. It never did. The
+permission that lets a client create a repository is Eumaeus's `expectEmpty`,
+which waits on a reported snapshot in its own runs table; the carve-out that
+stops a seeding machine being called overdue is its `seedingSince`, which waits
+on its own `began_cutover_at` column. A flag a machine sets about itself must
+not be able to switch off alerting about that machine having gone quiet, which
+is why neither of them will ever read this one.
 
 ### `outcome`
 
@@ -578,8 +664,11 @@ future client adding a sixth value must not blank a dashboard.
    exists to make visible.
 4. **A seeding run may take days.** Do not treat a long-running `started` on a
    `seeding` run as a failure, and show it as progress rather than as an alarm.
-   It is also the run the cutover guard is waiting for: the old bucket is
-   retired only after a `verified` seeding run plus seven days.
+   Measure staleness during a cutover from the later of the last verification
+   and the moment the machine accepted the offer, so that a machine nine days
+   into a ten-day window when it accepts gets a full window to seed in — and so
+   that a cutover cannot make an already-silent machine look healthy. Do not
+   reach for the client's `seeding` flag to do it.
 5. **A `snapshot_id` you have no record of creating is an alarm.** Nothing
    legitimate produces one. Since nothing in this system can delete backup data
    ([`model.md`](model.md) §5.4), adding junk is the *only* thing a compromised
@@ -620,14 +709,80 @@ on the machine can create a bucket, and nothing should.
 | Status | When |
 |---|---|
 | `202` | Queued |
-| `409` | A request is already open for this machine, or a rotation is already in progress |
-| `403` | Fresh buckets are not on offer. The setting is **fleet-wide**, not per machine, so this is an ordinary answer and not a fault of this machine's |
+| `409` | A request is already open, a rotation is already in progress, **or a bucket has already been provisioned and is waiting to be accepted**. The third is worth telling apart: the work an administrator could do has been done, and what is outstanding is this machine's own decision |
+| `404` | This machine has no repository, so there is nothing to rotate away from |
+
+**There is no `403` and there is no permission to check first.** A fleet-wide
+`fresh_bucket_available` switch used to decide whether owners might ask at all,
+and it is withdrawn along with the status. A rotation request is a work item:
+an administrator has to mint the bucket before anything happens, so "the
+organisation is unwilling" is already said by not minting one. That the status
+is gone matters to this client specifically — it folds `401` and `403` into one
+terminal error, so a `403` anywhere would read as de-enrolment and stop a
+machine backing up.
 
 > **Why a request and not an automatic provision.** Eumaeus holds the Wasabi
 > key and could create the bucket on the spot. It should not: provisioning
 > starts a bill, and it starts a cutover in which two buckets exist and one is
-> eventually deleted. A person should be in that loop, and the loop runs once a
-> year per machine.
+> eventually let go. A person should be in that loop, and the loop runs about
+> once a year per machine.
+
+### 8.1 `POST /machines/me/cutover`
+
+**The only call in this API that starts a cutover, and there is no
+administrative equivalent of it.** An administrator provisions storage and it
+arrives as `offer` on §5. Nothing moves until the machine says so.
+
+```json
+{ "repository_url": "s3:https://…/office-laptop-2027" }
+```
+
+The URL is named back rather than assumed. A mismatch is `422` with a sentence
+naming both, and the case is real: an offer made in March, replaced in April
+because the first bucket was in the wrong region, accepted in May by a laptop
+that was shut the whole time. Being refused sends the machine back to §5 to
+read the current offer; silently moving it to the April bucket would be right
+by accident.
+
+| Status | When |
+|---|---|
+| `200` | Now cutting over. Takes effect at once, unlike §8 |
+| `409` | Nothing has been offered. **409 and not 404** — the machine and the endpoint both exist, and a 404 here is indistinguishable from the route not being served, which this client has misread in each direction once |
+| `422` | The URL is not the offer that is standing |
+| `404` | No repository at all |
+
+Accepting twice is success, so an acknowledgement lost in transit is safe to
+retry. The next §6 then answers with the new repository, `state:
+cutting-over`, and `expect_empty: true`.
+
+### 8.2 `POST /machines/me/old-bucket`
+
+The other end of the cutover, and the machine's for the same reason the start
+of it is: the server can see that a verified snapshot landed in the new bucket,
+and cannot see whether anybody has restored a file from it or whether the
+machine is still holding something it has not sent.
+
+```json
+{ "repository_url": "s3:https://…/office-laptop-2027" }
+```
+
+**Name the bucket the machine is on now** — the `cutting-over` one, not the one
+being let go. Deliberately that direction: a machine's memory of an earlier
+bucket is local state that a reimage takes with it while the token survives, so
+naming where it is now makes this a coherence check rather than a guess.
+
+**It releases nothing.** The old bucket stays live, stays readable and keeps
+its password. The call writes one timestamp, which puts the bucket in front of
+a person who can retire it. Retiring it deletes the superseded S3 keys and
+promotes the new bucket; the bucket itself is deleted by a person in the
+provider's console, because nothing in Eumaeus is allowed to delete storage.
+
+| Status | When |
+|---|---|
+| `200` | Recorded, or already recorded. `release_asked_at` is the date of the **first** call, not of this one |
+| `409` | Not cutting over, or nothing **verified** has landed yet. Both clear by themselves, which is why the client retries after every verified run |
+| `422` | The URL is not the bucket this machine is being moved onto |
+| `404` | No repository at all |
 
 ## 9. `POST /machines/me/card-issued`
 
@@ -655,6 +810,20 @@ Returns `204`.
 > person can assert it.
 
 ---
+
+### 9.1 `GET /machines/me/disclosures`
+
+The tenth endpoint, and the only one served to the machine about somebody other
+than the machine: every occasion this machine's repository password left the
+server, or arrived at it. It fills the Access page, and the client keeps the
+witness `disclosures` on §5 carries so that a record rewritten since it last
+looked is visible as such.
+
+Built, tested and in use on both sides before this document mentioned it. A
+`404` from it is read as a deployment that has not shipped it yet rather than
+as a fault, because a fleet mid-upgrade is a fleet where that is the normal
+answer for a while — see `business/domain/disclosure` for the shape, which is
+maintained in `openapi.yaml` rather than here.
 
 ## 10. Rules that carry weight
 
@@ -697,10 +866,14 @@ Done, in this repository:
 | `enroll --code`, claiming against this API | `cmd/sion-backup/enroll.go` |
 | The owner's restore card, printed at enrollment | `cmd/sion-backup/enroll.go` |
 | `401` surfaced as de-enrolment, not a network error | `credentialbus.Unauthorised` |
-| `403` kept apart from it, so a fleet setting cannot read as de-enrolment | `eumaeusapi.ErrForbidden` |
+| `403` kept apart from it, so a fleet setting cannot read as de-enrolment. Still right, and no longer reachable: there is no `403` anywhere in this API now, and the branch and its four tests stay for one arriving from an older deployment or a proxy | `eumaeusapi.ErrForbidden` |
 | The server's own sentence shown to the installer, without a prefix | `eumaeusapi.BadRequest` |
 | Weekly `restic stats` measurement, stored locally | `foundation/restic.Measure`, `planbus.Measurement` |
-| The rotation card, with both halves of the trade | `statusapp`, `planbus.ConsiderRotation` |
+| The rotation card, with both halves of the trade and how long the upload would take | `statusapp`, `planbus.Consider` |
+| The whole rotation loop's client half: the state poll, the offer, the request, the cutover, `expect_empty`, the release of the old bucket and the card | `cmd/sion-backup/rotate.go`, `planbus/rotation.go`, `machinebus`, `statusapp/rotation.go` |
+| The rotation policy itself — a year to raise it, two to insist, and a failed integrity check at once | `planbus.Consider` (§5.1) |
+| `expect_empty`, and nothing else, permitting a repository to be created outside enrolment | `credentialbus.Set.ExpectEmpty`, `deps.openRepository`, `restic.Runner.Ensure` |
+| `sion-backup card`, so the owner's page can be printed again after a rotation | `cmd/sion-backup/card.go` |
 | Every call under the versioned base path (§3.1) | `eumaeusapi.APIPrefix` |
 | The fleet's server as the built-in default, so enrolling needs only a code | `cmd/sion-backup.DefaultEumaeusURL` |
 | `run_uuid` on both phases, stored so a late report keeps its identity | `backupbus.Run`, `backupdb`, `cmd/.../events.go` |
@@ -716,14 +889,20 @@ Still to do:
 
 | Change | Where | Size |
 |---|---|---|
-| The "ask for a fresh bucket" button, posting §8 | `statusapp` | small |
-| Take `fresh_bucket_available` and the price from §5 rather than config | `statusapp`, daemon | small |
-| Hourly poll of §5, for `paused_until` and retirement | new, in the daemon | medium |
-| `POST /machines/me/card-issued` after printing | `cmd/sion-backup/enroll.go` | trivial |
+| Act on `paused_until` and `state: retired` from the poll. The poll exists now; nothing reads either field yet | daemon | small |
 | Show "backups available since" from `repository.created_at` | `statusapp` | trivial |
 | `selfupdate.Source` against the `agent` block, replacing the GitHub fallback | `foundation/selfupdate` | medium |
-| Honour `poll_after_seconds` once the poll exists | daemon | trivial |
-| Take the seeding flag from `repository.adopted` rather than local history. **Live now, not hypothetical:** every machine `adopt-enroll` migrates has no local history, so its first run reports `seeding: true` against a repository holding years of snapshots, and §7's cutover guard waits on it | `backupbus`, `cmd/.../events.go` | small |
+| Take the seeding flag from `repository.adopted` rather than local history. **Live now, not hypothetical:** every machine `adopt-enroll` migrates has no local history, so its first run reports `seeding: true` against a repository holding years of snapshots | `backupbus`, `cmd/.../events.go` | small |
+
+Three rows were deleted rather than done, because the work stopped existing.
+`fresh_bucket_available` and `storage_price_per_tib_month` are withdrawn — the
+price belongs in `Config.Storage.PricePerTiBMonth` beside the thresholds it is
+compared against, which is where it already was, so taking it from the server
+would have been the change made backwards. `poll_after_seconds` is withdrawn
+too: there is no cadence to honour and there should not have been one.
+
+The last row above kept its work and lost its reason. It used to end "and §7's
+cutover guard waits on it", which was never true — see §7.
 
 ### 11.1 Live on the server, not yet specified above
 
@@ -736,7 +915,7 @@ our part.
 |---|---|
 | `POST /diagnostics` — §5's install failures and panics, accepted with or without a machine token, `202` always, deduplicated on `(install_id, kind)` | [eumaeus#113](https://github.com/jroedel/eumaeus/issues/113) |
 | An `agent` block on §5's response, naming the version, an optional `minimum`, and a per-platform URL and SHA-256. **Absent when nobody has decided**, which is not the same as an empty version | [eumaeus#114](https://github.com/jroedel/eumaeus/issues/114) |
-| `poll_after_seconds` on §5's response. Omitted means no opinion; floored at 60 seconds and capped at a day | [eumaeus#117](https://github.com/jroedel/eumaeus/issues/117) |
+| ~~`poll_after_seconds` on §5's response~~ — **withdrawn** (eumaeus#174) before it was ever honoured. How often a machine asks about itself is the machine's decision, and a cadence the server imagined it controlled was worse than one it openly does not | [eumaeus#117](https://github.com/jroedel/eumaeus/issues/117) |
 
 Writing them up properly here is work this repository owes — the client
 cannot consume any of them until it is done anyway. `repository.adopted` and
@@ -764,14 +943,16 @@ machine-readable file does not.
    also pause from Eumaeus, the two need reconciling — last-writer-wins is
    probably fine, but it should be decided rather than discovered.
 2. **Should the restore-request button live on the machine's local status page
-   as well as in Eumaeus?** It would need a sixth endpoint. The argument
+   as well as in Eumaeus?** It would need an eleventh endpoint. The argument
    against is that a machine too broken to back up may also be too broken to
    ask for help, so the web UI is the more reliable place.
 3. **How does a machine learn it has been retired?** §5 returns
-   `state: retired`, but a retired machine may simply never poll again. This
-   matters less than it did — there are no cached credentials to delete, and
-   revoking the token stops the machine dead — but a client that knew it was
-   retired could say so instead of reporting failures.
+   `state: retired`, and the daemon now polls it — but nothing reads that field
+   yet, and a retired machine may simply never poll again. Half of this is
+   already answered: retirement and revocation both refuse at authentication
+   with `401`, which is terminal and is reported as de-enrolment, so a retired
+   machine that asks learns immediately. The open half is only the one that
+   never asks.
 4. **Should the client tolerate a brief Eumaeus outage by retrying within a
    run?** A backup that fails because the server was restarting is noise. A few
    minutes of retry with backoff would absorb it; more than that just delays

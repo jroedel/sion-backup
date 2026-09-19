@@ -59,9 +59,10 @@ func TestATokenRefusedOnThisEndpointIsDeEnrolment(t *testing.T) {
 
 // TestA403IsNotReadAsDeEnrolment.
 //
-// It does not arrive on this endpoint, and if it ever did it would mean
-// something else entirely. Reporting a machine as cut off because the fleet
-// has fresh buckets switched off is the bug this pair was untangled to
+// It does not arrive on this endpoint — it does not arrive anywhere in that
+// API any more — and if it ever did, from an older deployment or a proxy, it
+// would mean something else entirely. Reporting a machine as cut off because
+// a fleet setting refused something is the bug this pair was untangled to
 // prevent, and the untangling is only finished if the reading cannot come
 // back here by habit.
 func TestA403IsNotReadAsDeEnrolment(t *testing.T) {

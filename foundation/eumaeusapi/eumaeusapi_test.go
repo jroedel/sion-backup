@@ -117,9 +117,15 @@ func TestABadRequestIsDistinguished(t *testing.T) {
 
 // TestAForbiddenIsNotAnUnauthorised is the regression this split was made
 // for. Both used to answer ErrUnauthorised, which this client treats as
-// terminal de-enrolment — so the first 403 the server ever sends for an
-// ordinary reason ("fresh buckets are not on offer for this fleet") would
-// have told an owner their machine had been cut off.
+// terminal de-enrolment — so the first 403 the server ever sent for an
+// ordinary reason would have told an owner their machine had been cut off.
+//
+// That server can no longer send one at all: the rotation request was the only
+// route that ever answered a 403, and both it and the fleet-wide switch behind
+// it are withdrawn. This test stays anyway, and so does the branch it pins,
+// because a 403 can still arrive from an older deployment, from a proxy, or
+// from a route that does not exist yet — and the cost of reading one of those
+// as de-enrolment is unchanged.
 func TestAForbiddenIsNotAnUnauthorised(t *testing.T) {
 	for _, tt := range []struct {
 		status int

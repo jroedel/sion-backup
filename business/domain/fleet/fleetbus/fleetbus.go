@@ -61,9 +61,19 @@ type Event struct {
 
 	RepositoryURL string `json:"repository_url"`
 
-	// Seeding is the first backup into a newly provisioned repository. It is
-	// what the server's cutover guard waits on, and it is why a machine that
-	// has been uploading for two days is not overdue.
+	// Seeding is the first backup into a newly provisioned repository.
+	//
+	// A machine part-way through a cutover is indeed not overdue, and this
+	// field is not why. Eumaeus measures staleness from the later of the last
+	// verification and its own `began_cutover_at`, which buys one full window
+	// from the moment the machine accepted the offer — and the old bucket
+	// stays the fallback, so a cutover cannot make an already-silent machine
+	// look healthy.
+	//
+	// Nothing there reads this field, deliberately: a flag a machine sets
+	// about itself must not be able to buy silence about that machine having
+	// gone quiet. It travels because whoever reads a run is entitled to know
+	// why it took three days.
 	Seeding bool `json:"seeding"`
 
 	Phase     Phase     `json:"phase"`

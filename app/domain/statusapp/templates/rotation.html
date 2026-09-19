@@ -1,3 +1,25 @@
+{{define "rotation-old-bucket"}}
+<h2>What happens to your old backups</h2>
+<ol class="hint">
+  <li>
+    <strong>They are kept, and readable.</strong> The old bucket keeps working
+    until a person retires it, which may be weeks later. Nothing about a move
+    is in a hurry.
+  </li>
+  <li>
+    <strong>Retiring it takes away the keys, and keeps the password for ever.</strong>
+    That password is the only thing that can read what is already in there, so
+    it is never thrown away — and replacing the bucket is the only way this
+    system ever replaces a password, which is the whole reason for doing this.
+  </li>
+  <li>
+    <strong>Deleting the bucket itself is a separate day, and a person does it</strong>
+    in the storage provider's own console. Nothing in this system is allowed to
+    delete storage.
+  </li>
+</ol>
+{{end}}
+
 {{define "rotation-cost"}}
 <dl class="facts">
   <dt>To upload</dt>
@@ -77,11 +99,13 @@
     Leave it on and awake while that happens.
   </p>
   <p>
-    Your old backups stay readable the whole time. Nothing is deleted until a
-    person retires the old bucket, and this computer says it is finished with it
-    by itself, once a new backup has been written <em>and read back</em>.
+    Your old backups stay readable the whole time. This computer says it is
+    finished with the old bucket by itself, once a new backup has been written
+    <em>and read back</em> — and even then nothing is deleted.
   </p>
 </div>
+
+{{template "rotation-old-bucket" .}}
 
 {{else if .Owed}}
 
@@ -101,6 +125,8 @@
 
 <h2>What accepting costs</h2>
 {{template "rotation-cost" .}}
+
+{{template "rotation-old-bucket" .}}
 
 <form method="post" action="/rotation/cutover" class="actions">
   <input type="hidden" name="form_token" value="{{.Token}}">
@@ -155,6 +181,8 @@
 
 <h2>What a fresh start would cost</h2>
 {{template "rotation-cost" .}}
+
+{{template "rotation-old-bucket" .}}
 
 <form method="post" action="/rotation/request" class="actions">
   <input type="hidden" name="form_token" value="{{.Token}}">

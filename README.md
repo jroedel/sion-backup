@@ -759,37 +759,49 @@ The contract is these documents, in the order to read them:
 | [`eumaeus/docs/openapi.yaml`](https://github.com/jroedel/eumaeus/blob/main/docs/openapi.yaml) | the same endpoints, machine-readable. **It lives there now** ([eumaeus#121](https://github.com/jroedel/eumaeus/issues/121)): a spec the client maintains has no way to notice the server changing, and ours was four features behind for exactly that reason. A test beside their routing table now fails when a served path is missing from the document, or the reverse |
 | [eumaeus issues](https://github.com/jroedel/eumaeus/issues) | what this client still needs from the server. One issue per ask, on their tracker — not a document passed back and forth, which is how the last round went unanswered for a week |
 
-Eight endpoints. The installation at `https://terraboskamp.org` answers all of
-them; the client speaks the first, second, third, fourth, seventh and eighth:
+Ten endpoints. The installation at `https://terraboskamp.org` answers all of
+them, and the client now speaks all ten:
 
 ```
 POST /api/backup/v1/enrollments/claim           code → machine token + credentials
-GET  /api/backup/v1/machines/me                 state, and the heartbeat
+GET  /api/backup/v1/machines/me                 state, the offer, and the heartbeat
 GET  /api/backup/v1/machines/me/credentials     the secrets, audited
 POST /api/backup/v1/runs                        a run event
 POST /api/backup/v1/machines/me/rotation-request  the owner asks for a fresh bucket
+POST /api/backup/v1/machines/me/cutover         the machine accepts the bucket offered
+POST /api/backup/v1/machines/me/old-bucket      the machine is finished with the old one
 POST /api/backup/v1/machines/me/card-issued     the owner's card was printed
 POST /api/backup/v1/diagnostics                 an install that failed, token or not
 GET  /api/backup/v1/machines/me/disclosures     who has opened this machine's password
 ```
 
-The eighth is the only one served to the machine for somebody other than the
+The count is checkable rather than asserted: a test beside Eumaeus's routing
+table compares `Server.Endpoints()` against `openapi.yaml` in both directions.
+
+The last is the only one served to the machine for somebody other than the
 machine: it fills the Access page, and a 404 from it is read as a server that
 has not deployed it yet rather than as a fault, because a fleet mid-upgrade is
 a fleet where that is the normal answer for a while.
 
-§11 of the API spec lists what is done on this side and what is not —
-including four things the server now does that the specification has not caught
-up with.
+One rule shapes all ten: **the server owns the facts, the machine reports what
+it did** — with one deliberate exception, which is that **when a machine moves
+to a fresh bucket is the machine's decision and nobody else's.** Eumaeus
+provisions storage and says what is available; it has withdrawn every field
+that used to have an opinion about how a machine runs its own backups. The
+thresholds, the cadence and the moment all live here, because the facts they
+turn on — what link this laptop is on, how much there is to send, whether its
+owner can leave it running for three days — exist only here. See
+`business/domain/plan/planbus/rotation.go`.
 
-One rule shapes all seven: **the server owns the facts, the machine reports what
-it did.** Eumaeus provisions the bucket, generates the repository password,
-mints both S3 keys and decides when a machine is overdue. The machine caches
-none of it: every run fetches its credentials and discards them.
+Everywhere else the rule holds as stated. Eumaeus provisions the bucket,
+generates the repository password, mints both S3 keys and decides when a
+machine is overdue. The machine caches none of it: every run fetches its
+credentials and discards them.
 
-That rule is also why `GET /machines/me` is now called at start-up by a machine
-that has a token and no plan. Its node ID and its repository are facts it was
-told once, at enrolment, and could not learn anywhere else — so losing them
+That rule is also why `GET /machines/me` is polled every six hours by the
+daemon, and at start-up by a machine that has a token and no plan. Its node ID
+and its repository are facts it was told once, at enrolment, and could not
+learn anywhere else — so losing them
 used to be permanent. A build before v0.6.0 could store the token and drop the
 plan, and what the owner saw was the set-up page insisting the computer had
 never been enrolled while `enroll` refused to run again because it had. Asking
@@ -803,16 +815,24 @@ and no amount of retrying changes that. `404` is documented as *the token is
 good and the machine has no repository*, which is fixed on the server. Anything
 else is the network, and is tried again at the next start.
 
-`403` is none of them, and the client no longer has a branch for it here or on
-the credentials endpoint. It used to: a machine that may not read its own
-credentials cannot back up whichever status says so, which was sound reasoning
-about a status that never arrives. Eumaeus answers `403` in exactly one place
-in the whole API — a rotation request refusing because fresh buckets are
-switched off — and holds that with a test
-([eumaeus#144](https://github.com/jroedel/eumaeus/issues/144)). The reading had
-been copied into two more sources before anybody asked whether the status it
-guarded against ever shows up, which is the argument for deleting a branch that
-cannot run rather than keeping it for safety.
+`403` is none of them, and the client no longer folds it into de-enrolment
+here or on the credentials endpoint. It used to: a machine that may not read
+its own credentials cannot back up whichever status says so, which was sound
+reasoning about a status that never arrives. The reading had been copied into
+two more sources before anybody asked whether the status it guarded against
+ever shows up, which is the argument for deleting a branch that cannot run
+rather than keeping it for safety.
+
+**There is now no `403` anywhere in that API at all.** The rotation request was
+the only route that ever answered one — refusing because fresh buckets were
+switched off fleet-wide — and both the switch and the status are withdrawn
+([eumaeus#174](https://github.com/jroedel/eumaeus/issues/174)); a test there
+sweeps every route to keep it that way. That is the promise
+`docs/eumaeus-requests.md` §2 asked for, in a stronger form than it asked for
+it: the status this client cannot safely tell apart from de-enrolment is one
+the server cannot produce. `eumaeusapi.ErrForbidden`, the branch on it and the
+four tests that pin its handling all stay, for a `403` arriving from an older
+deployment, a proxy, or a route that does not exist yet.
 
 **And the client asks what a deployment serves rather than inferring it.**
 `GET /machines/me` carries an `api.serves` block listing every route, generated
@@ -903,11 +923,12 @@ intended and not yet done is in [`docs/todo.md`](docs/todo.md).
   readable by this program and the other before there is a Go toolchain.
   `TestPinMatchesDeployFile` fails on drift, which is a test standing in for a
   single source of truth.
-- **Three of the six endpoints are unimplemented here.** The server at
-  https://terraboskamp.org answers all six; this client speaks claim,
-  credentials and runs. The hourly state poll, the rotation request and the
-  card-issued call are not built — see §11 of
-  [`docs/eumaeus-api.md`](docs/eumaeus-api.md) for the list and what each costs.
+- **The rotation loop is built on both sides and has not run end to end.**
+  This client now polls its own state, shows an offer, accepts a cutover,
+  creates the seeded repository when — and only when — the server says the
+  bucket is empty on purpose, says when it is finished with the old bucket, and
+  prints the owner's card again. None of that has yet been exercised against a
+  real provisioned second bucket, which is the one test that matters.
 - **Nothing has been enrolled end to end yet.** Every call is exercised against
   a test server and the run event is checked field by field against the
   specification, but no machine has claimed a real code, so the first real
