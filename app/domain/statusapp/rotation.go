@@ -331,6 +331,11 @@ func (s *Server) refresh(ctx context.Context) {
 
 // cardAdvice turns the server's card state into what to tell the owner.
 //
+// It used to end both sentences with "run “sion-backup card”", which is a
+// thing to say to somebody who has a terminal open and an instruction to
+// find somebody else for everybody the card is actually for. The card has a
+// page of its own now, and both banners carry a button to it.
+//
 // The state is the signal and its date is not. `never` means nobody has
 // printed a card for the bucket this machine writes to now, which is what a
 // machine reads immediately after a cutover. `superseded` arrives later, when
@@ -341,12 +346,11 @@ func cardAdvice(c planbus.Card) (owed bool, say string) {
 	switch c.State {
 	case planbus.CardNever:
 		return true, "Nobody has printed the page that lets this computer's files be " +
-			"restored without us. Ask whoever set this up to run “sion-backup card”."
+			"restored without us. It takes a minute and a printer."
 
 	case planbus.CardSuperseded:
 		return true, "The printed page you are holding no longer opens anything — the " +
-			"bucket it names has been retired. Ask for a new one with “sion-backup " +
-			"card”, and destroy the old page."
+			"bucket it names has been retired. Print a new one, and destroy the old page."
 	}
 
 	return false, ""

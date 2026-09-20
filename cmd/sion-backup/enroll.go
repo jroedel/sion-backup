@@ -451,14 +451,26 @@ var _ = context.Background
 // Enrolment did not do this at all until now, so every machine in the fleet
 // has had a card printed and none of them said so.
 func (d *deps) sayCardIssued(ctx context.Context, repositoryURL string) {
-	if !d.machine.Available() {
-		return
-	}
-
-	if err := d.machine.CardIssued(ctx, repositoryURL, time.Now()); err != nil {
+	if err := d.recordCardIssued(ctx, repositoryURL); err != nil {
 		fmt.Fprintf(os.Stderr,
 			"\nNote: the card was printed but Eumaeus was not told (%v).\n"+
 				"Nothing is wrong with the card. Run \"sion-backup card\" again "+
 				"when this machine can reach the server.\n", err)
 	}
+}
+
+// recordCardIssued is the call itself, without the terminal.
+//
+// Split out because the status page prints cards now and a daemon handling a
+// request has no stderr worth writing to -- it says the same thing on the
+// page, where the person who pressed the button is looking.
+//
+// A machine with no fleet to tell reports success, because it did everything
+// there was to do.
+func (d *deps) recordCardIssued(ctx context.Context, repositoryURL string) error {
+	if !d.machine.Available() {
+		return nil
+	}
+
+	return d.machine.CardIssued(ctx, repositoryURL, time.Now())
 }

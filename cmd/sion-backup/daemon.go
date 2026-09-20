@@ -142,6 +142,7 @@ func daemonCmd(args []string) error {
 		StartRun:                d.startRun(ctx),
 		UpdateSource:            d.updateSource,
 		CheckForUpdate:          d.checkForUpdate,
+		IssueCard:               d.issueCard,
 		Restart:                 d.restart,
 		Guard:                   guard,
 		Paths:                   d.paths,

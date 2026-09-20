@@ -938,6 +938,13 @@ free download and four environment variables.
 - `restic snapshots` on the card is deliberate: step 3 proves the credentials
   work *before* anybody needs them. Enrollment should have the owner run it
   once, standing there, so the card has been tested rather than filed on trust.
+- **The card is printed from the status page**, and `sion-backup card` remains
+  for the person enrolling a machine. A card that only a terminal can produce
+  is a card an owner has to ask somebody else for, and the asking is where it
+  stops happening: the fleet's evidence for that is machines a year into
+  backing up with a card state of `never`. The page fetches the credentials
+  behind a button — one audited read, the same one a backup makes — renders
+  them once, and prints the card alone, without navigation or advice.
 
 ### 6.5 Eumaeus tracks the copies without holding them
 

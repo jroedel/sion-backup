@@ -874,6 +874,7 @@ Done, in this repository:
 | The rotation policy itself — a year to raise it, two to insist, and a failed integrity check at once | `planbus.Consider` (§5.1) |
 | `expect_empty`, and nothing else, permitting a repository to be created outside enrolment | `credentialbus.Set.ExpectEmpty`, `deps.openRepository`, `restic.Runner.Ensure` |
 | `sion-backup card`, so the owner's page can be printed again after a rotation | `cmd/sion-backup/card.go` |
+| The same card printed from the status page, which is where an owner without a terminal prints one | `statusapp/card.go`, `deps.issueCard` |
 | Every call under the versioned base path (§3.1) | `eumaeusapi.APIPrefix` |
 | The fleet's server as the built-in default, so enrolling needs only a code | `cmd/sion-backup.DefaultEumaeusURL` |
 | `run_uuid` on both phases, stored so a late report keeps its identity | `backupbus.Run`, `backupdb`, `cmd/.../events.go` |

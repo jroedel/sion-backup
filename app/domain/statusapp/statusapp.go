@@ -142,6 +142,19 @@ type Config struct {
 	// clears the same throttle for the same reason.
 	CheckForUpdate func(context.Context) (UpdateOutcome, error)
 
+	// IssueCard assembles the owner's restore card and tells the fleet it was
+	// issued.
+	//
+	// A closure for the reason StartRun is one: building a card means one
+	// audited credential fetch, and the composition root is the only place
+	// that loads a secret. What comes back is a value for a single render --
+	// this package does not store it, log it, or put it anywhere a redirect
+	// could carry it.
+	//
+	// Nil in a build that cannot print one, and the page says so rather than
+	// offering a button that can only apologise.
+	IssueCard func(context.Context) (RestoreCard, error)
+
 	// Restart schedules the exit that this machine's service manager turns
 	// into a start, and reports how long that is expected to take.
 	//
@@ -219,6 +232,8 @@ func New(cfg Config) (*Server, error) {
 	mux.HandleFunc("GET /healthz", s.health)
 	mux.HandleFunc("GET /{$}", s.status)
 	mux.HandleFunc("GET /access", s.access)
+	mux.HandleFunc("GET /card", s.card)
+	mux.HandleFunc("POST /card", s.showCard)
 	mux.HandleFunc("GET /settings", s.settings)
 	mux.HandleFunc("POST /settings", s.saveSettings)
 	mux.HandleFunc("POST /settings/update", s.checkForUpdate)
@@ -670,6 +685,7 @@ func (s *Server) chromeFor(title, current string) chrome {
 		{Href: "/setup", Label: "Set up"},
 		{Href: "/settings", Label: "Settings"},
 		{Href: "/rotation", Label: "Fresh start"},
+		{Href: "/card", Label: "Restore card"},
 		{Href: "/access", Label: "Access"},
 	}
 

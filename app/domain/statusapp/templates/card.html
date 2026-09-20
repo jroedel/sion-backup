@@ -1,0 +1,141 @@
+{{define "card.html"}}<!doctype html>
+<html lang="en">
+<head>{{template "page-head" .}}</head>
+<body class="card-page">
+{{template "page-top" .}}
+<main>
+
+{{if .Card}}
+<p class="screen-only hint">
+  Press <kbd>Ctrl</kbd>+<kbd>P</kbd> — <kbd>⌘</kbd>+<kbd>P</kbd> on a Mac — to
+  print this. Only the card below goes on the paper. File it somewhere safe,
+  then close this page: it is shown once and is not kept on this computer.
+</p>
+
+{{if .Card.Unrecorded}}
+<div class="verdict warn screen-only">
+  <h1>Printed, but the server was not told</h1>
+  <p>
+    {{.Card.Unrecorded}} The card is complete — file it. This computer will go
+    on asking for a card to be printed until it can say that one was.
+  </p>
+</div>
+{{end}}
+
+{{if .Card.DestroyOld}}
+<div class="verdict warn screen-only">
+  <h1>Destroy the page this one replaces</h1>
+  <p>
+    The card this replaces opens nothing any more: the bucket it names has been
+    retired and its keys deleted.
+  </p>
+</div>
+{{end}}
+
+<article class="card">
+  <h1>Restoring your own files</h1>
+  <p class="card-machine">{{.Card.NodeID}}</p>
+
+  <p>
+    You do not need Eumaeus, the office network, or anybody's help. These steps
+    work from any computer, anywhere, for as long as the bucket exists.
+  </p>
+
+  <ol class="card-steps">
+    <li>
+      <p>Download restic — free, one file, no installer:</p>
+      <p><code>https://github.com/restic/restic/releases</code></p>
+      <p>Any version 0.14 or newer will read this backup.</p>
+    </li>
+
+    <li>
+      <p>Open a terminal where you saved it and set four values:</p>
+      <dl class="card-values">
+        <dt>RESTIC_REPOSITORY</dt><dd><code>{{.Card.RepositoryURL}}</code></dd>
+        <dt>AWS_ACCESS_KEY_ID</dt><dd><code>{{.Card.RestoreKeyID}}</code></dd>
+        <dt>AWS_SECRET_ACCESS_KEY</dt><dd><code>{{.Card.RestoreKeySecret}}</code></dd>
+        <dt>RESTIC_PASSWORD</dt><dd><code>{{.Card.ResticPassword}}</code></dd>
+      </dl>
+      <p>
+        Windows (PowerShell): <code>$env:NAME="value"</code><br>
+        macOS and Linux: <code>export NAME="value"</code>
+      </p>
+    </li>
+
+    <li>
+      <p>Check it works now, before you need it:</p>
+      <p><code>restic snapshots</code></p>
+    </li>
+
+    <li>
+      <p>Get everything back:</p>
+      <p><code>restic restore latest --target ./restored</code></p>
+      <p>Or one folder:</p>
+      <p><code>restic restore latest --target ./restored --include "/path/to/folder"</code></p>
+    </li>
+  </ol>
+
+  <p>
+    These credentials can <strong>read</strong> your backup and nothing else.
+    They cannot change or delete it, and they open no other computer's backup.
+  </p>
+
+  <p>
+    Keep this page somewhere safe — it is enough to read every file on this
+    computer. Destroy it when you are given a new one.
+  </p>
+
+  <p class="card-issued">
+    Issued {{.Card.Issued}} · owner {{if .Card.OwnerEmail}}{{.Card.OwnerEmail}}{{else}}not recorded{{end}} · bucket {{.Card.RepositoryBucket}}
+  </p>
+</article>
+
+{{else}}
+
+{{if .Owed}}
+<div class="verdict warn">
+  <h1>This computer's card has not been printed</h1>
+  <p>{{.Say}}</p>
+</div>
+{{end}}
+
+<h1>The page you keep</h1>
+
+<p>
+  One sheet of paper that restores this computer's files without this program,
+  without the server, and without anybody's help — from any computer, for as
+  long as the bucket exists. It carries the repository address and three
+  credentials that can read your backup and nothing else.
+</p>
+
+<p>
+  It is worth printing today and filing where you keep things that matter. The
+  day you need it is the day this computer is gone.
+</p>
+
+{{if .Problem}}
+<div class="verdict bad">
+  <h1>There is no card to print</h1>
+  <p>{{.Problem}}</p>
+</div>
+{{else}}
+<form method="post" action="/card" class="actions">
+  <input type="hidden" name="form_token" value="{{.Token}}">
+  <button class="primary" type="submit">Show the card, ready to print</button>
+</form>
+
+<p class="hint">
+  Pressing this asks the server for the read-only keys, exactly as a backup
+  does, and the request is added to the record on the
+  <a href="/access">Access</a> page. The card is shown once, on the next page,
+  and nothing about it is stored on this computer.
+</p>
+{{end}}
+
+{{end}}
+
+</main>
+{{template "page-foot" .}}
+</body>
+</html>
+{{end}}
