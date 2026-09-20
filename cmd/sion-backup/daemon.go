@@ -120,6 +120,14 @@ func daemonCmd(args []string) error {
 	// finish.
 	survey := surveybus.NewBusiness(d.log, d.probeUpload, surveybus.Choices())
 
+	// The footer says where this program is, for somebody who has been told to
+	// go and type its name. A machine that cannot answer that gets a footer
+	// one fact shorter rather than a daemon that refuses to start.
+	exe, err := selfupdate.Self()
+	if err != nil {
+		d.log.Warn("could not work out where this program is", "err", err)
+	}
+
 	app, err := statusapp.New(statusapp.Config{
 		Plan:                    d.plan,
 		Backups:                 d.backups,
@@ -134,10 +142,13 @@ func daemonCmd(args []string) error {
 		StartRun:                d.startRun(ctx),
 		UpdateSource:            d.updateSource,
 		CheckForUpdate:          d.checkForUpdate,
+		IssueCard:               d.issueCard,
+		CardPrinted:             d.cardPrinted,
 		Restart:                 d.restart,
 		Guard:                   guard,
 		Paths:                   d.paths,
 		Version:                 version,
+		Executable:              exe,
 		StoragePricePerTiBMonth: d.cfg.Storage.PricePerTiBMonth,
 		Log:                     d.log,
 	})

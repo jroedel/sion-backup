@@ -128,20 +128,38 @@ type Updater struct {
 	log     *slog.Logger
 }
 
+// Self is the file this program is running from, with symlinks resolved.
+//
+// Resolved because /usr/local/bin/sion-backup is often a symlink into a
+// versioned directory, and the file itself is the answer to the question
+// worth asking: an update replaces that file, not the name pointing at it.
+//
+// Exported because the status page names this path in its footer, and it has
+// to be the same path the updater would replace. A machine with updates
+// switched off has no Updater at all and still has to answer "where is the
+// program" -- which is the question somebody is asking when the page tells
+// them to go and run "sion-backup card".
+func Self() (string, error) {
+	found, err := os.Executable()
+	if err != nil {
+		return "", fmt.Errorf("selfupdate: locating this binary: %w", err)
+	}
+
+	if resolved, err := filepath.EvalSymlinks(found); err == nil {
+		found = resolved
+	}
+
+	return found, nil
+}
+
 // New validates the configuration and resolves this binary's own path.
 func New(cfg Config) (*Updater, error) {
 	exe := cfg.Executable
 
 	if exe == "" {
-		found, err := os.Executable()
+		found, err := Self()
 		if err != nil {
-			return nil, fmt.Errorf("selfupdate: locating this binary: %w", err)
-		}
-
-		// Resolved, because a symlinked /usr/local/bin/sion-backup should be
-		// replaced where it actually lives rather than turned into a file.
-		if resolved, err := filepath.EvalSymlinks(found); err == nil {
-			found = resolved
+			return nil, err
 		}
 
 		exe = found

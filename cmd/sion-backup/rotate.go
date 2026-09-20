@@ -152,7 +152,7 @@ func (d *deps) saySomethingChanged(ctx context.Context, before, now planbus.Mach
 			"note", "the next backup fills it from scratch, and the old bucket stays readable")
 	}
 
-	if owed, say := cardOwed(now.Card.State); owed && before.Card.State != now.Card.State {
+	if owed, say := cardOwed(now.Card.State, d.statusPage()); owed && before.Card.State != now.Card.State {
 		d.log.Warn("the owner's restore card needs printing", "state", now.Card.State, "note", say)
 	}
 

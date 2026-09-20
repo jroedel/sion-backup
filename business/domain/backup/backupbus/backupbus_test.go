@@ -37,7 +37,7 @@ case "$1" in
 backup)
   echo '{"message_type":"summary","snapshot_id":"snap1","files_new":3,"total_files_processed":42,"data_added":1024,"total_duration":0.5}'
   if [ ` + itoa(backupExit) + ` -ne 0 ]; then
-    echo '{"message_type":"error","item":"/home/user/locked.pst","error":{"message":"permission denied"}}'
+    echo '{"message_type":"error","item":"/home/user/locked.pst","error":{"message":"open /home/user/locked.pst: permission denied"}}'
     echo "warning: could not read 1 file" >&2
   fi
   exit ` + itoa(backupExit) + `
@@ -227,6 +227,42 @@ func TestExitThreeIsIncompleteNotSuccess(t *testing.T) {
 
 	if len(run.UnreadableFiles) != 1 {
 		t.Errorf("unreadable files: %v", run.UnreadableFiles)
+	}
+}
+
+// TestAnUnreadableFileIsNamedOnce is a list of 309 photographs, as a test.
+//
+// restic reports the path in `item` and again inside the message, and the two
+// were joined -- so the page that answers "which files are not in my backup"
+// spent half of every line repeating itself.
+func TestAnUnreadableFileIsNamedOnce(t *testing.T) {
+	b, _, _ := harness(t, fakeRestic(t, 3, "good"))
+
+	run, err := b.Run(context.Background(), request(), time.Now)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	if len(run.UnreadableFiles) != 1 {
+		t.Fatalf("unreadable files: %v", run.UnreadableFiles)
+	}
+
+	const want = "/home/user/locked.pst: permission denied"
+
+	if got := run.UnreadableFiles[0]; got != want {
+		t.Errorf("unreadable file line:\n got %q\nwant %q", got, want)
+	}
+
+	// The property, not just the string: whatever the wording, the path is
+	// there once and the reason survives.
+	line := run.UnreadableFiles[0]
+
+	if n := strings.Count(line, "/home/user/locked.pst"); n != 1 {
+		t.Errorf("path named %d times in %q, want once", n, line)
+	}
+
+	if !strings.Contains(line, "permission denied") {
+		t.Errorf("the reason was lost: %q", line)
 	}
 }
 

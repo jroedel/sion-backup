@@ -131,6 +131,113 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
 
 .actions { display: flex; gap: 0.6rem; align-items: center; flex-wrap: wrap; }
 
+/* An action row ends what is above it rather than starting what is below. On
+ * the status page "Back up now" sits between the verdict banner and whatever
+ * the page has to say next, and a <form> carries no margin of its own, so the
+ * button was flush against the top of the following banner -- the two read as
+ * one block when they are not.
+ *
+ * Narrow on purpose. Where an action row is followed by prose about those same
+ * buttons, as the restart hint on the settings page is, the pair belongs
+ * together and is left alone. */
+.actions + .verdict { margin-top: 1.5rem; }
+
+/* The restore card, and the sheet of paper it becomes.
+ *
+ * The card is the one page here written to be read on paper, years later, by
+ * somebody who has never seen this program and is having a bad day. So it is
+ * set wider and plainer than the rest: no muted greys for anything that has
+ * to be typed, and every credential on a line of its own.
+ */
+.card {
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  padding: 1.5rem 1.6rem;
+  background: var(--panel);
+}
+.card h1 { margin: 0 0 0.15rem; }
+.card-machine { margin: 0 0 1.25rem; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; color: var(--muted); }
+.card p { margin: 0 0 0.6rem; }
+.card-steps { margin: 1.25rem 0; padding-left: 1.3rem; }
+.card-steps > li { margin-bottom: 1.1rem; }
+.card-steps > li > p:last-child { margin-bottom: 0; }
+
+/* The four values. A grid rather than a run of paragraphs because the name
+ * and the value are read as a pair, and a secret that wraps must wrap
+ * somewhere obvious -- break-all rather than at spaces it does not contain. */
+.card-values { display: grid; gap: 0.35rem 1rem; margin: 0.6rem 0 0.8rem; }
+.card-values dt { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.85rem; color: var(--muted); }
+.card-values dd { margin: 0 0 0.5rem; }
+.card-values dd code { font-size: 0.95rem; word-break: break-all; }
+
+.card-issued { margin-top: 1.5rem; padding-top: 0.8rem; border-top: 1px solid var(--line); color: var(--muted); font-size: 0.9rem; }
+
+kbd {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.85em;
+  padding: 0.05rem 0.35rem;
+  border: 1px solid var(--line);
+  border-radius: 3px;
+  background: var(--panel);
+}
+
+/* What the printer is told to leave out.
+ *
+ * Only the card page has a print stylesheet, and deliberately: it is the one
+ * page written to be printed. Everything else here is a screen that happens
+ * to print, and a rule written for paper would quietly change what comes out
+ * of somebody's printer on a page nobody designed for it.
+ */
+@media print {
+  /* The colours follow the operating system, and plenty of these machines run
+   * a dark desktop. Inheriting that means a card printed as a black rectangle
+   * with grey text on it, so the paper gets its own palette. */
+  .card-page {
+    --bg: #ffffff;
+    --fg: #000000;
+    --muted: #1a1a1a;
+    --line: #000000;
+    --panel: #ffffff;
+
+    background: #ffffff;
+    color: #000000;
+  }
+
+  /* Navigation, buttons, the footer, and everything addressed to the person
+   * at the screen rather than the person holding the paper. */
+  .card-page header,
+  .card-page footer,
+  .card-page .actions,
+  .card-page .verdict,
+  .card-page .screen-only { display: none; }
+
+  .card-page main { max-width: none; padding: 0; }
+
+  /* Flat on the page: a border printed around the card wastes a millimetre of
+   * margin on every printer that already has one. */
+  .card-page .card { border: none; border-radius: 0; padding: 0; }
+
+  /* Four credentials split across two sheets is a card that gets mistyped. */
+  .card-page .card-values, .card-page .card-steps > li { break-inside: avoid; }
+
+  /* One sheet.
+   *
+   * The screen sizes are set for reading at arm's length on a display the
+   * owner can zoom; on paper they spilled the last line -- the one naming the
+   * bucket and the day it was issued -- onto a second sheet that then gets
+   * separated from the first. Tightened here rather than on the screen,
+   * because the constraint belongs to the paper. */
+  .card-page { font-size: 10.5pt; line-height: 1.45; }
+  .card-page .card h1 { font-size: 1.35rem; }
+  .card-page .card p { margin-bottom: 0.4rem; }
+  .card-page .card-machine { margin-bottom: 0.8rem; }
+  .card-page .card-steps { margin: 0.8rem 0; }
+  .card-page .card-steps > li { margin-bottom: 0.7rem; }
+  .card-page .card-values { margin: 0.4rem 0 0.5rem; gap: 0.2rem 1rem; }
+  .card-page .card-values dd { margin-bottom: 0.3rem; }
+  .card-page .card-issued { margin-top: 0.9rem; padding-top: 0.5rem; }
+}
+
 /* The progress bar during a run. A <progress> element, styled lightly, rather
  * than a div pretending to be one: assistive technology announces the real
  * thing. */

@@ -388,7 +388,7 @@ func (b *Runner) execute(ctx context.Context, run *Run, req Request, now func() 
 	run.VSSFellBack = summary.VSSFellBack
 
 	for _, e := range summary.Errors {
-		run.UnreadableFiles = append(run.UnreadableFiles, strings.TrimSpace(e.Item+" "+e.Error))
+		run.UnreadableFiles = append(run.UnreadableFiles, unreadableLine(e.Item, e.Error))
 	}
 
 	if backupErr != nil {
@@ -618,6 +618,46 @@ func isWindowsPath(s string) bool {
 // target: the snapshot path, appended to the target directory.
 func RestoredPath(target, source string) string {
 	return filepath.Join(target, filepath.FromSlash(strings.TrimPrefix(SnapshotPath(source), "/")))
+}
+
+// unreadableLine renders one per-file failure the way the list on the status
+// page is read: the path first, then why.
+//
+// restic names the file twice. The JSON error carries `item`, and its message
+// names the same path again inside a syscall sentence, so joining the two
+// produced lines like
+//
+//	/home/user/Pictures/2026/DSC_7447.jpg open /home/user/Pictures/2026/DSC_7447.jpg: permission denied
+//
+// A real machine here listed 309 of those in one run. The path leads because
+// the question somebody brings to that list is "which of my files are not in
+// the backup", and the reason follows it.
+//
+// The syscall verb goes with the duplicate. "open" and "lstat" say how restic
+// touched the file rather than why it could not have it, and at 309
+// repetitions the shorter sentence is the one that gets read.
+func unreadableLine(item, msg string) string {
+	item, msg = strings.TrimSpace(item), strings.TrimSpace(msg)
+
+	switch {
+	case item == "":
+		return msg
+	case msg == "":
+		return item
+	}
+
+	// The last occurrence, because one sentence can name a path twice -- a
+	// failed rename reports both ends of it, and the reason follows the second.
+	if i := strings.LastIndex(msg, item); i >= 0 {
+		reason := strings.TrimLeft(strings.TrimSpace(msg[i+len(item):]), ": ")
+		if reason == "" {
+			return item
+		}
+
+		return item + ": " + reason
+	}
+
+	return item + ": " + msg
 }
 
 // firstOf returns the first element, or "".

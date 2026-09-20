@@ -18,5 +18,6 @@
   <span>{{.NodeID}}</span>
   <span>{{.Version}}</span>
   <span>data in <code>{{.DataDir}}</code></span>
+  {{if .Exe}}<span>program at <code>{{.Exe}}</code></span>{{end}}
 </footer>
 {{end}}
