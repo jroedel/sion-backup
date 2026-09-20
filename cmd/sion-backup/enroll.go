@@ -203,6 +203,33 @@ func (d *deps) enroll(ctx context.Context, o enrollment) (eumaeuscreds.Enrollmen
 	}
 
 	printRestoreCard(cardFor(enrolled))
+
+	// Printing it to this terminal is not printing it, and enrolment claiming
+	// otherwise was the last place that still said so. `card_issued_at` is
+	// read by people deciding whether an owner can restore without us, and
+	// every machine in this fleet reported a card at enrolment whether or not
+	// one ever reached a printer.
+	//
+	// Silence is a no. An installer running this unattended enrols the
+	// machine and leaves the status page asking for a card, which is the
+	// truth and is now a thing the owner can act on without a terminal.
+	printed, err := confirm("Has this card been printed and filed?")
+	if err != nil {
+		// Not an enrolment failure. The machine is enrolled; what could not
+		// be read is the answer to a question about paper.
+		fmt.Fprintf(os.Stderr, "\nNote: could not read an answer (%v). The card was not recorded.\n", err)
+
+		printed = false
+	}
+
+	if !printed {
+		fmt.Printf("\nNot recorded, so this machine will ask for a card until one is printed.\n"+
+			"Print it at %s/card, or run \"sion-backup card --printed\" once this page\n"+
+			"is on paper and filed.\n", d.statusPage())
+
+		return enrolled, nil
+	}
+
 	d.sayCardIssued(ctx, enrolled.RepositoryURL)
 
 	return enrolled, nil

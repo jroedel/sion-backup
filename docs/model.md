@@ -952,9 +952,10 @@ free download and four environment variables.
   loopback guard is explicit that anybody who can reach the port is already
   logged in as this user, so a presence test would defend against nobody. So
   the page shows the card and a second button records it, `sion-backup card`
-  asks the same question at the terminal, and `sion-backup card --printed`
-  answers it later for somebody who has already printed one. Silence is a no in
-  both places: a machine that cannot ask keeps asking for a card.
+  and `sion-backup enroll` ask the same question at the terminal, and
+  `sion-backup card --printed` answers it later for somebody who has already
+  printed one. Silence is a no everywhere: a machine enrolled by an unattended
+  installer is a machine with no card, and says so until somebody prints one.
 
 ### 6.5 Eumaeus tracks the copies without holding them
 

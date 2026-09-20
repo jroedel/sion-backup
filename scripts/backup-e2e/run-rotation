@@ -280,14 +280,27 @@ else
   bad "enroll failed"; tail -20 /tmp/enroll.log; exit 1
 fi
 
-# Enrolment prints the owner's card and, since #52, says so. Every machine in
-# the fleet had a card printed and none of them ever reported it.
-if [ "$(stub_state | jq -r '.card_state')" = issued ]; then
-  ok "enrolment told the server the card was printed"
+# Enrolment prints the owner's card and asks whether it reached a printer.
+# Nothing here answers, which is a no -- so the machine is enrolled and the
+# card is still owed. Saying otherwise is what every machine in this fleet used
+# to do: a card rendered to somebody's terminal, recorded as filed paper.
+if [ "$(stub_state | jq -r '.card_state')" = never ]; then
+  ok "an unattended enrolment did not claim a card had been printed"
 else
-  bad "the card printed at enrolment was not reported"
-  note "card_state is $(stub_state | jq -r '.card_state')"
+  bad "card_state is $(stub_state | jq -r '.card_state') after an unattended enrolment"
 fi
+
+# And the step that does say so. The rest of this file needs a card on the
+# first bucket, because a bucket that never had one has nothing to supersede.
+if as_user "$EXE" card --printed </dev/null >/tmp/card-printed-1.log 2>&1; then
+  ok "and saying it is on paper recorded it"
+else
+  bad "the enrolment card could not be recorded as printed"; tail -20 /tmp/card-printed-1.log
+fi
+
+[ "$(stub_state | jq -r '.card_state')" = issued ] \
+  && ok "so the server now says this bucket has a card" \
+  || bad "card_state is $(stub_state | jq -r '.card_state') after --printed"
 
 say "First backup, to the old bucket"
 
