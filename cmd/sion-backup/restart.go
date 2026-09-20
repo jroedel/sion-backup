@@ -58,17 +58,34 @@ func restartDelay() time.Duration {
 }
 
 // updateSource describes where updates come from, for the settings page.
+//
+// The repository is resolved rather than reported verbatim. An empty
+// `repository` in config.toml means the fleet's own -- selfupdate.GitHub
+// substitutes DefaultRepository, and the example config ships the line
+// commented out -- so every machine that had never overridden it handed the
+// settings page an empty string. The page reads an empty source as "switched
+// off for this machine" and hides the button behind it, which meant the
+// ordinary machine was told its updates were off while it was updating itself
+// after every backup, and had no way to ask for one now.
+//
+// Empty is still returned, and now means only what the page says it means:
+// somebody switched updates off in this machine's config.
 func (d *deps) updateSource() (string, []string) {
 	if !d.cfg.Update.On() {
 		return "", nil
 	}
 
-	u := d.updater()
-	if u == nil {
-		return d.cfg.Update.Repository, nil
+	repository := d.cfg.Update.Repository
+	if repository == "" {
+		repository = selfupdate.DefaultRepository
 	}
 
-	return d.cfg.Update.Repository, u.Refused()
+	u := d.updater()
+	if u == nil {
+		return repository, nil
+	}
+
+	return repository, u.Refused()
 }
 
 // checkForUpdate is selfUpdate without the throttle and without the silence.
