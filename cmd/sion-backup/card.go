@@ -278,7 +278,19 @@ func (d *deps) cardPrinted(ctx context.Context, repositoryURL string) error {
 			"page it is on")
 	}
 
-	if err := d.recordCardIssued(ctx, repositoryURL); err != nil {
+	// The server is the authority on which bucket this machine writes to, and
+	// it refuses a card that names another one -- which is the check this
+	// function used to make against the plan, in the one place that cannot
+	// lag. Its answer is worth a sentence of its own: pressing the button
+	// again will not help, and the person needs a different card rather than
+	// another go at the same one.
+	switch err := d.recordCardIssued(ctx, repositoryURL); {
+	case errors.Is(err, machinebus.ErrNoRepository):
+		return errors.New("that card was printed for a bucket this computer no longer " +
+			"backs up to, so the server did not accept it. Print a new card, and " +
+			"destroy the one you are holding once the old bucket has been retired")
+
+	case err != nil:
 		return fmt.Errorf("the card is fine, but this computer could not tell the server "+
 			"about it: %w. Nothing is wrong with the page you printed -- press this "+
 			"again when the machine can reach the server", err)

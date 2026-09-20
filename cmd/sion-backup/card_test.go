@@ -104,6 +104,33 @@ func TestACardWithNoRepositoryIsNotRecorded(t *testing.T) {
 	}
 }
 
+// TestACardForARetiredBucketIsRefusedByTheServer, and the sentence says so.
+//
+// The server is the authority on which bucket this machine writes to, and it
+// answers 404 for a card naming another one -- which is the check this used to
+// make locally against a copy that lags. "Press it again when the machine can
+// reach the server" would be wrong here: it reached the server, and the server
+// said no. What the person needs is a different card.
+func TestACardForARetiredBucketIsRefusedByTheServer(t *testing.T) {
+	d, ctx := cardHarness(t, "s3:https://s3.example.invalid/bucket")
+
+	fleet := &cardFleet{refuse: machinebus.ErrNoRepository}
+	d.machine = machinebus.NewBusiness(fleet)
+
+	err := d.cardPrinted(ctx, "s3:https://s3.example.invalid/retired-bucket")
+	if err == nil {
+		t.Fatal("a card the server refused was reported as recorded")
+	}
+
+	if !strings.Contains(err.Error(), "no longer backs up to") {
+		t.Errorf("the refusal does not say why: %v", err)
+	}
+
+	if strings.Contains(err.Error(), "press this again") {
+		t.Errorf("the refusal tells somebody to retry something that cannot work: %v", err)
+	}
+}
+
 // TestPrintedAsksTheServerWhereThisMachineWrites. `--printed` fetches no
 // credentials, so it has no card to read the repository off -- and the plan's
 // copy is the one that lags a cutover. The server is the authority and is
@@ -145,6 +172,10 @@ func TestRecordingACardWithoutAPlan(t *testing.T) {
 type cardFleet struct {
 	now    string
 	issued string
+
+	// refuse is what CardIssued returns instead of recording, for the answers
+	// a real server gives about a card that names the wrong bucket.
+	refuse error
 }
 
 func (f *cardFleet) State(context.Context) (machinebus.State, error) {
@@ -156,6 +187,10 @@ func (f *cardFleet) State(context.Context) (machinebus.State, error) {
 }
 
 func (f *cardFleet) CardIssued(_ context.Context, repositoryURL string, _ time.Time) error {
+	if f.refuse != nil {
+		return f.refuse
+	}
+
 	f.issued = repositoryURL
 
 	return nil
