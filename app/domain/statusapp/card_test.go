@@ -234,6 +234,66 @@ func TestSayingItPrintedIsWhatRecordsIt(t *testing.T) {
 	}
 }
 
+// TestAFiledCardIsNotAlsoAskedFor: two true sentences about different
+// moments, stacked on one page.
+//
+// "Recorded -- this computer will stop asking" sat directly above "This
+// computer's card has not been printed", because the second is read from the
+// stored state the daemon's poller wrote and the poller had not run since.
+// Whichever one a person believes, the page has told them the other.
+func TestAFiledCardIsNotAlsoAskedFor(t *testing.T) {
+	h, _ := issuing(t, sampleCard(), nil)
+
+	// A machine the server last said was owed a card, which is every machine
+	// at the moment somebody prints one.
+	poll(t, h, context.Background(), planbus.MachineState{
+		Card: planbus.Card{State: planbus.CardNever},
+	})
+
+	rec := h.post(t, "/card/printed", "repository="+url.QueryEscape(sampleCard().RepositoryURL))
+	if rec.Code != http.StatusSeeOther {
+		t.Fatalf("status %d: %s", rec.Code, rec.Body)
+	}
+
+	body := h.get(t, "/card?filed").Body.String()
+
+	if !strings.Contains(body, "stop asking") {
+		t.Error("the page does not confirm the card was recorded")
+	}
+
+	if strings.Contains(body, "has not been printed") {
+		t.Error("the page confirms the card and asks for it in the same breath")
+	}
+}
+
+// TestFilingACardAsksTheServerAgain is the fix for the same thing one layer
+// down: the stored state is refreshed on the way to that page, so the status
+// page stops asking too rather than waiting for the next poll.
+func TestFilingACardAsksTheServerAgain(t *testing.T) {
+	refreshed := 0
+
+	h := harnessWithDisclosures(t, stubSource{}, nil, func(cfg *statusapp.Config) {
+		cfg.IssueCard = func(context.Context) (statusapp.RestoreCard, error) {
+			return sampleCard(), nil
+		}
+
+		cfg.CardPrinted = func(context.Context, string) error { return nil }
+		cfg.RefreshState = func(context.Context) { refreshed++ }
+	})
+
+	if err := h.plan.Put(context.Background(), samplePlan(), time.Now()); err != nil {
+		t.Fatal(err)
+	}
+
+	if rec := h.post(t, "/card/printed", "repository=whatever"); rec.Code != http.StatusSeeOther {
+		t.Fatalf("status %d", rec.Code)
+	}
+
+	if refreshed != 1 {
+		t.Errorf("the server was asked again %d times, want once", refreshed)
+	}
+}
+
 // TestACardTheFleetWouldNotAcceptSaysWhy. The paper in somebody's hand is
 // fine; what failed is the record, and the sentence has to say which -- a
 // person who has just filed a card and is told "error" will go and print

@@ -150,6 +150,14 @@ func (s *Server) cardPrinted(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Ask the server again, now, so that the page which follows shows what
+	// the person just did rather than the poll from four hours ago. Without
+	// this the card page rendered "Recorded -- this computer will stop
+	// asking" directly above "This computer's card has not been printed",
+	// both of them true statements about different moments, and the status
+	// page went on asking for a card that had just been filed.
+	s.refresh(r.Context())
+
 	// A redirect, so that a reload does not repeat the record and a browser
 	// asking to resend the form is not the last thing somebody sees after
 	// filing a card.
@@ -220,6 +228,15 @@ func (s *Server) renderCard(w http.ResponseWriter, r *http.Request, view cardVie
 
 	if state, err := s.cfg.Plan.MachineState(r.Context()); err == nil {
 		view.Owed, view.Say = cardAdvice(state.Card)
+	}
+
+	// Belt and braces over the refresh above. A machine that could not reach
+	// the server still holds the state from before the card was filed, and
+	// two banners contradicting each other is worse than one that is a few
+	// minutes stale: somebody who has just been told the card is recorded
+	// must not be told underneath it that nobody has printed one.
+	if view.Filed {
+		view.Owed, view.Say = false, ""
 	}
 
 	s.render(w, r, "card.html", view)

@@ -290,6 +290,10 @@ type chrome struct {
 	Nav     []page.Link
 	NodeID  string
 	Version string
+
+	// Style is the stylesheet's URL, fingerprinted so that an upgraded
+	// program is never rendered with the previous one's stylesheet.
+	Style   string
 	DataDir string
 	Exe     string
 	Token   string
@@ -710,6 +714,7 @@ func (s *Server) chromeFor(title, current string) chrome {
 	return chrome{
 		Title:   title,
 		Nav:     links,
+		Style:   page.StyleHref(),
 		Version: s.cfg.Version,
 		DataDir: s.cfg.Paths.DataDir,
 		Exe:     s.cfg.Executable,
