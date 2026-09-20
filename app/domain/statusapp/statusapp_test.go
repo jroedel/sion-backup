@@ -266,7 +266,7 @@ func TestTheStatusPageRenders(t *testing.T) {
 		SnapshotID:          "a1b2c3d4",
 		TotalFilesProcessed: 4211,
 		DataAdded:           88 << 20,
-		UnreadableFiles:     []string{"/home/user/locked.pst permission denied"},
+		UnreadableFiles:     []string{"/home/user/locked.pst: permission denied"},
 		Verified:            true,
 	})
 
