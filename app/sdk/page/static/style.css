@@ -131,6 +131,17 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
 
 .actions { display: flex; gap: 0.6rem; align-items: center; flex-wrap: wrap; }
 
+/* An action row ends what is above it rather than starting what is below. On
+ * the status page "Back up now" sits between the verdict banner and whatever
+ * the page has to say next, and a <form> carries no margin of its own, so the
+ * button was flush against the top of the following banner -- the two read as
+ * one block when they are not.
+ *
+ * Narrow on purpose. Where an action row is followed by prose about those same
+ * buttons, as the restart hint on the settings page is, the pair belongs
+ * together and is left alone. */
+.actions + .verdict { margin-top: 1.5rem; }
+
 /* The progress bar during a run. A <progress> element, styled lightly, rather
  * than a div pretending to be one: assistive technology announces the real
  * thing. */
