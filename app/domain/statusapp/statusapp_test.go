@@ -2,6 +2,8 @@ package statusapp_test
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"io"
 	"log/slog"
@@ -587,6 +589,42 @@ func TestTheStylesheetIsServed(t *testing.T) {
 
 	if ct := rec.Header().Get("Content-Type"); !strings.HasPrefix(ct, "text/css") {
 		t.Errorf("content type %q", ct)
+	}
+}
+
+// TestTheStylesheetURLFingerprintsTheStylesheet is an upgrade that looked like
+// a fix that had not shipped.
+//
+// The stylesheet was served as /style.css with max-age=3600 and nothing else
+// -- no ETag, no Last-Modified, no version -- so for an hour after an upgrade
+// a browser went on using the previous program's stylesheet. A machine
+// running a build whose spacing had been corrected two releases earlier
+// rendered the old spacing, and the page that proved the build was new was
+// the same page proving the stylesheet was old.
+//
+// The property, then: the URL the page asks for names the bytes it is served.
+// Cached for ever is only safe while that holds.
+func TestTheStylesheetURLFingerprintsTheStylesheet(t *testing.T) {
+	h := newHarness(t)
+
+	if err := h.plan.Put(context.Background(), samplePlan(), time.Now()); err != nil {
+		t.Fatal(err)
+	}
+
+	css := h.get(t, "/style.css")
+	if css.Code != http.StatusOK {
+		t.Fatalf("status %d", css.Code)
+	}
+
+	sum := sha256.Sum256(css.Body.Bytes())
+	want := `href="/style.css?v=` + hex.EncodeToString(sum[:])[:12] + `"`
+
+	if body := h.get(t, "/").Body.String(); !strings.Contains(body, want) {
+		t.Errorf("the page does not link the stylesheet it is served: want %s", want)
+	}
+
+	if cache := css.Header().Get("Cache-Control"); !strings.Contains(cache, "immutable") {
+		t.Errorf("stylesheet Cache-Control is %q; a fingerprinted URL should be immutable", cache)
 	}
 }
 
