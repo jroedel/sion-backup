@@ -143,6 +143,7 @@ func daemonCmd(args []string) error {
 		UpdateSource:            d.updateSource,
 		CheckForUpdate:          d.checkForUpdate,
 		IssueCard:               d.issueCard,
+		CardPrinted:             d.cardPrinted,
 		Restart:                 d.restart,
 		Guard:                   guard,
 		Paths:                   d.paths,

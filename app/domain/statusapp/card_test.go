@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -34,11 +35,23 @@ func issuing(t *testing.T, card statusapp.RestoreCard, err error) (*harness, *in
 
 	calls := 0
 
-	h := harnessWithDisclosures(t, stubSource{}, nil, func(cfg *statusapp.Config) {
+	var h *harness
+
+	h = harnessWithDisclosures(t, stubSource{}, nil, func(cfg *statusapp.Config) {
 		cfg.IssueCard = func(context.Context) (statusapp.RestoreCard, error) {
 			calls++
 
 			return card, err
+		}
+
+		// Through the harness rather than captured here, so a test can
+		// replace it after the server has been built.
+		cfg.CardPrinted = func(ctx context.Context, repository string) error {
+			if h.cardPrinted == nil {
+				return nil
+			}
+
+			return h.cardPrinted(ctx, repository)
 		}
 	})
 
@@ -159,25 +172,86 @@ func TestACardThatCannotBeBuiltSaysWhy(t *testing.T) {
 	}
 }
 
-// TestAPrintedCardThatTheServerDoesNotKnowAboutSaysSo. The card in somebody's
-// hand is complete; what failed is the fleet's record that one was printed,
-// and the difference matters because the banner will keep asking.
-func TestAPrintedCardThatTheServerDoesNotKnowAboutSaysSo(t *testing.T) {
-	card := sampleCard()
-	card.Unrecorded = "This computer could not tell the server that a card was printed."
+// TestShowingACardDoesNotClaimItWasPrinted is the point of the second
+// button. `card_issued_at` is read by people deciding whether an owner can
+// restore without us, and a render is not a sheet of paper.
+func TestShowingACardDoesNotClaimItWasPrinted(t *testing.T) {
+	h, _ := issuing(t, sampleCard(), nil)
 
-	h, _ := issuing(t, card, nil)
+	recorded := 0
+
+	h.cardPrinted = func(context.Context, string) error {
+		recorded++
+
+		return nil
+	}
 
 	body := h.post(t, "/card", "").Body.String()
 
-	if !strings.Contains(body, "the server was not told") {
-		t.Error("the page does not say the fleet was not told")
+	if recorded != 0 {
+		t.Errorf("showing a card told the fleet %d times that one was printed", recorded)
 	}
 
-	// And still prints the card, which is the whole point of it not being an
-	// error.
-	if !strings.Contains(body, "restic-password-not-real") {
-		t.Error("a card the server was not told about was not shown")
+	if !strings.Contains(body, "/card/printed") {
+		t.Error("the card page does not offer to record that it printed")
+	}
+}
+
+// TestSayingItPrintedIsWhatRecordsIt, and the page that follows says so.
+func TestSayingItPrintedIsWhatRecordsIt(t *testing.T) {
+	h, _ := issuing(t, sampleCard(), nil)
+
+	var gotRepository string
+
+	recorded := 0
+
+	h.cardPrinted = func(_ context.Context, repository string) error {
+		recorded++
+		gotRepository = repository
+
+		return nil
+	}
+
+	rec := h.post(t, "/card/printed", "repository="+url.QueryEscape(sampleCard().RepositoryURL))
+	if rec.Code != http.StatusSeeOther {
+		t.Fatalf("status %d: %s", rec.Code, rec.Body)
+	}
+
+	if recorded != 1 {
+		t.Errorf("the fleet was told %d times, want once", recorded)
+	}
+
+	if gotRepository != sampleCard().RepositoryURL {
+		t.Errorf("recorded against %q, want the repository the card named", gotRepository)
+	}
+
+	if got := rec.Header().Get("Location"); got != "/card?filed" {
+		t.Errorf("redirected to %q", got)
+	}
+
+	if !strings.Contains(h.get(t, "/card?filed").Body.String(), "stop asking") {
+		t.Error("the page does not confirm that the card was recorded")
+	}
+}
+
+// TestACardTheFleetWouldNotAcceptSaysWhy. The paper in somebody's hand is
+// fine; what failed is the record, and the sentence has to say which -- a
+// person who has just filed a card and is told "error" will go and print
+// another one.
+func TestACardTheFleetWouldNotAcceptSaysWhy(t *testing.T) {
+	h, _ := issuing(t, sampleCard(), nil)
+
+	h.cardPrinted = func(context.Context, string) error {
+		return errors.New("the card is fine, but this computer could not reach the server")
+	}
+
+	rec := h.post(t, "/card/printed", "repository=whatever")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status %d", rec.Code)
+	}
+
+	if !strings.Contains(rec.Body.String(), "the card is fine") {
+		t.Error("the page does not say what went wrong")
 	}
 }
 

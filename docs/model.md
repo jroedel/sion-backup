@@ -945,6 +945,16 @@ free download and four environment variables.
   backing up with a card state of `never`. The page fetches the credentials
   behind a button — one audited read, the same one a backup makes — renders
   them once, and prints the card alone, without navigation or advice.
+- **`card_issued_at` means a person said they are holding paper**, and nothing
+  else. Rendering a card is not printing one — which was true of the terminal
+  too, where reaching the screen was recorded as issued. Nothing on the machine
+  can see a printer: the strict CSP rules out every script-based check, and the
+  loopback guard is explicit that anybody who can reach the port is already
+  logged in as this user, so a presence test would defend against nobody. So
+  the page shows the card and a second button records it, `sion-backup card`
+  asks the same question at the terminal, and `sion-backup card --printed`
+  answers it later for somebody who has already printed one. Silence is a no in
+  both places: a machine that cannot ask keeps asking for a card.
 
 ### 6.5 Eumaeus tracks the copies without holding them
 

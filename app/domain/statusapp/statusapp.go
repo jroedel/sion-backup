@@ -142,8 +142,10 @@ type Config struct {
 	// clears the same throttle for the same reason.
 	CheckForUpdate func(context.Context) (UpdateOutcome, error)
 
-	// IssueCard assembles the owner's restore card and tells the fleet it was
-	// issued.
+	// IssueCard assembles the owner's restore card.
+	//
+	// It does not record anything: rendering a card is not printing one, and
+	// CardPrinted is what says a card exists. See app/domain/statusapp/card.go.
 	//
 	// A closure for the reason StartRun is one: building a card means one
 	// audited credential fetch, and the composition root is the only place
@@ -154,6 +156,19 @@ type Config struct {
 	// Nil in a build that cannot print one, and the page says so rather than
 	// offering a button that can only apologise.
 	IssueCard func(context.Context) (RestoreCard, error)
+
+	// CardPrinted tells the fleet that somebody is holding a printed card for
+	// the repository they name.
+	//
+	// The repository comes from the page the card was shown on, and the
+	// composition root checks it against the one this machine backs up to
+	// now: a machine that cut over between the printing and the confirming
+	// has paper for a bucket that is not this one, and recording it would
+	// tell everybody the new bucket has a card nobody has printed.
+	//
+	// Nil in a build that cannot tell anybody, and the page says so rather
+	// than silently doing nothing.
+	CardPrinted func(ctx context.Context, repositoryURL string) error
 
 	// Restart schedules the exit that this machine's service manager turns
 	// into a start, and reports how long that is expected to take.
@@ -234,6 +249,7 @@ func New(cfg Config) (*Server, error) {
 	mux.HandleFunc("GET /access", s.access)
 	mux.HandleFunc("GET /card", s.card)
 	mux.HandleFunc("POST /card", s.showCard)
+	mux.HandleFunc("POST /card/printed", s.cardPrinted)
 	mux.HandleFunc("GET /settings", s.settings)
 	mux.HandleFunc("POST /settings", s.saveSettings)
 	mux.HandleFunc("POST /settings/update", s.checkForUpdate)

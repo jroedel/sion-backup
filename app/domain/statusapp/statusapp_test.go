@@ -35,6 +35,11 @@ func (stubSource) Fetch(context.Context) (credentialbus.Set, error) {
 }
 
 type harness struct {
+	// cardPrinted is what statusapp.Config.CardPrinted calls, when a test has
+	// set one. A field rather than a closure passed at build time so that a
+	// test can watch a machine it has already started.
+	cardPrinted func(context.Context, string) error
+
 	server  http.Handler
 	guard   *loopback.Guard
 	plan    *planbus.Business

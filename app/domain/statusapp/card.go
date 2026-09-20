@@ -41,6 +41,22 @@ import (
 // it; POST /card fetches the credentials, renders them once, and tells the
 // fleet the card has been issued.
 //
+// # Rendering a card is not printing one
+//
+// Nothing here tells the fleet that a card exists. `card_issued_at` is read by
+// people deciding whether an owner can restore without us, and a field set by
+// "a page was rendered" is a field that lies to them -- as it did from the
+// terminal too, where printing to a screen was recorded as printing.
+//
+// There is no way to prove a person was at the keyboard. The strict CSP rules
+// out every script-based check, and the loopback guard says plainly that
+// anybody who can reach this port is already logged in as this user, so a
+// presence test would defend against nobody. What is left is to stop claiming
+// the thing that cannot be measured: the card is shown, and a second button
+// -- pressed by somebody holding paper -- is what records it. Somebody who
+// closes the tab leaves the banner asking, which is correct, because they
+// have no card.
+//
 // # What is not done here
 //
 // The secrets are assembled by the composition root and handed over for one
@@ -72,14 +88,6 @@ type RestoreCard struct {
 	// are holding. Before that, the old card is the only way into the only
 	// bucket with any history in it.
 	DestroyOld bool
-
-	// Unrecorded says the card was built but the fleet was not told, in a
-	// sentence fit to show somebody. Empty when the server was told.
-	//
-	// Not an error, because the card in their hands is complete and correct.
-	// What it costs is the status page continuing to ask for a card that has
-	// been printed, which is worth a line on the page and not a refusal.
-	Unrecorded string
 }
 
 // Issued is the date on the card, which is the day it was printed.
@@ -99,14 +107,52 @@ type cardView struct {
 	Owed bool
 	Say  string
 
-	// Problem is why there is no card to show, in the person's own words:
-	// not enrolled, no read-only key pair, the server unreachable.
+	// Problem is why there is no card to show, or why the fleet could not be
+	// told about one, in the person's own words: not enrolled, no read-only
+	// key pair, the server unreachable.
 	Problem string
+
+	// Filed is the answer to the second button: somebody has said they are
+	// holding the paper, and the fleet has been told.
+	Filed bool
 }
 
 // card explains the card and offers it.
 func (s *Server) card(w http.ResponseWriter, r *http.Request) {
-	s.renderCard(w, r, cardView{})
+	s.renderCard(w, r, cardView{Filed: r.URL.Query().Has("filed")})
+}
+
+// cardPrinted records that somebody is holding the paper.
+//
+// The only thing in this package that tells the fleet a card exists, and it
+// is reached by a button underneath a printed card rather than by rendering
+// one. See the head of this file.
+func (s *Server) cardPrinted(w http.ResponseWriter, r *http.Request) {
+	if s.cfg.CardPrinted == nil {
+		s.renderCard(w, r, cardView{Problem: "This build cannot record that a card was printed."})
+
+		return
+	}
+
+	// The repository the card named, carried back from the page it was shown
+	// on. Not for authority -- it is on the status page in plain sight -- but
+	// so that a cutover between printing and confirming is caught: the paper
+	// in somebody's hand opens the bucket it was made for, and saying the new
+	// one has a card would be a lie about the bucket nobody has printed.
+	repository := r.PostFormValue("repository")
+
+	if err := s.cfg.CardPrinted(r.Context(), repository); err != nil {
+		s.cfg.Log.Warn("could not record that the card was printed", "err", err)
+
+		s.renderCard(w, r, cardView{Problem: err.Error()})
+
+		return
+	}
+
+	// A redirect, so that a reload does not repeat the record and a browser
+	// asking to resend the form is not the last thing somebody sees after
+	// filing a card.
+	http.Redirect(w, r, "/card?filed", http.StatusSeeOther)
 }
 
 // showCard builds the card and renders it once.

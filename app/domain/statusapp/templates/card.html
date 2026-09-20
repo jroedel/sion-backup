@@ -12,16 +12,6 @@
   then close this page: it is shown once and is not kept on this computer.
 </p>
 
-{{if .Card.Unrecorded}}
-<div class="verdict warn screen-only">
-  <h1>Printed, but the server was not told</h1>
-  <p>
-    {{.Card.Unrecorded}} The card is complete — file it. This computer will go
-    on asking for a card to be printed until it can say that one was.
-  </p>
-</div>
-{{end}}
-
 {{if .Card.DestroyOld}}
 <div class="verdict warn screen-only">
   <h1>Destroy the page this one replaces</h1>
@@ -90,7 +80,39 @@
   </p>
 </article>
 
+<div class="screen-only">
+  <h2>Once it is on paper</h2>
+
+  <p>
+    This computer has not told anyone that a card exists, and will go on asking
+    for one until you say the paper is in your hands. Printing is the part
+    nothing here can see.
+  </p>
+
+  <form method="post" action="/card/printed" class="actions">
+    <input type="hidden" name="form_token" value="{{.Token}}">
+    <input type="hidden" name="repository" value="{{.Card.RepositoryURL}}">
+    <button class="primary" type="submit">It printed, and I have filed it</button>
+  </form>
+
+  <p class="hint">
+    Worth doing before you leave this page: set the four values above and run
+    <code>restic snapshots</code>. That proves the card opens your backup now,
+    rather than on the day you find out it does not.
+  </p>
+</div>
+
 {{else}}
+
+{{if .Filed}}
+<div class="verdict good">
+  <h1>Recorded — this computer will stop asking</h1>
+  <p>
+    Keep the page somewhere safe. It is enough to read every file on this
+    computer, and it is worth destroying the day you are given a new one.
+  </p>
+</div>
+{{end}}
 
 {{if .Owed}}
 <div class="verdict warn">

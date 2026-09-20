@@ -33,6 +33,8 @@ import (
 func cardCmd(args []string) error {
 	fs := flag.NewFlagSet("card", flag.ExitOnError)
 	verbose := fs.Bool("v", false, "verbose logging")
+	printed := fs.Bool("printed", false,
+		"record that a card has been printed and filed, without printing another")
 
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -46,6 +48,14 @@ func cardCmd(args []string) error {
 		return err
 	}
 	defer d.close()
+
+	// The record on its own, for the person who printed a card and answered
+	// "no" to the question below -- or printed one from the status page and
+	// never pressed the button. It fetches no credentials: saying that paper
+	// exists needs nothing secret.
+	if *printed {
+		return d.confirmCardPrinted(ctx)
+	}
 
 	built, err := d.buildCard(ctx)
 	if err != nil {
@@ -69,7 +79,47 @@ func cardCmd(args []string) error {
 			"  has been retired and its keys deleted. Destroy it.\n\n")
 	}
 
+	// Printing to a terminal is not printing. This used to record the card as
+	// issued the moment it reached the screen, which is the same untruth the
+	// status page would have told by recording a render -- and `card_issued_at`
+	// is read by people deciding whether an owner can restore without us.
+	//
+	// Nothing here can see a printer, so the only honest source is the person
+	// looking at one. Silence is a no: run from an installer with no terminal
+	// attached, this records nothing and says how to record it later.
+	ok, err := confirm("Has this been printed and filed?")
+	if err != nil {
+		return err
+	}
+
+	if !ok {
+		fmt.Printf("\nNot recorded. This machine will go on asking for a card to be printed.\n" +
+			"Run \"sion-backup card --printed\" once the page is on paper and filed.\n")
+
+		return nil
+	}
+
 	d.sayCardIssued(ctx, card.RepositoryURL)
+
+	return nil
+}
+
+// confirmCardPrinted records a card that exists on paper, and prints nothing.
+func (d *deps) confirmCardPrinted(ctx context.Context) error {
+	plan, err := d.plan.Get(ctx)
+	if err != nil {
+		return fmt.Errorf("reading this machine's plan: %w", err)
+	}
+
+	if plan.Repository == "" {
+		return errors.New("this machine has no repository yet, so there is no card to record")
+	}
+
+	if err := d.recordCardIssued(ctx, plan.Repository); err != nil {
+		return fmt.Errorf("telling the server that the card was printed: %w", err)
+	}
+
+	fmt.Printf("Recorded: this machine's card is printed and filed.\n")
 
 	return nil
 }
@@ -184,17 +234,45 @@ func (d *deps) issueCard(ctx context.Context) (statusapp.RestoreCard, error) {
 		DestroyOld:       built.state.Card.DestroyTheOld(),
 	}
 
-	// Said on the page rather than returned as an error. The card on the
-	// screen is complete and correct; what is missing is the fleet's record
-	// that one was printed, which costs a banner that keeps asking.
-	if err := d.recordCardIssued(ctx, built.card.RepositoryURL); err != nil {
-		d.log.Warn("the card was printed but the fleet was not told", "err", err)
+	return out, nil
+}
 
-		out.Unrecorded = "This computer could not tell the server that a card was printed: " +
-			err.Error() + "."
+// cardPrinted records that somebody is holding paper.
+//
+// Separate from issueCard, and that separation is the point: showing a card
+// is not printing one, and `card_issued_at` is read by people deciding
+// whether an owner can restore without us. Nothing on this machine can see a
+// printer, so the only honest source for that field is a person saying so.
+//
+// The repository is checked rather than trusted. It comes back from the page
+// the card was shown on, and if this machine has cut over since, the paper in
+// somebody's hand opens the old bucket -- recording it against the new one
+// would tell the fleet that a bucket nobody has printed for has a card.
+func (d *deps) cardPrinted(ctx context.Context, repositoryURL string) error {
+	plan, err := d.plan.Get(ctx)
+	if err != nil {
+		return fmt.Errorf("this computer could not read its own plan, so it cannot "+
+			"record that a card was printed: %w", err)
 	}
 
-	return out, nil
+	switch {
+	case repositoryURL == "":
+		return errors.New("this computer could not tell which repository that card was " +
+			"for. Show the card again and confirm from the page it is on")
+
+	case plan.Repository != repositoryURL:
+		return errors.New("that card was printed for a bucket this computer no longer " +
+			"backs up to, so it was not recorded. Print a new card, and destroy the " +
+			"one you are holding once the old bucket has been retired")
+	}
+
+	if err := d.recordCardIssued(ctx, repositoryURL); err != nil {
+		return fmt.Errorf("the card is fine, but this computer could not tell the server "+
+			"about it: %w. Nothing is wrong with the page you printed -- try this "+
+			"button again when the machine can reach the server", err)
+	}
+
+	return nil
 }
 
 // cardOwed reports whether the server says a card should be printed, and what
@@ -207,16 +285,16 @@ func (d *deps) issueCard(ctx context.Context) (statusapp.RestoreCard, error) {
 // `superseded` arrives later, when an administrator retires the old bucket,
 // and is the only moment at which it is safe to tell an owner to destroy the
 // paper they are holding.
-func cardOwed(state string) (owed bool, say string) {
+func cardOwed(state, statusPage string) (owed bool, say string) {
 	switch state {
 	case machinebus.CardNever:
 		return true, "Nobody has printed the page that lets this computer's files be " +
-			"restored without us. Run \"sion-backup card\"."
+			"restored without us. Print it at " + statusPage + "/card."
 
 	case machinebus.CardSuperseded:
 		return true, "The printed page this computer's owner is holding no longer opens " +
-			"anything: the bucket it names has been retired. Run \"sion-backup card\" " +
-			"for a new one, and destroy the old."
+			"anything: the bucket it names has been retired. Print a new one at " +
+			statusPage + "/card, and destroy the old."
 	}
 
 	return false, ""
