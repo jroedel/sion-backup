@@ -135,10 +135,11 @@ func (s *Server) cardPrinted(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// The repository the card named, carried back from the page it was shown
-	// on. Not for authority -- it is on the status page in plain sight -- but
-	// so that a cutover between printing and confirming is caught: the paper
-	// in somebody's hand opens the bucket it was made for, and saying the new
-	// one has a card would be a lie about the bucket nobody has printed.
+	// on, because what is being recorded is a fact about that card: paper
+	// exists for this bucket. A machine that cut over while somebody was at
+	// the printer is holding a card for the bucket it has left, and saying so
+	// is true -- the new bucket keeps its card state of `never`, and goes on
+	// asking for the card nobody has printed.
 	repository := r.PostFormValue("repository")
 
 	if err := s.cfg.CardPrinted(r.Context(), repository); err != nil {

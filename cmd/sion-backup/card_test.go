@@ -2,11 +2,13 @@ package main
 
 import (
 	"context"
+	"errors"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/jroedel/sion-backup/business/domain/machine/machinebus"
 	"github.com/jroedel/sion-backup/business/domain/plan/planbus"
 	"github.com/jroedel/sion-backup/business/domain/plan/stores/plandb"
 	"github.com/jroedel/sion-backup/foundation/sqldb"
@@ -54,37 +56,39 @@ func cardHarness(t *testing.T, repository string) (*deps, context.Context) {
 	return d, ctx
 }
 
-// TestACardForABucketThisMachineHasLeftIsNotRecorded is the race the hidden
-// field exists to catch: a cutover between the printing and the confirming.
+// TestACardIsRecordedAgainstTheBucketItNames, and not against wherever this
+// machine happens to be writing when the button is pressed.
 //
-// The paper in somebody's hand opens the old bucket. Recording it against the
-// new one would tell everybody reading card_issued_at that a bucket nobody
-// has ever printed for has a card, which is exactly the claim the whole
-// second button exists to keep honest.
-func TestACardForABucketThisMachineHasLeftIsNotRecorded(t *testing.T) {
+// The two differ for a few minutes after a cutover, which is exactly when an
+// owner is told to print a card -- and the plan's copy of the repository is
+// the one that lags. Recording what the card says keeps the statement true:
+// paper exists for that bucket. The new one keeps its card state of `never`,
+// which is also true, and goes on asking.
+func TestACardIsRecordedAgainstTheBucketItNames(t *testing.T) {
+	const printed = "s3:https://s3.example.invalid/old-bucket"
+
 	d, ctx := cardHarness(t, "s3:https://s3.example.invalid/new-bucket")
 
-	err := d.cardPrinted(ctx, "s3:https://s3.example.invalid/old-bucket")
-	if err == nil {
-		t.Fatal("a card for a bucket this machine has left was recorded")
+	fleet := &cardFleet{}
+	d.machine = machinebus.NewBusiness(fleet)
+
+	if err := d.cardPrinted(ctx, printed); err != nil {
+		t.Fatalf("cardPrinted: %v", err)
 	}
 
-	if !strings.Contains(err.Error(), "no longer backs up to") {
-		t.Errorf("the refusal does not say why: %v", err)
-	}
-
-	// And it says what to do about it, because somebody holding a freshly
-	// printed page needs to know it is the wrong page.
-	if !strings.Contains(err.Error(), "Print a new card") {
-		t.Errorf("the refusal does not say what to do: %v", err)
+	if fleet.issued != printed {
+		t.Errorf("recorded against %q, want the bucket the card named (%q)", fleet.issued, printed)
 	}
 }
 
 // TestACardWithNoRepositoryIsNotRecorded. A confirmation that names nothing
-// cannot be checked against anything, so it is refused rather than recorded
-// against whatever this machine happens to be using.
+// cannot be recorded as anything, and guessing would put a card against a
+// bucket nobody printed one for.
 func TestACardWithNoRepositoryIsNotRecorded(t *testing.T) {
 	d, ctx := cardHarness(t, "s3:https://s3.example.invalid/bucket")
+
+	fleet := &cardFleet{}
+	d.machine = machinebus.NewBusiness(fleet)
 
 	err := d.cardPrinted(ctx, "")
 	if err == nil {
@@ -94,20 +98,28 @@ func TestACardWithNoRepositoryIsNotRecorded(t *testing.T) {
 	if !strings.Contains(err.Error(), "which repository") {
 		t.Errorf("the refusal does not say why: %v", err)
 	}
+
+	if fleet.issued != "" {
+		t.Errorf("something was recorded anyway: %q", fleet.issued)
+	}
 }
 
-// TestConfirmingACardMatchesTheCurrentRepository. The ordinary case: the card
-// names the bucket this machine backs up to, so the check passes and the
-// record is attempted. There is no fleet here, which machinebus reports as
-// nothing to tell -- and that is a success, because everything that could be
-// done was.
-func TestConfirmingACardMatchesTheCurrentRepository(t *testing.T) {
-	const repository = "s3:https://s3.example.invalid/bucket"
+// TestPrintedAsksTheServerWhereThisMachineWrites. `--printed` fetches no
+// credentials, so it has no card to read the repository off -- and the plan's
+// copy is the one that lags a cutover. The server is the authority and is
+// asked first.
+func TestPrintedAsksTheServerWhereThisMachineWrites(t *testing.T) {
+	d, ctx := cardHarness(t, "s3:https://s3.example.invalid/what-the-plan-still-says")
 
-	d, ctx := cardHarness(t, repository)
+	fleet := &cardFleet{now: "s3:https://s3.example.invalid/where-it-writes-now"}
+	d.machine = machinebus.NewBusiness(fleet)
 
-	if err := d.cardPrinted(ctx, repository); err != nil {
-		t.Errorf("a card for this machine's own bucket was refused: %v", err)
+	if err := d.confirmCardPrinted(ctx); err != nil {
+		t.Fatalf("confirmCardPrinted: %v", err)
+	}
+
+	if fleet.issued != fleet.now {
+		t.Errorf("recorded against %q, want the server's answer (%q)", fleet.issued, fleet.now)
 	}
 }
 
@@ -125,4 +137,38 @@ func TestRecordingACardWithoutAPlan(t *testing.T) {
 	if !strings.Contains(err.Error(), "no backup plan") {
 		t.Errorf("the refusal does not say why: %v", err)
 	}
+}
+
+// cardFleet is a server that answers where this machine writes and remembers
+// what it was told about cards. Every other call is unused here and says so
+// rather than pretending to work.
+type cardFleet struct {
+	now    string
+	issued string
+}
+
+func (f *cardFleet) State(context.Context) (machinebus.State, error) {
+	if f.now == "" {
+		return machinebus.State{}, machinebus.ErrNotEnrolled
+	}
+
+	return machinebus.State{NodeID: "office-laptop-1", RepositoryURL: f.now}, nil
+}
+
+func (f *cardFleet) CardIssued(_ context.Context, repositoryURL string, _ time.Time) error {
+	f.issued = repositoryURL
+
+	return nil
+}
+
+func (f *cardFleet) RequestRotation(context.Context, machinebus.Measured) error {
+	return errors.New("not used in these tests")
+}
+
+func (f *cardFleet) Cutover(context.Context, string) error {
+	return errors.New("not used in these tests")
+}
+
+func (f *cardFleet) ReleaseOldBucket(context.Context, string) (machinebus.Released, error) {
+	return machinebus.Released{}, errors.New("not used in these tests")
 }

@@ -549,7 +549,7 @@ page / | grep -q 'destroy the old' \
 
 daemon_stop
 
-if as_user "$EXE" card >/tmp/card.log 2>&1; then
+if as_user "$EXE" card </dev/null >/tmp/card.log 2>&1; then
   ok "a new card was printed"
 else
   bad "the card could not be printed"; tail -20 /tmp/card.log
@@ -558,6 +558,21 @@ fi
 grep -q "$NEXT_URL" /tmp/card.log \
   && ok "and it names the bucket this machine writes to now" \
   || bad "the card does not name the new bucket"
+
+# Rendering a card is not printing one, and card_issued_at is read by people
+# deciding whether an owner can restore without us. The command asks; nothing
+# here answers, which is a no -- so the server must still be saying the card
+# is owed. A build that reports `issued` from a card that reached a screen and
+# nothing else is the untruth the button on the status page exists to remove.
+[ "$(stub_state | jq -r '.card_state')" = superseded ] \
+  && ok "and rendering it to a terminal did not claim it was printed" \
+  || bad "card_state is $(stub_state | jq -r '.card_state'): a card nobody printed reported itself"
+
+if as_user "$EXE" card --printed </dev/null >/tmp/card-printed.log 2>&1; then
+  ok "and saying it is on paper is a step of its own"
+else
+  bad "the card could not be recorded as printed"; tail -20 /tmp/card-printed.log
+fi
 
 [ "$(stub_state | jq -r '.card_state')" = issued ] \
   && ok "and the server was told" \
