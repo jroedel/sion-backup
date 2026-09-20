@@ -161,6 +161,12 @@ type Config struct {
 	// Version is this build.
 	Version string
 
+	// Executable is the file this program is running from, shown in the
+	// footer beside the data directory. Empty leaves it out, which is what a
+	// machine that cannot work out its own path gets -- a footer short one
+	// fact rather than a page that will not render.
+	Executable string
+
 	// StoragePricePerTiBMonth turns reclaimable bytes into money on the
 	// rotation card. Zero keeps the card talking in gigabytes, which is the
 	// right thing to do when nobody has said what a gigabyte costs.
@@ -256,6 +262,7 @@ type chrome struct {
 	NodeID  string
 	Version string
 	DataDir string
+	Exe     string
 	Token   string
 
 	// Refresh is the meta-refresh interval in seconds, or 0. Set only while a
@@ -675,6 +682,7 @@ func (s *Server) chromeFor(title, current string) chrome {
 		Nav:     links,
 		Version: s.cfg.Version,
 		DataDir: s.cfg.Paths.DataDir,
+		Exe:     s.cfg.Executable,
 		Token:   s.cfg.Guard.Token(),
 	}
 }

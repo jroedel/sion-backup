@@ -142,6 +142,7 @@ func harnessWithDisclosures(t *testing.T, source credentialbus.Source,
 		Guard:       guard,
 		Paths:       p,
 		Version:     "test",
+		Executable:  "/usr/local/bin/sion-backup",
 		Log:         slog.New(slog.NewTextHandler(io.Discard, nil)),
 	}
 
@@ -291,6 +292,55 @@ func TestTheStatusPageRenders(t *testing.T) {
 		if !strings.Contains(body, want) {
 			t.Errorf("the page does not show %q", want)
 		}
+	}
+}
+
+// TestTheFooterSaysWhereTheProgramIs covers the other half of the footer's
+// job. It has always said where the data is; somebody told to go and run
+// "sion-backup card" needs the same answer about the program itself, and on a
+// machine with several builds around -- an installed one waiting for a
+// restart, a packaged one, a copy in somebody's home directory -- "which file
+// is this page coming from" is not a question the version number settles.
+func TestTheFooterSaysWhereTheProgramIs(t *testing.T) {
+	h := newHarness(t)
+
+	if err := h.plan.Put(context.Background(), samplePlan(), time.Now()); err != nil {
+		t.Fatal(err)
+	}
+
+	// Every page, because the footer is chrome and the question does not
+	// belong to the front page.
+	for _, path := range []string{"/", "/settings", "/setup", "/rotation", "/access"} {
+		rec := h.get(t, path)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("%s: status %d", path, rec.Code)
+		}
+
+		if !strings.Contains(rec.Body.String(), "/usr/local/bin/sion-backup") {
+			t.Errorf("%s does not say where the program is", path)
+		}
+	}
+}
+
+// TestAFooterWithoutAPathLeavesItOut is the machine that cannot work out where
+// it is running from. One fact short of a footer is the right answer there; a
+// page that will not render, or one saying "program at ", is not.
+func TestAFooterWithoutAPathLeavesItOut(t *testing.T) {
+	h := harnessWithDisclosures(t, stubSource{}, nil, func(cfg *statusapp.Config) {
+		cfg.Executable = ""
+	})
+
+	if err := h.plan.Put(context.Background(), samplePlan(), time.Now()); err != nil {
+		t.Fatal(err)
+	}
+
+	rec := h.get(t, "/")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status %d", rec.Code)
+	}
+
+	if strings.Contains(rec.Body.String(), "program at") {
+		t.Error("the footer promised a path it does not have")
 	}
 }
 
