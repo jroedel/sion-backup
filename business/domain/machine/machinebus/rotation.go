@@ -102,7 +102,7 @@ type Source interface {
 	// off. It names the bucket the machine is on NOW.
 	ReleaseOldBucket(ctx context.Context, repositoryURL string) (Released, error)
 
-	// CardIssued records that the owner's restore card was rendered.
+	// CardIssued records that the owner's restore card was printed and filed.
 	CardIssued(ctx context.Context, repositoryURL string, printedAt time.Time) error
 }
 

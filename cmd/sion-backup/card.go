@@ -105,17 +105,34 @@ func cardCmd(args []string) error {
 }
 
 // confirmCardPrinted records a card that exists on paper, and prints nothing.
+//
+// The server is asked where this machine writes before the plan is, because
+// the server is the authority on that and the plan's copy lags a cutover --
+// and the moment an owner is told to print a card is the moment after one. A
+// machine that cannot reach the server falls back to the plan, which costs
+// nothing: it cannot record anything either way, and the sentence it fails
+// with should be about the server rather than about a missing repository.
 func (d *deps) confirmCardPrinted(ctx context.Context) error {
-	plan, err := d.plan.Get(ctx)
-	if err != nil {
-		return fmt.Errorf("reading this machine's plan: %w", err)
+	var repository string
+
+	if state, err := d.machine.State(ctx); err == nil {
+		repository = state.RepositoryURL
 	}
 
-	if plan.Repository == "" {
+	if repository == "" {
+		plan, err := d.plan.Get(ctx)
+		if err != nil {
+			return fmt.Errorf("reading this machine's plan: %w", err)
+		}
+
+		repository = plan.Repository
+	}
+
+	if repository == "" {
 		return errors.New("this machine has no repository yet, so there is no card to record")
 	}
 
-	if err := d.recordCardIssued(ctx, plan.Repository); err != nil {
+	if err := d.recordCardIssued(ctx, repository); err != nil {
 		return fmt.Errorf("telling the server that the card was printed: %w", err)
 	}
 
@@ -237,39 +254,34 @@ func (d *deps) issueCard(ctx context.Context) (statusapp.RestoreCard, error) {
 	return out, nil
 }
 
-// cardPrinted records that somebody is holding paper.
+// cardPrinted records that somebody is holding paper for the repository the
+// card named.
 //
-// Separate from issueCard, and that separation is the point: showing a card
-// is not printing one, and `card_issued_at` is read by people deciding
-// whether an owner can restore without us. Nothing on this machine can see a
-// printer, so the only honest source for that field is a person saying so.
+// The URL comes back from the page the card was shown on and is recorded as
+// given, because it is a statement about a card rather than about this
+// machine: "paper exists for bucket X". A machine that cut over between the
+// printing and the confirming is holding a card for the bucket it has left,
+// and that is still the true thing to record -- the new bucket's card state
+// stays `never`, which is correct, and its banner goes on asking for the card
+// nobody has printed.
 //
-// The repository is checked rather than trusted. It comes back from the page
-// the card was shown on, and if this machine has cut over since, the paper in
-// somebody's hand opens the old bucket -- recording it against the new one
-// would tell the fleet that a bucket nobody has printed for has a card.
+// It deliberately does not check the URL against the plan. The plan's copy of
+// the repository lags a cutover until a run reconciles it -- rotate.go logs
+// that disagreement and calls it what a machine that has been moved and has
+// not run since looks like -- so a card printed at the very moment somebody is
+// told to print one would have been refused for naming the bucket it correctly
+// names.
 func (d *deps) cardPrinted(ctx context.Context, repositoryURL string) error {
-	plan, err := d.plan.Get(ctx)
-	if err != nil {
-		return fmt.Errorf("this computer could not read its own plan, so it cannot "+
-			"record that a card was printed: %w", err)
-	}
-
-	switch {
-	case repositoryURL == "":
+	if repositoryURL == "" {
 		return errors.New("this computer could not tell which repository that card was " +
-			"for. Show the card again and confirm from the page it is on")
-
-	case plan.Repository != repositoryURL:
-		return errors.New("that card was printed for a bucket this computer no longer " +
-			"backs up to, so it was not recorded. Print a new card, and destroy the " +
-			"one you are holding once the old bucket has been retired")
+			"for, so it recorded nothing. Show the card again and confirm from the " +
+			"page it is on")
 	}
 
 	if err := d.recordCardIssued(ctx, repositoryURL); err != nil {
 		return fmt.Errorf("the card is fine, but this computer could not tell the server "+
-			"about it: %w. Nothing is wrong with the page you printed -- try this "+
-			"button again when the machine can reach the server", err)
+			"about it: %w. Nothing is wrong with the page you printed -- press this "+
+			"again when the machine can reach the server", err)
 	}
 
 	return nil

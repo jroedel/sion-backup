@@ -160,11 +160,9 @@ type Config struct {
 	// CardPrinted tells the fleet that somebody is holding a printed card for
 	// the repository they name.
 	//
-	// The repository comes from the page the card was shown on, and the
-	// composition root checks it against the one this machine backs up to
-	// now: a machine that cut over between the printing and the confirming
-	// has paper for a bucket that is not this one, and recording it would
-	// tell everybody the new bucket has a card nobody has printed.
+	// The repository travels back from the page the card was shown on, so
+	// that what is recorded is a fact about that card rather than about
+	// wherever this machine happens to be writing when the button is pressed.
 	//
 	// Nil in a build that cannot tell anybody, and the page says so rather
 	// than silently doing nothing.
