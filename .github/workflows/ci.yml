@@ -5,6 +5,21 @@ on:
     branches: [main]
   pull_request:
 
+  # The Windows backup gate, on demand.
+  #
+  # It writes to a real bucket, so it does not belong on every push -- but it
+  # blocks releases, and a gate whose first execution is the tag it blocks is
+  # a gate nobody can fix without cutting another tag. This is how it gets
+  # run before it matters:
+  #
+  #     gh workflow run CI --field windows-backup-gate=true
+  workflow_dispatch:
+    inputs:
+      windows-backup-gate:
+        description: Take a real backup on Windows, to the gate bucket
+        type: boolean
+        default: false
+
 # The default token can read this repository and nothing else. CI here builds
 # and tests; it does not publish, so it needs nothing more.
 permissions:
@@ -102,19 +117,60 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - name: Parse the PowerShell installer
+      - name: Parse the PowerShell scripts
         shell: pwsh
         run: |
-          $errors = $null
-          [System.Management.Automation.Language.Parser]::ParseFile(
-            "deploy/windows/install.ps1", [ref]$null, [ref]$errors) | Out-Null
+          $bad = 0
 
-          if ($errors) {
-            $errors | ForEach-Object { Write-Error $_.ToString() }
-            exit 1
+          foreach ($script in @(
+            "deploy/windows/install.ps1",
+            "scripts/backup-e2e/run-machine.ps1"
+          )) {
+            $errors = $null
+            [System.Management.Automation.Language.Parser]::ParseFile(
+              $script, [ref]$null, [ref]$errors) | Out-Null
+
+            if ($errors) {
+              $errors | ForEach-Object { Write-Error "${script}: $($_.ToString())" }
+              $bad = 1
+            } else {
+              Write-Host "$script parses"
+            }
           }
 
-          Write-Host "install.ps1 parses"
+          exit $bad
+
+  windows-backup-gate:
+    # The same script the release gate runs, on demand rather than on a tag.
+    # See the workflow_dispatch input above for why this exists.
+    if: inputs.windows-backup-gate
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+
+      - name: Back up, restore and verify on Windows
+        shell: pwsh
+        env:
+          WASABI_ACCESS_KEY_ID: ${{ secrets.WASABI_ACCESS_KEY_ID }}
+          WASABI_SECRET_ACCESS_KEY: ${{ secrets.WASABI_SECRET_ACCESS_KEY }}
+          WASABI_BUCKET: ${{ vars.WASABI_BUCKET }}
+          WASABI_REGION: ${{ vars.WASABI_REGION }}
+        run: |
+          ./scripts/backup-e2e/run-machine.ps1
+          $status = $LASTEXITCODE
+
+          if ($status -eq 2) {
+            Write-Host "::warning::the bucket could not be reached; nothing was learned."
+
+            exit 0
+          }
+
+          exit $status
 
   installer-windows:
     # Parsing install.ps1 proves it has no typos. Running it proves it
