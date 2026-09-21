@@ -12,7 +12,69 @@ permissions:
   contents: write
 
 jobs:
+  # The Windows half of the backup gate, and the only thing anywhere that has
+  # ever watched a Windows machine take a backup.
+  #
+  # It runs BEFORE the release job rather than inside it, because the release
+  # job is Linux and this needs a real Windows machine -- and because a build
+  # that cannot back up on the platform most of this fleet runs should not get
+  # as far as a draft.
+  #
+  # It asserts what the Linux gate asserts and one thing that gate cannot:
+  # that Volume Shadow Copy actually worked. A run that quietly falls back is
+  # recorded degraded, and on a machine with Outlook on it that is a .pst
+  # backed up mid-write.
+  windows-gate:
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+
+      - name: Gate — does a Windows machine back up, restore and verify?
+        shell: pwsh
+        env:
+          WASABI_ACCESS_KEY_ID: ${{ secrets.WASABI_ACCESS_KEY_ID }}
+          WASABI_SECRET_ACCESS_KEY: ${{ secrets.WASABI_SECRET_ACCESS_KEY }}
+          WASABI_BUCKET: ${{ vars.WASABI_BUCKET }}
+          WASABI_REGION: ${{ vars.WASABI_REGION }}
+        run: |
+          if (-not $env:WASABI_ACCESS_KEY_ID -or -not $env:WASABI_BUCKET) {
+            Write-Host "::warning::Wasabi is not configured; this release ships without"
+            Write-Host "::warning::anyone having checked that Windows can still back up."
+
+            exit 0
+          }
+
+          ./scripts/backup-e2e/run-machine.ps1
+          $status = $LASTEXITCODE
+
+          # The same line the Linux gate draws: exit 1 is the build, exit 2 is
+          # the weather. Failing a release over somebody else's outage turns a
+          # safety measure into the thing that stops work.
+          if ($status -eq 0) {
+            Write-Host "::notice::a Windows machine backed up, restored and verified."
+
+            exit 0
+          }
+
+          if ($status -eq 2) {
+            Write-Host "::warning::The bucket could not be reached from Windows, so"
+            Write-Host "::warning::nothing was learned about this build either way."
+
+            exit 0
+          }
+
+          Write-Host "::error::A Windows machine running this build could not back up"
+          Write-Host "::error::or could not restore what it wrote. Not publishing."
+
+          exit 1
+
   release:
+    needs: windows-gate
     runs-on: ubuntu-latest
 
     steps:
