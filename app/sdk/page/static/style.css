@@ -101,6 +101,7 @@ td.num { text-align: right; font-variant-numeric: tabular-nums; }
 .pill.good { background: var(--good-bg); color: var(--good); }
 .pill.warn { background: var(--warn-bg); color: var(--warn); }
 .pill.bad  { background: var(--bad-bg);  color: var(--bad); }
+.pill.quiet { background: var(--panel); color: var(--muted); box-shadow: inset 0 0 0 1px var(--line); }
 
 form.settings { display: grid; gap: 1.1rem; max-width: 40rem; }
 label { display: block; font-weight: 550; margin-bottom: 0.2rem; }
@@ -145,6 +146,16 @@ button.primary { background: var(--fg); color: var(--bg); border-color: var(--fg
 button:disabled { opacity: 0.5; cursor: not-allowed; }
 
 .actions { display: flex; gap: 0.6rem; align-items: center; flex-wrap: wrap; }
+
+/* Air above a row of buttons, and between two of them.
+ *
+ * A form carries no margin of its own, so "Cancel backup" under the progress
+ * figures sat against them, and the disabled "Back up now" sat against that:
+ * three rows of unrelated things reading as one block. The pair of rules is
+ * deliberate — the gap to the numbers a button acts on is wider than the gap
+ * between two buttons, which belong together. */
+.facts + .actions { margin-top: 1.4rem; }
+.actions + .actions { margin-top: 0.8rem; }
 
 /* An action row ends what is above it rather than starting what is below. On
  * the status page "Back up now" sits between the verdict banner and whatever

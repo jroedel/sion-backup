@@ -106,6 +106,9 @@ func pill(o backupbus.Outcome) string {
 		return "good"
 	case backupbus.OutcomeDegraded, backupbus.OutcomeIncomplete:
 		return "warn"
+	case backupbus.OutcomeCancelled:
+		// Neither good nor bad. Somebody meant this one.
+		return "quiet"
 	default:
 		return "bad"
 	}

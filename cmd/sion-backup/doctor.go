@@ -251,6 +251,16 @@ func doctorCmd(args []string) error {
 			return fmt.Sprintf("a backup has been running for %s", age), nil
 		}
 
+		// A run somebody stopped is not a fault to report, for the same
+		// reason the status page shows it amber: they meant it, and a machine
+		// that prints a failure for every deliberate act teaches its owner to
+		// ignore the ones that are not. It stops being deliberate and starts
+		// being a machine that is not backed up at the same age the page
+		// says so.
+		if last.Outcome == backupbus.OutcomeCancelled && age < backupbus.StaleAfter {
+			return fmt.Sprintf("stopped %s ago: %s", age, last.Message), nil
+		}
+
 		if !last.Outcome.Good() {
 			return "", fmt.Errorf("%s, %s ago: %s", last.Outcome, age, last.Message)
 		}

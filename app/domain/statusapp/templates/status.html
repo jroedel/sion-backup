@@ -19,6 +19,11 @@
     <dt>Started</dt><dd>{{clock .Progress.Started}}</dd>
     {{if .Progress.CurrentFile}}<dt>Reading</dt><dd><code>{{.Progress.CurrentFile}}</code></dd>{{end}}
   </dl>
+  <form method="post" action="/run/cancel" class="actions">
+    <input type="hidden" name="form_token" value="{{.Token}}">
+    <button type="submit">Cancel backup</button>
+    <span class="hint">Nothing already uploaded is lost. The next backup carries on from where this one reached.</span>
+  </form>
 {{end}}
 
 {{if and .Configured (not .Confirmed)}}
@@ -113,10 +118,20 @@
 <dl class="facts">
   <dt>Finished</dt><dd>{{day .Last.FinishedAt}} <span class="pill {{pill .Last.Outcome}}">{{.Last.Outcome}}</span></dd>
   <dt>Took</dt><dd>{{duration .Last.Duration}}</dd>
+  {{if .Last.Stopped}}
+  {{/* A stopped run has no figures, rather than figures of zero. restic
+       prints its totals when it finishes and this one did not, so it
+       uploaded an unknown amount -- and "0 B uploaded, verified no" about a
+       backup somebody stopped on purpose reads as a fault. */}}
+  <dt>Files</dt><dd>—</dd>
+  <dt>Uploaded</dt><dd>—</dd>
+  <dt>Verified</dt><dd>— nothing to verify; the run did not finish</dd>
+  {{else}}
   <dt>Files</dt><dd>{{.Last.TotalFilesProcessed}} seen, {{.Last.FilesNew}} new, {{.Last.FilesChanged}} changed</dd>
   <dt>Uploaded</dt><dd>{{bytes .Last.DataAdded}}</dd>
   <dt>Verified</dt>
   <dd>{{if .Last.Verified}}yes — a file written just before the run was restored and matched{{else}}<strong>no</strong>{{end}}</dd>
+  {{end}}
   {{if .Last.SnapshotID}}<dt>Snapshot</dt><dd><code>{{.Last.SnapshotID}}</code></dd>{{end}}
 </dl>
 
@@ -143,8 +158,13 @@
       <td>—</td>
       {{else}}
       <td><span class="pill {{pill .Outcome}}">{{.Outcome}}</span></td>
+      {{if .Stopped}}
+      <td class="num">—</td>
+      <td class="num">—</td>
+      {{else}}
       <td class="num">{{.TotalFilesProcessed}}</td>
       <td class="num">{{bytes .DataAdded}}</td>
+      {{end}}
       <td class="num">{{duration .Duration}}</td>
       <td>{{if .ReportedAt}}yes{{else}}pending{{end}}</td>
       {{end}}
