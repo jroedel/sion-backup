@@ -71,8 +71,13 @@ type Config struct {
 
 // ScheduleConfig is the seed schedule.
 type ScheduleConfig struct {
-	Times         []string `toml:"times"`
-	JitterMinutes int      `toml:"jitter_minutes"`
+	Times []string `toml:"times"`
+	// JitterMinutes is a pointer for the same reason UseFSSnapshot is one:
+	// unset and zero are different answers. Read as a plain int, "0" means
+	// "say nothing" and the 30-minute default applies, so a machine cannot be
+	// asked to run at exactly the time its config names -- which is what
+	// somebody typing jitter_minutes = 0 is asking for.
+	JitterMinutes *int `toml:"jitter_minutes"`
 
 	// MinInterval is a Go duration string, "6h". A string rather than a number
 	// of seconds because this file is read by people, and "21600" in a config
@@ -270,8 +275,8 @@ func (c Config) Plan() (planbus.Plan, error) {
 		schedule.Times = c.Schedule.Times
 	}
 
-	if c.Schedule.JitterMinutes > 0 {
-		schedule.JitterMinutes = c.Schedule.JitterMinutes
+	if c.Schedule.JitterMinutes != nil {
+		schedule.JitterMinutes = *c.Schedule.JitterMinutes
 	}
 
 	if c.Schedule.MinInterval != "" {

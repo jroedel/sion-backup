@@ -3,6 +3,8 @@ package main
 import (
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -46,5 +48,48 @@ func TestResolvingNothingIsNotAPass(t *testing.T) {
 	// happen.
 	if _, err := resolves(context.Background(), []string{"", ""}); !errors.Is(err, errSkipCheck) {
 		t.Errorf("err = %v, want errSkipCheck", err)
+	}
+}
+
+// TestJitterCanBeTurnedOff. Read as a plain int, "jitter_minutes = 0" was
+// indistinguishable from saying nothing, so the 30-minute default applied and
+// a machine could not be asked to run at the time its own config named. The
+// gate found it by scheduling a backup for 09:50 and watching the machine
+// decide on 10:06.
+func TestJitterCanBeTurnedOff(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		toml string
+		want int
+	}{
+		{"unset", "", 30},
+		{"zero", "jitter_minutes = 0", 0},
+		{"explicit", "jitter_minutes = 7", 7},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			path := filepath.Join(dir, "config.toml")
+
+			body := "node_id = \"m1\"\nrepository = \"s3:https://example.invalid/b\"\n" +
+				"targets = [\"" + filepath.ToSlash(dir) + "\"]\n\n[schedule]\ntimes = [\"02:00\"]\n" + tc.toml + "\n"
+
+			if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+				t.Fatal(err)
+			}
+
+			cfg, _, err := LoadConfig(path)
+			if err != nil {
+				t.Fatal("reading the config:", err)
+			}
+
+			plan, err := cfg.Plan()
+			if err != nil {
+				t.Fatal("turning it into a plan:", err)
+			}
+
+			if plan.Schedule.JitterMinutes != tc.want {
+				t.Errorf("jitter = %d, want %d", plan.Schedule.JitterMinutes, tc.want)
+			}
+		})
 	}
 }
