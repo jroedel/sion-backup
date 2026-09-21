@@ -890,13 +890,19 @@ intended and not yet done is in [`docs/todo.md`](docs/todo.md).
   build that fails after the check at the top of the daemon command — which is
   the realistic case, a migration or a config parse, and the smoke test covers
   failures earlier than that.
-- **Self-update never happens on two of the three platforms.** On Windows the
-  binary lives in `%ProgramFiles%` and the task runs as the signed-in user; on
-  macOS it lives in `/usr/local/bin` and the agent runs as the user. Neither
-  can write its own binary, so `Writable()` refuses — correctly, and logged
-  once at Info rather than reported, because it will be true again in an hour.
-  The consequence is that the dashboard cannot tell a machine that *cannot*
-  update from one that has stopped checking in.
+- **Self-update never happens on macOS.** The binary lives in `/usr/local/bin`
+  and the agent runs as the user, which cannot write it, so `Writable()`
+  refuses — correctly, and logged once at Info rather than reported, because it
+  will be true again in an hour. The consequence is that the dashboard cannot
+  tell a machine that *cannot* update from one that has stopped checking in.
+
+  Windows used to be the same and is not any more: `install.ps1` puts the
+  binary in `%LOCALAPPDATA%\sion-backup`, which the account running the task
+  can write. That buys self-update at the price of a binary an attacker
+  holding that account could replace — and with `-Elevated`, have run as an
+  administrator. The trade is argued in the script's header; the resolution
+  for both platforms is machine-scope paths and a task running as something
+  other than the person.
 - **Windows service.** The daemon is installed as a scheduled task, not a real
   service: it does not implement the service control handler
   (`golang.org/x/sys/windows/svc`). "Restart on failure" gets the same
