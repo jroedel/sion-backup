@@ -50,6 +50,21 @@ function OK   { param($m) Write-Host "   ok   $m" -ForegroundColor Green }
 function Bad  { param($m) Write-Host "   FAIL $m" -ForegroundColor Red; $script:Fail = 1 }
 function Note { param($m) Write-Host "        $m" -ForegroundColor DarkGray }
 
+# What is actually in the repository. A count that is wrong by one is a
+# question; this is the answer to it.
+function Show-Snapshots {
+  param($Restic)
+
+  $all = @(& $Restic snapshots --json 2>$null | ConvertFrom-Json)
+
+  foreach ($snap in $all) {
+    Note ("{0}  {1}  host={2}  paths={3}" -f `
+      $snap.short_id, $snap.time, $snap.hostname, ($snap.paths -join ' '))
+  }
+
+  return $all.Count
+}
+
 # Unreachable is not failure. See the exit codes above.
 function Unreachable {
   param($m)
@@ -321,12 +336,12 @@ if ($LASTEXITCODE -ne 0) {
   OK 'run 1 finished'
 }
 
-$snapshots = & $restic snapshots --json 2>$null | ConvertFrom-Json
+$count = Show-Snapshots $restic
 
-if (@($snapshots).Count -eq 1) {
+if ($count -eq 1) {
   OK 'one snapshot in the repository'
 } else {
-  Bad "expected 1 snapshot, found $(@($snapshots).Count)"
+  Bad "expected 1 snapshot, found $count"
 }
 
 # ---------------------------------------------------------------------------
@@ -404,12 +419,12 @@ if ($LASTEXITCODE -ne 0) {
   OK 'run 2 finished'
 }
 
-$snapshots = & $restic snapshots --json 2>$null | ConvertFrom-Json
+$count = Show-Snapshots $restic
 
-if (@($snapshots).Count -eq 2) {
+if ($count -eq 2) {
   OK 'two snapshots in the repository'
 } else {
-  Bad "expected 2 snapshots, found $(@($snapshots).Count)"
+  Bad "expected 2 snapshots, found $count"
 }
 
 # ---------------------------------------------------------------------------
@@ -572,7 +587,35 @@ if ($after -gt $before) {
 } else {
   Bad "no scheduled backup by $($deadline.ToString('HH:mm:ss')); still $after snapshots"
   Note "the task starts the daemon; the daemon's own scheduler is what runs a backup"
-  Note "slot was $scheduledAt, jitter 0, tick one minute"
+  Note "slot was $scheduledAt, jitter 0, tick one minute, now $(Get-Date -Format 'HH:mm:ss')"
+
+  $info = Get-ScheduledTaskInfo -TaskName 'sion-backup' -ErrorAction SilentlyContinue
+
+  if ($info) {
+    Note "task: last run $($info.LastRunTime), result $($info.LastTaskResult)"
+  }
+
+  $still = Get-Process -Name 'sion-backup' -ErrorAction SilentlyContinue
+
+  Note $(if ($still) { "the daemon is still running (pid $($still[0].Id))" } else { "THE DAEMON IS GONE" })
+
+  # What the machine itself says the schedule is. The plan the daemon reads
+  # comes from its database, not from the config file this script wrote, and
+  # the two disagreeing is the first thing to rule out.
+  try {
+    $page = Invoke-WebRequest -Uri 'http://127.0.0.1:7391/' -UseBasicParsing -TimeoutSec 10
+
+    foreach ($line in ($page.Content -split "`n")) {
+      if ($line -match 'Next scheduled run|Backing up|last backup|paused') {
+        Note ($line -replace '<[^>]+>', ' ' -replace '\s+', ' ').Trim()
+      }
+    }
+  } catch {
+    Note "the status page did not answer: $_"
+  }
+
+  Note '--- doctor ---'
+  & $exe doctor 2>&1 | Select-Object -Last 14 | ForEach-Object { Note $_ }
 }
 
 Stop-ScheduledTask -TaskName 'sion-backup' -ErrorAction SilentlyContinue
