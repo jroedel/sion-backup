@@ -74,7 +74,7 @@ type finished struct {
 func waitFor(t *testing.T, path string) {
 	t.Helper()
 
-	deadline := time.Now().Add(10 * time.Second)
+	deadline := time.Now().Add(60 * time.Second)
 
 	for time.Now().Before(deadline) {
 		if _, err := os.Stat(path); err == nil {
@@ -162,21 +162,35 @@ func TestACancelledResticIsAskedToStopRatherThanKilled(t *testing.T) {
 		t.Fatal("cancelling:", err)
 	}
 
-	// Written by the stub's signal handler. A killed process never gets to
-	// write it -- and a killed restic leaves its lock in the repository.
-	waitFor(t, filepath.Join(dir, "interrupted"))
-
-	// Waited for, not left running. The test's cleanup closes the database
-	// underneath a run that is still recording its outcome otherwise, which
-	// is a failure about this test's housekeeping wearing the costume of a
-	// failure about cancelling.
+	// The run first, and the marker afterwards. Polling for the marker while
+	// the signal is still in flight is a race that a loaded macOS runner lost
+	// once: the file appears when the stub's handler runs, and there is no
+	// moment before then that means anything. Waiting for the run to return
+	// waits for restic to have exited, by which point the handler has either
+	// written the file or never will.
+	//
+	// It also stops the test's cleanup closing the database underneath a run
+	// that is still recording its outcome.
 	select {
 	case err := <-done:
 		if err != nil {
 			t.Error("the run returned an error:", err)
 		}
-	case <-time.After(30 * time.Second):
+	case <-time.After(60 * time.Second):
 		t.Fatal("the run did not stop")
+	}
+
+	// Written by the stub's signal handler, before it exits. A killed process
+	// never gets to write it -- and a killed restic leaves its lock in the
+	// repository.
+	if _, err := os.Stat(filepath.Join(dir, "interrupted")); err != nil {
+		t.Error("restic was killed rather than asked to stop: ", err)
+
+		if entries, err := os.ReadDir(dir); err == nil {
+			for _, e := range entries {
+				t.Log("  the stub left:", e.Name())
+			}
+		}
 	}
 }
 
