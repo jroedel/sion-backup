@@ -95,15 +95,19 @@ func TestTheCancelButtonStopsTheBackup(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	stopped := make(chan backupbus.Run, 1)
+	// The result travels back rather than being reported from in there: a
+	// test that has already given up leaves this goroutine running, and a
+	// t.Error from one of those panics the package.
+	type finished struct {
+		run backupbus.Run
+		err error
+	}
+
+	stopped := make(chan finished, 1)
 
 	go func() {
 		run, err := h.backups.Run(ctx, runningRequest(dir), time.Now)
-		if err != nil {
-			t.Error("the run returned an error:", err)
-		}
-
-		stopped <- run
+		stopped <- finished{run, err}
 	}()
 
 	waitForFile(t, filepath.Join(dir, "started"))
@@ -129,9 +133,13 @@ func TestTheCancelButtonStopsTheBackup(t *testing.T) {
 	}
 
 	select {
-	case run := <-stopped:
-		if run.Outcome != backupbus.OutcomeCancelled {
-			t.Errorf("outcome = %q, want %q", run.Outcome, backupbus.OutcomeCancelled)
+	case f := <-stopped:
+		if f.err != nil {
+			t.Fatal("the run returned an error:", f.err)
+		}
+
+		if f.run.Outcome != backupbus.OutcomeCancelled {
+			t.Errorf("outcome = %q, want %q", f.run.Outcome, backupbus.OutcomeCancelled)
 		}
 	case <-time.After(30 * time.Second):
 		t.Fatal("the backup did not stop")

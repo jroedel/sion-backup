@@ -62,6 +62,15 @@ esac
 
 // waitFor polls for a file the stub writes, so the test acts on what restic
 // has actually done rather than on a sleep long enough to usually work.
+// finished carries a run back from the goroutine that took it. The result
+// travels rather than being reported from in there: a test that has already
+// given up leaves a goroutine still running, and a t.Error from one of those
+// panics the whole package rather than failing one test.
+type finished struct {
+	run backupbus.Run
+	err error
+}
+
 func waitFor(t *testing.T, path string) {
 	t.Helper()
 
@@ -82,15 +91,11 @@ func TestCancellingABackupStopsItAndSaysWhy(t *testing.T) {
 	dir := t.TempDir()
 	b, store, _ := harness(t, slowRestic(t, dir))
 
-	done := make(chan backupbus.Run, 1)
+	done := make(chan finished, 1)
 
 	go func() {
 		run, err := b.Run(context.Background(), request(), time.Now)
-		if err != nil {
-			t.Error("the run returned an error:", err)
-		}
-
-		done <- run
+		done <- finished{run, err}
 	}()
 
 	waitFor(t, filepath.Join(dir, "started"))
@@ -102,7 +107,12 @@ func TestCancellingABackupStopsItAndSaysWhy(t *testing.T) {
 	var run backupbus.Run
 
 	select {
-	case run = <-done:
+	case f := <-done:
+		if f.err != nil {
+			t.Fatal("the run returned an error:", f.err)
+		}
+
+		run = f.run
 	case <-time.After(30 * time.Second):
 		t.Fatal("the run did not stop")
 	}
@@ -139,10 +149,11 @@ func TestACancelledResticIsAskedToStopRatherThanKilled(t *testing.T) {
 	dir := t.TempDir()
 	b, _, _ := harness(t, slowRestic(t, dir))
 
+	done := make(chan error, 1)
+
 	go func() {
-		if _, err := b.Run(context.Background(), request(), time.Now); err != nil {
-			t.Error("the run returned an error:", err)
-		}
+		_, err := b.Run(context.Background(), request(), time.Now)
+		done <- err
 	}()
 
 	waitFor(t, filepath.Join(dir, "started"))
@@ -154,6 +165,19 @@ func TestACancelledResticIsAskedToStopRatherThanKilled(t *testing.T) {
 	// Written by the stub's signal handler. A killed process never gets to
 	// write it -- and a killed restic leaves its lock in the repository.
 	waitFor(t, filepath.Join(dir, "interrupted"))
+
+	// Waited for, not left running. The test's cleanup closes the database
+	// underneath a run that is still recording its outcome otherwise, which
+	// is a failure about this test's housekeeping wearing the costume of a
+	// failure about cancelling.
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Error("the run returned an error:", err)
+		}
+	case <-time.After(30 * time.Second):
+		t.Fatal("the run did not stop")
+	}
 }
 
 func TestCancellingWithNothingRunningSaysSo(t *testing.T) {
