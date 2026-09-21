@@ -116,6 +116,78 @@ jobs:
 
           Write-Host "install.ps1 parses"
 
+  installer-windows:
+    # Parsing install.ps1 proves it has no typos. Running it proves it
+    # installs, and those are not the same claim: a script can parse
+    # perfectly and put the binary somewhere the machine can never update
+    # from, which is what it did until the day before the first Windows
+    # machine was enrolled.
+    #
+    # A hosted windows-latest runner is a real Windows machine, it is free on
+    # a public repository, and nothing here needs a bucket or a server. It
+    # cannot prove a backup runs -- that is the Windows gate that does not
+    # exist yet -- but it proves the install lands where it is supposed to.
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+
+      - name: Build the Windows binary
+        run: go build -o dist/sion-backup-windows-amd64.exe ./cmd/sion-backup
+
+      - name: Install it the way a person would
+        shell: pwsh
+        run: |
+          ./deploy/windows/install.ps1 -Binary dist/sion-backup-windows-amd64.exe -Yes
+          $global:LASTEXITCODE = 0
+
+      - name: It landed in the profile, and can replace itself there
+        shell: pwsh
+        run: |
+          $exe = Join-Path $env:LOCALAPPDATA 'sion-backup\sion-backup.exe'
+
+          if (-not (Test-Path $exe)) {
+            throw "no binary at $exe"
+          }
+
+          # doctor exits non-zero on a machine that is not enrolled, which
+          # this one is not. The exit status is not the assertion; the line
+          # about self-update is, because a binary somewhere it cannot
+          # rewrite is a machine that takes one version and keeps it.
+          $report = & $exe doctor 2>&1 | Out-String
+
+          Write-Host $report
+
+          if ($report -notmatch 'replaceable by this process') {
+            throw "this install cannot update itself"
+          }
+
+          $global:LASTEXITCODE = 0
+
+      - name: The task runs that binary, as this account
+        shell: pwsh
+        run: |
+          $task = Get-ScheduledTask -TaskName 'sion-backup' -ErrorAction Stop
+          $execute = $task.Actions[0].Execute
+          $want = Join-Path $env:LOCALAPPDATA 'sion-backup\sion-backup.exe'
+
+          if ($execute -ne $want) {
+            throw "the task runs $execute, not $want"
+          }
+
+          Write-Host "task runs $execute as $($task.Principal.UserId)"
+
+      - name: Leave the runner as it was found
+        if: always()
+        shell: pwsh
+        run: |
+          Unregister-ScheduledTask -TaskName 'sion-backup' -Confirm:$false -ErrorAction SilentlyContinue
+          $global:LASTEXITCODE = 0
+
   shell-installers:
     # The other half of the same job, on a runner with a real bash, real
     # `install`, and a real /tmp — because one of these checks runs the Linux

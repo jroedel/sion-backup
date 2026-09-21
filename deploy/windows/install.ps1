@@ -38,11 +38,48 @@
 
   Without -Elevated the install still works and backups still run. They are
   just worse, quietly, until somebody reads the status page.
+
+  WHERE THE BINARY LIVES
+
+  In %LOCALAPPDATA%\sion-backup, which is the account's own profile, and that
+  is a decision with a cost on both sides.
+
+  It is there so the machine can update itself. Self-update replaces the
+  binary in place, so it needs a directory the account running the program can
+  write to. %ProgramFiles% is not one: the task runs as the user, the
+  directory is owned by administrators, and Writable() refuses -- correctly.
+  A machine installed there takes the version it was installed with and keeps
+  it until somebody comes back and reinstalls by hand. Every fix in every
+  release after that one is a fix that machine does not get, and this fleet's
+  machines are not ones anybody revisits.
+
+  The cost: with -Elevated the task runs with highest privileges, and a binary
+  in a directory the user can write to is a binary that anything running as
+  that user can replace and have run as an administrator. That is a real
+  escalation path and it is the reason %ProgramFiles% was here first. It is
+  the same account whose files are being backed up and whose machine token
+  sits in the same profile, so an attacker who has it already has a great
+  deal -- but not that.
+
+  The fix for both is the one this script's header already describes: machine
+  scope paths and a task running as SYSTEM or a dedicated account, with the
+  binary somewhere the user cannot write. Until then, a machine that keeps
+  itself patched is worth more than one that cannot be reached.
+
+  RUN THIS AS THE ACCOUNT BEING BACKED UP. The task is registered for whoever
+  runs this script, the machine token goes in that profile, restic is
+  installed into it by "sion-backup enroll", and now the binary lives there
+  too. Elevating into a DIFFERENT administrator account puts all four in the
+  wrong place -- a backup of the administrator's profile, running as the
+  administrator. If the person is not a local administrator, install without
+  -Elevated rather than elevating as somebody else.
 #>
 
 [CmdletBinding()]
 param(
-  [string] $InstallDir = "$env:ProgramFiles\sion-backup",
+  # The user's own profile, not %ProgramFiles%, so that the machine can
+  # update itself. See "Where the binary lives" at the top of this file.
+  [string] $InstallDir = "$env:LOCALAPPDATA\sion-backup",
   [string] $Binary     = ".\sion-backup-windows-amd64.exe",
   [switch] $Elevated,
 
@@ -101,9 +138,34 @@ function Report-Failure {
   }
 }
 
-if (-not ([Security.Principal.WindowsPrincipal] [Security.Principal.WindowsIdentity]::GetCurrent()
-    ).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
-  throw "Run this from an elevated PowerShell."
+# Administrator is needed for what needs it, and not for the install itself.
+#
+# It used to be needed for all of it, because the binary went into
+# %ProgramFiles%. It now goes into the account's own profile, and registering
+# a task for yourself is not a privileged act either. What still needs
+# elevation is a task that runs with highest privileges, and touching the
+# legacy task, which this account did not create.
+#
+# The distinction matters on exactly the machines this fleet has: a person who
+# is not a local administrator would otherwise be told to elevate, would
+# elevate as somebody else, and would install a backup of the wrong profile.
+$isAdmin = ([Security.Principal.WindowsPrincipal] [Security.Principal.WindowsIdentity]::GetCurrent()
+  ).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+
+if (-not $isAdmin) {
+  if ($Elevated) {
+    throw "-Elevated registers the task to run with highest privileges, which needs an elevated PowerShell. Run this elevated AS THIS SAME ACCOUNT, or install without -Elevated and accept that Volume Shadow Copy will be unavailable."
+  }
+
+  if ($DisableLegacyTask) {
+    throw "-DisableLegacyTask changes a scheduled task this account did not create, which needs an elevated PowerShell."
+  }
+
+  Write-Host "Not running as an administrator. Installing into the profile and registering the task with limited privileges."
+}
+
+if ($Elevated) {
+  Write-Warning "-Elevated runs the task with highest privileges, and $InstallDir is writable by this account. Anything running as this account can replace the binary and have it run as an administrator. See ""Where the binary lives"" in this script."
 }
 
 trap {
@@ -191,11 +253,10 @@ Re-run with -Elevated.
 # sion-backup installs its own restic: one pinned version, from upstream's
 # release, verified against a hash compiled into the binary. That happens when
 # the machine is enrolled, and it happens as the person being backed up --
-# which is the part that matters on Windows. This script writes to Program
-# Files, so it is running as an administrator, and an administrator may well
-# not be the signed-in user. Fetching restic from here would put it in the
-# wrong profile's %LOCALAPPDATA%, and the scheduled task -- which runs as the
-# user -- would not find it.
+# which is the part that matters on Windows. Fetching restic from here would
+# put it wherever this script happens to be running, which is the right place
+# only when this script is being run by the account the task will run as. It
+# is left to enrolment so that it cannot be anywhere else.
 #
 # So it is left to "sion-backup enroll", which the user runs next, and which
 # needs restic anyway to prove the bucket opens. "sion-backup restic" installs
