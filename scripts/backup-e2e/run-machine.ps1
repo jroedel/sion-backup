@@ -240,7 +240,12 @@ OK "serving $repoUrl"
 # Far enough ahead that the backups below are done before it comes round, and
 # close enough that this script can wait for it. The daemon's scheduler ticks
 # once a minute and reads local time.
-$slot = (Get-Date).AddMinutes(5)
+#
+# jitter_minutes = 0 below is load-bearing and was not always possible: read
+# as a plain int it meant "unset", the 30-minute default applied, and the
+# machine decided on 10:06 for a 09:50 slot while this script watched the
+# wrong minute go by.
+$slot = (Get-Date).AddMinutes(4)
 $scheduledAt = $slot.ToString('HH:mm')
 
 New-Item -ItemType Directory -Force -Path $dataDir | Out-Null
@@ -342,6 +347,11 @@ if ($count -eq 1) {
   OK 'one snapshot in the repository'
 } else {
   Bad "expected 1 snapshot, found $count"
+
+  # One backup wrote two snapshots in the same second once, and the count
+  # alone could not say whether restic ran twice or wrote twice.
+  Note '--- what the run said ---'
+  Get-Content $logrunOne | Select-Object -Last 25 | ForEach-Object { Note $_ }
 }
 
 # ---------------------------------------------------------------------------
@@ -571,7 +581,7 @@ if (-not $daemon) {
 # minute, so the wait is until four minutes past it before giving up.
 Say "Waiting for the scheduled backup at $scheduledAt"
 
-$deadline = $slot.AddMinutes(4)
+$deadline = $slot.AddMinutes(3)
 $after    = $before
 
 while ((Get-Date) -lt $deadline) {
