@@ -251,6 +251,11 @@ func (r *Runner) backupOnce(ctx context.Context, repo Repository, opts BackupOpt
 
 // backupArgs assembles the command line. Separate from the run so a test can
 // assert the flags without a restic binary present.
+// supportsOneFileSystem reports whether restic accepts --one-file-system on
+// this platform. Takes the name rather than reading runtime.GOOS so that the
+// rule can be asserted for a platform the test is not running on.
+func supportsOneFileSystem(goos string) bool { return goos != "windows" }
+
 func backupArgs(opts BackupOptions) []string {
 	args := []string{"backup", "--json"}
 
@@ -258,7 +263,18 @@ func backupArgs(opts BackupOptions) []string {
 		args = append(args, "--use-fs-snapshot")
 	}
 
-	if opts.OneFileSystem {
+	// Not on Windows, where restic refuses it: the flag is implemented with
+	// device IDs, Windows has none, and the refusal is fatal -- "Device IDs
+	// are not supported on Windows", exit 1, no snapshot, in under two
+	// seconds. Every backup on a Windows machine failed this way, and it took
+	// a gate that runs one to find out.
+	//
+	// Dropped here rather than in the plan because it is a fact about restic
+	// on this platform, not a preference somebody should have to know when
+	// writing a config file. There is nothing lost and nothing to ask for
+	// instead: a drive letter is its own volume, so a Windows target cannot
+	// wander into another filesystem the way /home can.
+	if opts.OneFileSystem && supportsOneFileSystem(runtime.GOOS) {
 		args = append(args, "--one-file-system")
 	}
 
