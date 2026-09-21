@@ -22,7 +22,13 @@ const claimPath = "/enrollments/claim"
 var ErrCodeUsed = errors.New("eumaeuscreds: that enrollment code has already been used")
 
 // ErrCodeUnknown reports a code that does not exist or has expired.
-var ErrCodeUnknown = errors.New("eumaeuscreds: that enrollment code is not valid, or has expired")
+//
+// It says what to do about it, because it is the one sentence about enrolment
+// codes that somebody is guaranteed to read: the lifetime is in the help of
+// two commands, and a person typing a code they were handed has not
+// necessarily read either.
+var ErrCodeUnknown = errors.New("eumaeuscreds: that enrollment code is not valid, or has " +
+	"expired. A code is good for fifteen minutes and can be used once — ask Eumaeus for another")
 
 // legacyRepositoryField is what Eumaeus names in the one refusal an adopting
 // client has to recognise, rather than merely print. See [RepositoryMismatch].

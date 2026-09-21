@@ -99,7 +99,12 @@ func doctorCmd(args []string) error {
 
 	c.check("enrollment", func() (string, error) {
 		if d.machineToken == "" {
-			return "", fmt.Errorf("no machine token in %s; run \"sion-backup enroll --code <code>\"",
+			// Where the code comes from and how long it lasts, because this
+			// line is often the first thing anybody reads on a machine that
+			// will not back up, and "run enroll --code <code>" answers none
+			// of the questions somebody without a code then has.
+			return "", fmt.Errorf("no machine token in %s; get a code from Eumaeus — good "+
+				"for fifteen minutes, and once — and run \"sion-backup enroll --code <code>\"",
 				d.paths.Token)
 		}
 
