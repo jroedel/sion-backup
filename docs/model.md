@@ -207,6 +207,14 @@ not be. Waiting 240 hours to mention that would be waiting through ten more
 runs of the same. It goes to the admin rather than the owner because there is
 nothing an owner can do about it.
 
+A sixth outcome, `cancelled`, exists on the machine and not in this table. It
+is a run somebody stopped from the status page — usually on seeing it upload
+something that should have been excluded — and the machine says so in those
+words, because "you stopped this" and "this broke" are different things to the
+person who did it. To the fleet it is reported as `failed`: there is no new
+snapshot, the staleness clock must not reset, and that is what `failed` means
+here. See [`eumaeus-api.md`](eumaeus-api.md) §`outcome`.
+
 ---
 
 ## 4. The alerting state machine

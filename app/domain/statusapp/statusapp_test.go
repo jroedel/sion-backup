@@ -25,6 +25,7 @@ import (
 	"github.com/jroedel/sion-backup/business/domain/plan/stores/plandb"
 	"github.com/jroedel/sion-backup/business/domain/survey/surveybus"
 	"github.com/jroedel/sion-backup/foundation/paths"
+	"github.com/jroedel/sion-backup/foundation/restic"
 	"github.com/jroedel/sion-backup/foundation/sqldb"
 )
 
@@ -79,6 +80,17 @@ func harnessWithDisclosures(t *testing.T, source credentialbus.Source,
 	discl *disclosurebus.Business, tweaks ...tweak) *harness {
 	t.Helper()
 
+	return harnessDriving(t, nil, source, discl, tweaks...)
+}
+
+// harnessDriving is the same machine with a restic behind its runner, for the
+// few tests that need a backup to actually be running rather than recorded as
+// having run. Everything else passes nil: a page test that shells out is a
+// page test that is slow and depends on the machine it runs on.
+func harnessDriving(t *testing.T, r *restic.Runner, source credentialbus.Source,
+	discl *disclosurebus.Business, tweaks ...tweak) *harness {
+	t.Helper()
+
 	dir := t.TempDir()
 	t.Setenv("SION_BACKUP_DATA_DIR", dir)
 
@@ -118,7 +130,7 @@ func harnessWithDisclosures(t *testing.T, source credentialbus.Source,
 		guard:   guard,
 		plan:    planbus.NewBusiness(plandb.NewStore(db)),
 		runs:    runs,
-		backups: backupbus.NewRunner(runs, nil, p, slog.New(slog.NewTextHandler(io.Discard, nil))),
+		backups: backupbus.NewRunner(runs, r, p, slog.New(slog.NewTextHandler(io.Discard, nil))),
 	}
 
 	// A survey with no prober and one made-up choice.

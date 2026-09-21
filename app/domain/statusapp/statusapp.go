@@ -260,6 +260,7 @@ func New(cfg Config) (*Server, error) {
 	mux.HandleFunc("POST /rotation/request", s.requestRotation)
 	mux.HandleFunc("POST /rotation/cutover", s.cutover)
 	mux.HandleFunc("POST /run", s.runNow)
+	mux.HandleFunc("POST /run/cancel", s.cancelRun)
 
 	s.handler = mux
 
@@ -443,6 +444,27 @@ func (s *Server) status(w http.ResponseWriter, r *http.Request) {
 	case r.URL.Query().Has("running"):
 		view.Notice = "A backup is already running, so this did not start another. " +
 			"It is shown above."
+
+	// Stopping is slower than starting and in the other direction: restic has
+	// been asked to stop and is finishing the upload it is in the middle of,
+	// so for a few seconds the page still shows a backup running. Saying so
+	// is the difference between a button that is working and one that looks
+	// ignored.
+	case r.URL.Query().Has("cancelling") && running:
+		view.Notice = "Stopping. restic is finishing what it is uploading and " +
+			"releasing its lock, so this may take a few seconds."
+
+		view.Refresh = 2
+
+	// Just "Stopped": by the time the run is over the verdict above says it
+	// was stopped and what that means, and a notice repeating the sentence
+	// word for word under it is the page arguing with itself.
+	case r.URL.Query().Has("cancelling"):
+		view.Notice = "Stopped."
+
+	case r.URL.Query().Has("notrunning"):
+		view.Notice = "There was no backup running, so nothing was stopped. " +
+			"It had probably just finished."
 	}
 
 	// The last run with an outcome, never the row a run in progress is still
@@ -506,13 +528,9 @@ func (s *Server) status(w http.ResponseWriter, r *http.Request) {
 }
 
 // staleAfter is how long a machine may go without a good backup before the
-// page stops calling it healthy.
-//
-// Two days rather than one. A daily schedule plus a weekend, a public holiday,
-// or a day working from a café means one missed night is normal, and a page
-// that cries wolf on a Monday morning is a page people stop reading — which is
-// the actual failure this whole program is designed against.
-const staleAfter = 48 * time.Hour
+// page stops calling it healthy. The domain owns the number; doctor asks the
+// same question and must not answer it differently.
+const staleAfter = backupbus.StaleAfter
 
 // verdictFor turns the state of the machine into one sentence.
 //
@@ -568,6 +586,21 @@ func verdictFor(plan planbus.Plan, last backupbus.Run, hasLast, running bool, no
 	case backupbus.OutcomeUnverified:
 		return verdict{"bad", "The backup could not be read back",
 			"A snapshot was written but nothing came out of it. " + last.Message}
+
+	case backupbus.OutcomeCancelled:
+		// Amber, not red: somebody chose this. It turns red on the same
+		// schedule as everything else, because a backup stopped on Tuesday
+		// and never run again is a machine that is not backed up, whoever
+		// stopped it.
+		if age > staleAfter {
+			return verdict{"bad", "Backups have stopped",
+				fmt.Sprintf("The last one was stopped %s ago and nothing has run since.",
+					humanDuration(age))}
+		}
+
+		return verdict{"warn", "The last backup was stopped",
+			"It was " + last.Message + ". Nothing already uploaded is lost — the next " +
+				"backup carries on from where this one reached."}
 
 	default:
 		return verdict{"bad", "The last backup failed", last.Message}
@@ -731,6 +764,28 @@ func (s *Server) runNow(w http.ResponseWriter, r *http.Request) {
 	}
 
 	http.Redirect(w, r, "/?started", http.StatusSeeOther)
+}
+
+// cancelRun stops the backup that is running.
+//
+// Somebody watching a seed climb through forty gigabytes of video they never
+// meant to include needs a way to stop it that is not "kill the daemon".
+// Stopping loses nothing that was uploaded: restic deduplicates against what
+// is already in the repository, so the next run walks past all of it.
+func (s *Server) cancelRun(w http.ResponseWriter, r *http.Request) {
+	if err := s.cfg.Backups.Cancel("stopped from the status page"); err != nil {
+		if errors.Is(err, backupbus.ErrNotRunning) {
+			http.Redirect(w, r, "/?notrunning", http.StatusSeeOther)
+
+			return
+		}
+
+		s.fail(w, r, "stopping the backup", err)
+
+		return
+	}
+
+	http.Redirect(w, r, "/?cancelling", http.StatusSeeOther)
 }
 
 func (s *Server) chromeFor(title, current string) chrome {

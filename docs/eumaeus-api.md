@@ -652,6 +652,15 @@ and may not be. See [`model.md`](model.md) §3.
 **Treat an unrecognised `outcome` as red rather than rejecting the event.** A
 future client adding a sixth value must not blank a dashboard.
 
+A backup somebody stops from the status page is reported as `failed`, with the
+reason in `message`. The client records it locally as `cancelled` and says so
+in its own words, because "you stopped this" and "this broke" are different
+things to the person who did it — but they are the same thing to this API,
+which exists to answer whether a machine is protected. After a cancelled run
+there is no new snapshot and the staleness clock must not reset, which is
+`failed` exactly. A sixth value here would need the server to learn it in
+order to mean something it already means.
+
 ### Server rules
 
 1. **Idempotent on `(machine, run_uuid, phase)`.** The client marks a run

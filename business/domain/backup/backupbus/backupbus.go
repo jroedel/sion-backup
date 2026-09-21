@@ -77,10 +77,36 @@ const (
 
 	// OutcomeFailed is no snapshot.
 	OutcomeFailed Outcome = "failed"
+
+	// OutcomeCancelled is a run somebody stopped on purpose.
+	//
+	// Kept apart from OutcomeFailed because the two need different words on a
+	// page. A failure is something to look into; a cancellation is somebody
+	// noticing that the run is uploading forty gigabytes of video they never
+	// wanted, stopping it, and editing the exclude list. Calling that a
+	// failure teaches the reader that red means nothing.
+	OutcomeCancelled Outcome = "cancelled"
 )
 
 // Good reports whether an outcome means the files are safe.
 func (o Outcome) Good() bool { return o == OutcomeSuccess }
+
+// Reported is the outcome as the fleet dashboard is told it.
+//
+// The dashboard's five values are documented in docs/eumaeus-api.md and the
+// question they answer is "is this machine protected". After a cancelled run
+// the answer is the same as after a failed one -- there is no new snapshot,
+// and the staleness clock must not reset -- so cancelled is reported as
+// failed, and the reason travels in the message. A sixth value would need the
+// server to learn it to mean anything, and it would mean exactly what failed
+// already means.
+func (o Outcome) Reported() Outcome {
+	if o == OutcomeCancelled {
+		return OutcomeFailed
+	}
+
+	return o
+}
 
 // Run is one backup attempt, as recorded.
 type Run struct {
@@ -191,6 +217,26 @@ type Storer interface {
 // the page.
 func (r Run) Unfinished() bool { return r.FinishedAt.IsZero() }
 
+// Stopped reports a run somebody cancelled.
+//
+// Its figures are absent rather than zero: restic prints its totals when it
+// finishes, and a run that was stopped never got there, so it uploaded an
+// unknown amount rather than none.
+func (r Run) Stopped() bool { return r.Outcome == OutcomeCancelled }
+
+// StaleAfter is how long a machine may go without a good backup before it
+// stops being described as healthy.
+//
+// Two days rather than one. A daily schedule plus a weekend, a public holiday,
+// or a day working from a café means one missed night is normal, and a page
+// that cries wolf on a Monday morning is a page people stop reading — which is
+// the actual failure this whole program is designed against.
+//
+// It lives here rather than on the page because doctor answers the same
+// question at a terminal, and the two disagreeing about whether this computer
+// is backed up would be worse than either answer.
+const StaleAfter = 48 * time.Hour
+
 // ErrNoRuns reports a machine that has never backed up.
 var ErrNoRuns = errors.New("backupbus: this machine has no run history")
 
@@ -201,6 +247,24 @@ var ErrNoRuns = errors.New("backupbus: this machine has no run history")
 // which on a first full backup is hours, and the status page would show two
 // runs where the person asked for one.
 var ErrAlreadyRunning = errors.New("backupbus: a backup is already running")
+
+// ErrNotRunning reports a cancellation asked for with nothing to cancel.
+//
+// Ordinary rather than exceptional: the page showing a Cancel button and the
+// press arriving are seconds apart, and a backup that finished in between is
+// the button doing its job slightly too late.
+var ErrNotRunning = errors.New("backupbus: no backup is running")
+
+// ErrCancelled is what context.Cause reports for a run somebody stopped.
+var ErrCancelled = errors.New("backupbus: the backup was cancelled")
+
+// cancellation is the cause a cancelled run's context carries: ErrCancelled
+// for code to match on, and a human reason for the row somebody reads.
+type cancellation struct{ reason string }
+
+func (c *cancellation) Error() string { return c.reason }
+
+func (c *cancellation) Is(target error) bool { return target == ErrCancelled }
 
 // Request is one run's inputs.
 //
@@ -243,6 +307,11 @@ type Runner struct {
 	// second — writing each one anywhere durable would be pure waste.
 	progress atomic.Pointer[Progress]
 
+	// cancel stops the backup that is running, and is nil when none is. Held
+	// as a pointer so that storing nil is how "nothing to cancel" is said,
+	// rather than a second flag that could disagree with this one.
+	cancel atomic.Pointer[context.CancelCauseFunc]
+
 	// finishing serialises the two writes that end a run, so a shutdown racing
 	// a completion cannot interleave them.
 	finishing sync.Mutex
@@ -276,6 +345,26 @@ func (b *Runner) Running() (Progress, bool) {
 	}
 
 	return *p, true
+}
+
+// Cancel stops the running backup, or reports ErrNotRunning.
+//
+// The reason is written on the row, because "cancelled" on its own invites
+// the question this program exists to answer without being asked.
+//
+// It returns as soon as restic has been asked to stop, not once it has: a
+// restic told to stop is finishing the pack it is uploading and removing its
+// lock, which takes a moment, and holding a click on a web page open for it
+// would only make somebody press the button again.
+func (b *Runner) Cancel(reason string) error {
+	cancel := b.cancel.Load()
+	if cancel == nil {
+		return ErrNotRunning
+	}
+
+	(*cancel)(&cancellation{reason: reason})
+
+	return nil
 }
 
 // Recent returns the last n runs, newest first.
@@ -375,6 +464,17 @@ func (b *Runner) Run(ctx context.Context, req Request, now func() time.Time) (Ru
 	defer b.running.Store(false)
 	defer b.progress.Store(nil)
 
+	// The run's own context, so Cancel stops this backup and nothing else.
+	// Derived from the caller's, which is the daemon's, so a shutdown still
+	// stops it — and WithCancelCause rather than WithCancel so that the two
+	// can be told apart afterwards: one is somebody pressing a button, the
+	// other is the machine going down, and they are not the same row.
+	runCtx, cancel := context.WithCancelCause(ctx)
+	defer cancel(nil)
+
+	b.cancel.Store(&cancel)
+	defer b.cancel.Store(nil)
+
 	started := now()
 	b.progress.Store(&Progress{Started: started})
 
@@ -397,14 +497,20 @@ func (b *Runner) Run(ctx context.Context, req Request, now func() time.Time) (Ru
 	// From here on every path finishes the run rather than returning early
 	// with it unrecorded. A run row left open forever is exactly what the
 	// status page cannot interpret.
-	b.execute(ctx, &run, req, now)
+	b.execute(runCtx, &run, req, now)
 
 	b.finishing.Lock()
 	defer b.finishing.Unlock()
 
 	run.FinishedAt = now()
 
-	if err := b.store.Finish(ctx, run); err != nil {
+	// WithoutCancel, and deliberately. This is the caller's context -- the
+	// daemon's -- and a machine shutting down cancels it while this run is
+	// still closing. The write that records the outcome would fail, leaving a
+	// row with no finished_at, which the page reads as a backup that is still
+	// running and will go on reading that way forever. The run is over either
+	// way; what is left is saying so.
+	if err := b.store.Finish(context.WithoutCancel(ctx), run); err != nil {
 		return run, fmt.Errorf("backupbus: recording the end of run %d: %w", run.ID, err)
 	}
 
@@ -444,6 +550,17 @@ func (b *Runner) execute(ctx context.Context, run *Run, req Request, now func() 
 			CurrentFile: firstOf(p.CurrentFiles),
 		})
 	})
+
+	// Before the error and before the summary is read, because a cancelled
+	// run must not be described by whatever restic happened to exit with. A
+	// restic that has been interrupted may exit 0 after tidying up, or 1, or
+	// be killed and exit with a signal; all three mean the same thing here,
+	// and only this program knows which of them was asked for.
+	if cause := context.Cause(ctx); errors.Is(cause, ErrCancelled) {
+		b.cancelled(ctx, run, req, cause)
+
+		return
+	}
 
 	run.SnapshotID = summary.SnapshotID
 	run.FilesNew = summary.FilesNew
@@ -526,6 +643,40 @@ func (b *Runner) execute(ctx context.Context, run *Run, req Request, now func() 
 
 	if err := os.Remove(nonceFile); err != nil && !os.IsNotExist(err) {
 		b.log.Warn("could not remove the verification file", "path", nonceFile, "err", err)
+	}
+}
+
+// unlockGrace bounds the tidying-up after a cancelled run. Generous, because
+// it is one small request to a bucket and the alternative to waiting is a
+// repository nobody can back up to until somebody runs a command.
+const unlockGrace = 2 * time.Minute
+
+// cancelled records a run somebody stopped, and leaves the repository usable.
+//
+// No verification: there is nothing to verify, and asking would fail under a
+// context that has just been cancelled — which would put "the backup could not
+// be read back", the loudest thing this program says, on a run that was
+// stopped on purpose.
+func (b *Runner) cancelled(ctx context.Context, run *Run, req Request, cause error) {
+	run.Outcome = OutcomeCancelled
+	run.Message = cause.Error()
+
+	// restic releases its own lock when it is interrupted, so most of the time
+	// this finds nothing to do. It runs anyway for the times it does not: a
+	// restic that ignored the interrupt was killed, and a killed one leaves a
+	// lock that refuses the next backup. One request to be sure beats a
+	// machine that stopped backing up because somebody pressed Cancel.
+	//
+	// WithoutCancel because the context this is reached through is the
+	// cancelled one; a deadline of its own so a bucket that has stopped
+	// answering cannot hold a run open.
+	clearing, stop := context.WithTimeout(context.WithoutCancel(ctx), unlockGrace)
+	defer stop()
+
+	if err := b.restic.Unlock(clearing, req.Repository); err != nil {
+		b.log.Warn("could not clear the repository lock after a cancelled backup", "err", err)
+
+		run.Message += "; the repository may still be locked, and the next backup will clear it"
 	}
 }
 

@@ -170,6 +170,12 @@ func (r *Runner) Backup(ctx context.Context, repo Repository, opts BackupOptions
 	return summary, err
 }
 
+// interruptGrace is how long restic is given to tidy up after being asked to
+// stop. It is removing a lock and finishing one upload, not flushing hours of
+// work, so this is long enough to be sure and short enough that a person
+// watching a page sees it happen.
+const interruptGrace = 90 * time.Second
+
 func (r *Runner) backupOnce(ctx context.Context, repo Repository, opts BackupOptions,
 	onProgress func(Progress)) (Summary, error) {
 
@@ -181,6 +187,16 @@ func (r *Runner) backupOnce(ctx context.Context, repo Repository, opts BackupOpt
 
 	cmd := exec.CommandContext(ctx, r.bin, args...)
 	cmd.Env = repo.Env()
+
+	// Cancelling this context interrupts restic rather than killing it, so
+	// that a backup somebody stopped leaves a repository the next one can use.
+	// WaitDelay is the promise that it stops anyway: a restic that has not
+	// exited by then is killed, because a cancel that can be ignored is not a
+	// cancel. It closes the output pipe too, which is what actually ends the
+	// parse below when a process is gone but its pipe is inherited by
+	// something else.
+	cmd.Cancel = func() error { return interrupt(cmd.Process) }
+	cmd.WaitDelay = interruptGrace
 
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {

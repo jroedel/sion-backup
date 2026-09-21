@@ -92,7 +92,7 @@ func eventFor(r backupbus.Run) fleetbus.Event {
 		Phase:           fleetbus.PhaseFinished,
 		StartedAt:       r.StartedAt,
 		FinishedAt:      &finished,
-		Outcome:         string(r.Outcome),
+		Outcome:         string(r.Outcome.Reported()),
 		Message:         r.Message,
 		SnapshotID:      r.SnapshotID,
 		FilesProcessed:  r.TotalFilesProcessed,
