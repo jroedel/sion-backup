@@ -162,6 +162,19 @@ if (-not $task) {
   OK "task registered, running $($task.Principal.UserId) at $($task.Principal.RunLevel)"
 }
 
+# Disabled until this script is ready for it, and that is not tidiness.
+#
+# Registering the task starts the daemon: this account is already signed in,
+# so the logon trigger is satisfied the moment the task exists. The daemon
+# then finds a machine with no run history, which is due by definition, and
+# takes a backup -- correctly, and in the middle of the backups below, which
+# is how one hand-driven run came to produce two snapshots.
+Disable-ScheduledTask -TaskName 'sion-backup' -ErrorAction SilentlyContinue | Out-Null
+Stop-ScheduledTask -TaskName 'sion-backup' -ErrorAction SilentlyContinue
+Get-Process -Name 'sion-backup' -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+
+OK 'task disabled until the hand-driven backups are done'
+
 # ---------------------------------------------------------------------------
 # 2. A corpus.
 #
@@ -539,8 +552,15 @@ if ($LASTEXITCODE -eq 0) {
 
 Say 'The scheduled task'
 
+if (Get-Process -Name 'sion-backup' -ErrorAction SilentlyContinue) {
+  Bad 'the daemon was already running before the task was enabled'
+} else {
+  OK 'nothing was running until now'
+}
+
 $before = @(& $restic snapshots --json 2>$null | ConvertFrom-Json).Count
 
+Enable-ScheduledTask -TaskName 'sion-backup' | Out-Null
 Start-ScheduledTask -TaskName 'sion-backup'
 
 $daemon = $null
