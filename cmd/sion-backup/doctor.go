@@ -1,11 +1,13 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"flag"
 	"fmt"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"strconv"
 	"strings"
@@ -180,6 +182,25 @@ func doctorCmd(args []string) error {
 
 		return fmt.Sprintf("%s → %s, %d target(s), at %v",
 			plan.NodeID, plan.Repository, len(plan.Targets), plan.Schedule.Times), nil
+	})
+
+	// Before everything that reaches the network, and outside the block that
+	// needs a plan: a machine that cannot resolve names cannot enrol either,
+	// and the checks that follow all fail in ways that point somewhere else.
+	// "There is no repository at that URL" is what a machine with a broken
+	// resolver says, and it sends somebody to the bucket.
+	c.check("name resolution", func() (string, error) {
+		var hosts []string
+
+		if u, err := url.Parse(d.cfg.EumaeusURL()); err == nil && u.Hostname() != "" {
+			hosts = append(hosts, u.Hostname())
+		}
+
+		if planErr == nil {
+			hosts = append(hosts, restic.HostOf(plan.Repository))
+		}
+
+		return resolves(ctx, hosts)
 	})
 
 	if planErr == nil {
@@ -404,6 +425,49 @@ func doctorCmd(args []string) error {
 	}
 
 	return nil
+}
+
+// resolveGrace bounds each lookup. Generous against a slow resolver, short
+// enough that a dead one does not make this command look hung: the failure
+// being diagnosed is one where every lookup takes the full timeout.
+const resolveGrace = 5 * time.Second
+
+// resolves looks each host up the way the rest of the program will.
+//
+// net.DefaultResolver on purpose, rather than asking a specific nameserver:
+// the question is not whether some resolver somewhere can answer, it is
+// whether this computer's own configuration produces an answer -- which is
+// exactly what restic gets, being a Go program reading the same file.
+func resolves(ctx context.Context, hosts []string) (string, error) {
+	var found []string
+
+	for _, h := range hosts {
+		if h == "" {
+			continue
+		}
+
+		lookup, cancel := context.WithTimeout(ctx, resolveGrace)
+		addrs, err := net.DefaultResolver.LookupHost(lookup, h)
+
+		cancel()
+
+		if err != nil {
+			// Which host, and no guess about why. A name that does not
+			// resolve is usually a resolver that is not answering, but it is
+			// sometimes a typo in a config file, and this check cannot tell
+			// them apart.
+			return "", fmt.Errorf("this computer cannot look up %s: %w; "+
+				"nothing will reach that host until name resolution works", h, err)
+		}
+
+		found = append(found, h+" → "+addrs[0])
+	}
+
+	if len(found) == 0 {
+		return "", errSkipCheck
+	}
+
+	return strings.Join(found, ", "), nil
 }
 
 // errSkipCheck reports a check that does not apply to this machine, as

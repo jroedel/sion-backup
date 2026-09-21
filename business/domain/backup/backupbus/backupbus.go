@@ -604,7 +604,7 @@ func (b *Runner) execute(ctx context.Context, run *Run, req Request, now func() 
 			return
 
 		default:
-			run.Message = backupErr.Error()
+			run.Message = failureMessage(backupErr)
 
 			return
 		}
@@ -616,7 +616,7 @@ func (b *Runner) execute(ctx context.Context, run *Run, req Request, now func() 
 	// so it overrides Incomplete rather than being overridden by it.
 	if err := b.verify(ctx, req.Repository, nonce, nonceFile); err != nil {
 		run.Outcome = OutcomeUnverified
-		run.Message = "the backup could not be read back: " + err.Error()
+		run.Message = "the backup could not be read back: " + failureMessage(err)
 
 		return
 	}
@@ -644,6 +644,29 @@ func (b *Runner) execute(ctx context.Context, run *Run, req Request, now func() 
 	if err := os.Remove(nonceFile); err != nil && !os.IsNotExist(err) {
 		b.log.Warn("could not remove the verification file", "path", nonceFile, "err", err)
 	}
+}
+
+// failureMessage is what a person is told a run failed for.
+//
+// Ordinarily restic's own words, which are usually the right ones. The
+// exception is a machine that cannot resolve names: restic answers that by
+// retrying every upload with a longer and longer backoff, and what reaches
+// the status page is a wall of "returned error, retrying after 8.13s" with
+// the one fact -- that this computer cannot look the repository up -- spelled
+// out only inside the first of a hundred identical lines. A run that takes
+// seven hours to fail and then says nothing legible is how a broken resolver
+// stayed invisible for two nights.
+func failureMessage(err error) string {
+	var rerr *restic.Error
+
+	if errors.As(err, &rerr) {
+		if host, ok := rerr.Unresolvable(); ok {
+			return "this computer could not look up " + host +
+				", so nothing could be uploaded; its DNS or network connection is not working"
+		}
+	}
+
+	return err.Error()
 }
 
 // unlockGrace bounds the tidying-up after a cancelled run. Generous, because
