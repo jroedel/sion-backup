@@ -232,7 +232,9 @@ func (b *Business) ForRun(ctx context.Context) (Set, error) {
 // run history already answers.
 func (b *Business) Describe() string {
 	if b.source == nil {
-		return "This machine is not enrolled, so it has no way to obtain credentials."
+		return "This machine is not enrolled, so it has no way to obtain credentials. " +
+			"Enrolling it needs a code from Eumaeus, which is good for fifteen " +
+			"minutes and can be used once."
 	}
 
 	return "Fetched from Eumaeus at the start of every backup and discarded when it ends. " +

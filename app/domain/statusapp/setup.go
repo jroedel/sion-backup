@@ -177,11 +177,17 @@ func (s *Server) setup(w http.ResponseWriter, r *http.Request) {
 			// leaves exactly this machine: a plan, a repository, and no token.
 			// Telling somebody standing in the middle of that to run "enroll"
 			// would send them to the wrong command.
+			// The fifteen minutes is on the page and not only in the help,
+			// because this is what somebody is looking at when they decide to
+			// go and fetch a code -- and a code fetched before the installer
+			// has been downloaded is a code that expires while it waits.
 			Missing: "This computer has not been enrolled yet, so it has no credentials " +
 				"and nothing can be backed up. Whoever is installing it needs a code " +
 				"from Eumaeus, and then “sion-backup enroll --code …” — or “sion-backup " +
 				"adopt-enroll --code …” on a machine that is already backing up with " +
-				"the old script. This page is what they are sent to afterwards.",
+				"the old script. This page is what they are sent to afterwards. " +
+				"A code is good for fifteen minutes and can be used once, so it is " +
+				"worth asking for it at the machine rather than before walking to it.",
 		})
 
 		return
