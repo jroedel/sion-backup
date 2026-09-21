@@ -171,9 +171,25 @@ type Storer interface {
 	Finish(ctx context.Context, r Run) error
 	Recent(ctx context.Context, limit int) ([]Run, error)
 	Last(ctx context.Context) (Run, error)
+	LastFinished(ctx context.Context) (Run, error)
 	Unreported(ctx context.Context, limit int) ([]Run, error)
 	MarkReported(ctx context.Context, id int64, at time.Time) error
 }
+
+// Unfinished reports a run that has started and not yet ended.
+//
+// A row is written when a run begins, with OutcomeFailed already in it, so
+// that a machine losing power mid-backup leaves a failure rather than a row
+// that reads as success. The cost is that every run looks like a failed one
+// while it is happening, and the status page said exactly that for hours of a
+// first full upload: "failed, 0 files, 0 B, verified no", directly underneath
+// a banner saying a backup was in progress.
+//
+// backupdb.Store.Unreported has always known this -- it sends only finished
+// runs, because reporting one in progress would put a failure on the fleet
+// dashboard for a backup running perfectly well. This is the same rule, for
+// the page.
+func (r Run) Unfinished() bool { return r.FinishedAt.IsZero() }
 
 // ErrNoRuns reports a machine that has never backed up.
 var ErrNoRuns = errors.New("backupbus: this machine has no run history")
@@ -270,6 +286,56 @@ func (b *Runner) Recent(ctx context.Context, n int) ([]Run, error) {
 // Last returns the most recent run, or ErrNoRuns.
 func (b *Runner) Last(ctx context.Context) (Run, error) {
 	return b.store.Last(ctx)
+}
+
+// LastFinished returns the most recent run that has an outcome, or ErrNoRuns.
+//
+// What "the last run" means to somebody reading a page: the last one there is
+// anything to say about. A run in progress is described by the progress bar
+// above it, and describing it twice -- once as a live percentage and once as
+// a failure with nothing uploaded -- is how a healthy twelve-hour seed came
+// to look like a disaster.
+func (b *Runner) LastFinished(ctx context.Context) (Run, error) {
+	return b.store.LastFinished(ctx)
+}
+
+// RecordFailedStart writes a run that never began.
+//
+// Everything before [Runner.Run] can fail -- a plan with no folders in it, a
+// restic that could not be installed, credentials the server would not hand
+// over, a bucket that will not open -- and all of it used to be a line in a
+// log. The page said nothing at all: no row, no outcome, no change from the
+// press of a button, which is indistinguishable from a button that does not
+// work.
+//
+// Recorded as one instant rather than a duration, because nothing ran.
+func (b *Runner) RecordFailedStart(ctx context.Context, req Request, reason string,
+	now func() time.Time) error {
+	at := now()
+
+	run := Run{
+		NodeID:     req.NodeID,
+		RunUUID:    req.RunUUID,
+		Repository: req.Repository.URL,
+		Seeding:    req.Seeding,
+		StartedAt:  at,
+		FinishedAt: at,
+		Outcome:    OutcomeFailed,
+		Message:    reason,
+	}
+
+	id, err := b.store.Create(ctx, run)
+	if err != nil {
+		return fmt.Errorf("backupbus: recording a backup that could not start: %w", err)
+	}
+
+	run.ID = id
+
+	if err := b.store.Finish(ctx, run); err != nil {
+		return fmt.Errorf("backupbus: finishing the record of a backup that could not start: %w", err)
+	}
+
+	return nil
 }
 
 // Unreported returns runs the fleet dashboard has not been told about.

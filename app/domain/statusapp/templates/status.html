@@ -10,6 +10,8 @@
   <p>{{.Verdict.Detail}}</p>
 </div>
 
+{{if .Notice}}<p class="notice">{{.Notice}}</p>{{end}}
+
 {{if .Running}}
   <progress value="{{.Progress.PercentDone}}" max="1"></progress>
   <dl class="facts">
@@ -133,11 +135,19 @@
   {{range .Recent}}
     <tr>
       <td>{{day .StartedAt}}</td>
+      {{if .Unfinished}}
+      <td><span class="pill warn">running</span></td>
+      <td class="num">—</td>
+      <td class="num">—</td>
+      <td class="num">—</td>
+      <td>—</td>
+      {{else}}
       <td><span class="pill {{pill .Outcome}}">{{.Outcome}}</span></td>
       <td class="num">{{.TotalFilesProcessed}}</td>
       <td class="num">{{bytes .DataAdded}}</td>
       <td class="num">{{duration .Duration}}</td>
       <td>{{if .ReportedAt}}yes{{else}}pending{{end}}</td>
+      {{end}}
     </tr>
   {{end}}
   </tbody>

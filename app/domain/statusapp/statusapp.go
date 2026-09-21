@@ -304,10 +304,15 @@ type chrome struct {
 type statusView struct {
 	chrome
 
-	Configured  bool
-	Confirmed   bool
-	Paused      bool
-	Verdict     verdict
+	Configured bool
+	Confirmed  bool
+	Paused     bool
+	Verdict    verdict
+
+	// Notice is what just happened, when somebody pressed a button. Empty on
+	// an ordinary page load.
+	Notice string
+
 	Running     bool
 	Progress    backupbus.Progress
 	Last        backupbus.Run
@@ -412,7 +417,35 @@ func (s *Server) status(w http.ResponseWriter, r *http.Request) {
 		view.Refresh = 5
 	}
 
-	last, err := s.cfg.Backups.Last(ctx)
+	// What the button just did.
+	//
+	// "started" is the gap this exists for. Starting a run means fetching
+	// credentials over the network before anything registers as running, so
+	// the redirect from the button lands here while Running is still false --
+	// and the page that came back was byte-for-byte the one already on the
+	// screen. No progress bar, no refresh, nothing to say a press had
+	// registered, on the one page whose whole job is to say what is
+	// happening. The notice says it, and a short refresh carries the page
+	// across the gap to the progress bar.
+	switch {
+	case r.URL.Query().Has("started") && !running:
+		view.Notice = "Starting. This page will follow along in a moment."
+
+		view.Refresh = 2
+
+	case r.URL.Query().Has("started"):
+		view.Notice = "Started."
+
+	case r.URL.Query().Has("running"):
+		view.Notice = "A backup is already running, so this did not start another. " +
+			"It is shown above."
+	}
+
+	// The last run with an outcome, never the row a run in progress is still
+	// writing into. That row holds OutcomeFailed as its placeholder, and this
+	// block used to render it: "failed, 0 files, 0 B, verified no", under a
+	// banner saying a backup was running.
+	last, err := s.cfg.Backups.LastFinished(ctx)
 
 	switch {
 	case err == nil:
@@ -680,7 +713,10 @@ func (s *Server) runNow(w http.ResponseWriter, r *http.Request) {
 
 	if err := s.cfg.StartRun(ctx); err != nil {
 		if errors.Is(err, backupbus.ErrAlreadyRunning) {
-			http.Redirect(w, r, "/", http.StatusSeeOther)
+			// Said out loud. A silent redirect to a page that already showed a
+			// backup running is the same page again, and somebody who pressed
+			// a button and saw nothing change presses it again.
+			http.Redirect(w, r, "/?running", http.StatusSeeOther)
 
 			return
 		}
@@ -690,7 +726,7 @@ func (s *Server) runNow(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	http.Redirect(w, r, "/", http.StatusSeeOther)
+	http.Redirect(w, r, "/?started", http.StatusSeeOther)
 }
 
 func (s *Server) chromeFor(title, current string) chrome {

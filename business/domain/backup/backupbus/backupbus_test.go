@@ -552,3 +552,101 @@ func TestARestoreThatComplainsAndReturnsNothingIsNotVerified(t *testing.T) {
 		}
 	}
 }
+
+// TestARunInProgressIsNotAFinishedOne pins the two readings apart.
+//
+// The row a run writes when it starts carries OutcomeFailed, so that a
+// machine losing power leaves a failure rather than something that reads as
+// success. Everything that asks "how did the last backup go" has to skip it,
+// or it answers with a healthy backup's placeholder -- which is what the
+// status page did for hours of a first full upload.
+func TestARunInProgressIsNotAFinishedOne(t *testing.T) {
+	_, store, _ := harness(t, fakeRestic(t, 0, "good"))
+
+	ctx := context.Background()
+
+	done := backupbus.Run{
+		NodeID:     "office-laptop-1",
+		Repository: "s3:https://s3.example.invalid/bucket",
+		StartedAt:  time.Now().Add(-2 * time.Hour),
+		FinishedAt: time.Now().Add(-90 * time.Minute),
+		Outcome:    backupbus.OutcomeSuccess,
+		Message:    "nothing to do",
+	}
+
+	id, err := store.Create(ctx, done)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	done.ID = id
+
+	if err := store.Finish(ctx, done); err != nil {
+		t.Fatal(err)
+	}
+
+	// And the one happening now, exactly as Run writes it.
+	if _, err := store.Create(ctx, backupbus.Run{
+		NodeID:     "office-laptop-1",
+		Repository: "s3:https://s3.example.invalid/bucket",
+		StartedAt:  time.Now(),
+		Outcome:    backupbus.OutcomeFailed,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	newest, err := store.Last(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if !newest.Unfinished() {
+		t.Error("the run that has not finished does not say so")
+	}
+
+	last, err := store.LastFinished(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if last.Unfinished() {
+		t.Error("LastFinished returned a run that has not finished")
+	}
+
+	if last.Outcome != backupbus.OutcomeSuccess {
+		t.Errorf("the last finished run is %q, want the one that succeeded", last.Outcome)
+	}
+}
+
+// TestABackupThatCouldNotStartIsOnTheRecord. Everything before the runner can
+// fail, and all of it used to be a log line: no row, no outcome, and a status
+// page identical to the one before the button was pressed.
+func TestABackupThatCouldNotStartIsOnTheRecord(t *testing.T) {
+	b, store, _ := harness(t, fakeRestic(t, 0, "good"))
+
+	ctx := context.Background()
+
+	req := request()
+
+	if err := b.RecordFailedStart(ctx, req, "the server would not hand over the credentials",
+		time.Now); err != nil {
+		t.Fatalf("RecordFailedStart: %v", err)
+	}
+
+	last, err := store.Last(ctx)
+	if err != nil {
+		t.Fatalf("Last: %v", err)
+	}
+
+	if last.Outcome != backupbus.OutcomeFailed {
+		t.Errorf("outcome %q, want failed", last.Outcome)
+	}
+
+	if last.Unfinished() {
+		t.Error("a backup that never started was recorded as still running")
+	}
+
+	if !strings.Contains(last.Message, "would not hand over") {
+		t.Errorf("the record does not say why: %q", last.Message)
+	}
+}
