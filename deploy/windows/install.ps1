@@ -278,7 +278,13 @@ $action = New-ScheduledTaskAction `
   -Argument "daemon" `
   -WorkingDirectory $InstallDir
 
-# At logon, and again at startup for a machine that is left signed in.
+# At logon, and only at logon.
+#
+# Not at startup as well, which this said for a while and never did: the task
+# runs as the signed-in user with LogonType Interactive, and at startup there
+# is no interactive session for it to run in. A machine that reboots starts
+# the daemon when somebody signs in, and one left signed in never stopped it
+# -- the settings below restart it 999 times at five-minute intervals.
 $triggers = @(
   New-ScheduledTaskTrigger -AtLogOn -User $user
 )

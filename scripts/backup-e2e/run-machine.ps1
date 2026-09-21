@@ -97,7 +97,7 @@ Write-Host "data dir:   $dataDir"
 
 Say 'Building'
 
-$exe  = Join-Path $work 'sion-backup.exe'
+$built = Join-Path $work 'sion-backup.exe'
 
 $logresticinstall = Join-Path $logs 'restic-install.log'
 $loginit          = Join-Path $logs 'init.log'
@@ -109,13 +109,43 @@ $logcheck         = Join-Path $logs 'check.log'
 $logcheckdata     = Join-Path $logs 'checkdata.log'
 $stub = Join-Path $work 'eumaeusstub.exe'
 
-& go build -o $exe ./cmd/sion-backup
+& go build -o $built ./cmd/sion-backup
 if ($LASTEXITCODE -ne 0) { Bad 'the binary did not build'; exit 1 }
 
 & go build -o $stub ./scripts/backup-e2e/eumaeusstub
 if ($LASTEXITCODE -ne 0) { Bad 'the stub did not build'; exit 1 }
 
 OK 'built sion-backup.exe and eumaeusstub.exe'
+
+# ---------------------------------------------------------------------------
+# 1b. Install it, with the installer, as a person would.
+#
+# Not a loose binary run out of a build directory: the thing under test is the
+# machine a person is left with, and that machine's program was put there by
+# install.ps1 and is started by a scheduled task. -Elevated because the runner
+# is an administrator and every real machine here will be installed that way,
+# Volume Shadow Copy being the reason.
+# ---------------------------------------------------------------------------
+
+Say 'Installing'
+
+& ./deploy/windows/install.ps1 -Binary $built -Elevated -Yes
+
+$exe = Join-Path $dataDir 'sion-backup.exe'
+
+if (-not (Test-Path $exe)) { Bad "the installer left no binary at $exe"; exit 1 }
+
+OK "installed at $exe"
+
+$task = Get-ScheduledTask -TaskName 'sion-backup' -ErrorAction SilentlyContinue
+
+if (-not $task) {
+  Bad 'the installer registered no scheduled task'
+} elseif ($task.Actions[0].Execute -ne $exe) {
+  Bad "the task runs $($task.Actions[0].Execute), not $exe"
+} else {
+  OK "task registered, running $($task.Principal.UserId) at $($task.Principal.RunLevel)"
+}
 
 # ---------------------------------------------------------------------------
 # 2. A corpus.
@@ -192,6 +222,12 @@ OK "serving $repoUrl"
 # the default is the thing every real machine will run with.
 # ---------------------------------------------------------------------------
 
+# Far enough ahead that the backups below are done before it comes round, and
+# close enough that this script can wait for it. The daemon's scheduler ticks
+# once a minute and reads local time.
+$slot = (Get-Date).AddMinutes(5)
+$scheduledAt = $slot.ToString('HH:mm')
+
 New-Item -ItemType Directory -Force -Path $dataDir | Out-Null
 
 # A TOML literal string, single-quoted: a Windows path is mostly backslashes
@@ -207,7 +243,7 @@ confirmed  = true
 url = "http://$stubAddr"
 
 [schedule]
-times = ["03:00"]
+times = ["$scheduledAt"]
 jitter_minutes = 0
 min_interval = "0s"
 
@@ -460,6 +496,88 @@ if ($LASTEXITCODE -eq 0) {
   Bad 'reading back a week''s slice of pack data failed'
   Get-Content $logcheckdata | Select-Object -Last 10 | ForEach-Object { Note $_ }
 }
+
+# ---------------------------------------------------------------------------
+# 11. The scheduled task, and a backup nobody asked for.
+#
+# Everything above drove the program by hand. A real machine is not driven by
+# hand: a task starts the daemon at logon, the daemon watches the clock, and
+# the backup happens while nobody is looking. That is the product. Nothing had
+# ever watched it happen.
+#
+# Two claims, and they are separate. That the task starts the daemon is about
+# install.ps1 -- the path it registered, the account, the privileges. That a
+# backup then happens on its own is about the daemon's scheduler, which is
+# reading a slot this script put five minutes into the future before any of
+# the backups above ran.
+# ---------------------------------------------------------------------------
+
+Say 'The scheduled task'
+
+$before = @(& $restic snapshots --json 2>$null | ConvertFrom-Json).Count
+
+Start-ScheduledTask -TaskName 'sion-backup'
+
+$daemon = $null
+
+for ($i = 0; $i -lt 60; $i++) {
+  Start-Sleep -Seconds 1
+
+  $daemon = Get-Process -Name 'sion-backup' -ErrorAction SilentlyContinue
+
+  if ($daemon) { break }
+}
+
+if (-not $daemon) {
+  Bad 'the task did not start the program'
+  Note "task state: $((Get-ScheduledTask -TaskName 'sion-backup').State)"
+  Note "last result: $((Get-ScheduledTaskInfo -TaskName 'sion-backup').LastTaskResult)"
+} else {
+  OK "the task started the program (pid $($daemon[0].Id))"
+
+  $listening = $null
+
+  for ($i = 0; $i -lt 30; $i++) {
+    $listening = Get-NetTCPConnection -LocalPort 7391 -State Listen -ErrorAction SilentlyContinue
+
+    if ($listening) { break }
+
+    Start-Sleep -Seconds 1
+  }
+
+  if ($listening) {
+    OK 'the status page is listening on 127.0.0.1:7391'
+  } else {
+    Bad 'the program is running but nothing is listening on 127.0.0.1:7391'
+  }
+}
+
+# And now the clock. The slot is at $scheduledAt; the scheduler ticks once a
+# minute, so the wait is until four minutes past it before giving up.
+Say "Waiting for the scheduled backup at $scheduledAt"
+
+$deadline = $slot.AddMinutes(4)
+$after    = $before
+
+while ((Get-Date) -lt $deadline) {
+  Start-Sleep -Seconds 15
+
+  $after = @(& $restic snapshots --json 2>$null | ConvertFrom-Json).Count
+
+  if ($after -gt $before) { break }
+}
+
+if ($after -gt $before) {
+  OK "the machine backed itself up with nobody driving it ($before -> $after snapshots)"
+} else {
+  Bad "no scheduled backup by $($deadline.ToString('HH:mm:ss')); still $after snapshots"
+  Note "the task starts the daemon; the daemon's own scheduler is what runs a backup"
+  Note "slot was $scheduledAt, jitter 0, tick one minute"
+}
+
+Stop-ScheduledTask -TaskName 'sion-backup' -ErrorAction SilentlyContinue
+Unregister-ScheduledTask -TaskName 'sion-backup' -Confirm:$false -ErrorAction SilentlyContinue
+Get-Process -Name 'sion-backup' -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
 
 # ---------------------------------------------------------------------------
 # Done. The repository is left for the Linux reaper, which deletes everything
