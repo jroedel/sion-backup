@@ -521,6 +521,31 @@ func (d *deps) startRun(daemonCtx context.Context) func(context.Context) error {
 // once. They arrive over the network, live for the length of the run, and are
 // wiped on the way out — nothing reaches the disk.
 func (d *deps) backup(ctx context.Context, plan planbus.Plan) error {
+	req, started, err := d.runBackup(ctx, plan)
+
+	// A backup that never reached the runner recorded nothing, and a page
+	// with no row on it is a page that says a button did nothing. Everything
+	// up to that point can fail -- no folders chosen, no restic, credentials
+	// refused, a bucket that will not open -- and all of it used to be a log
+	// line on a machine whose owner is looking at a web page.
+	//
+	// Not for ErrAlreadyRunning: that is the runner declining to start a
+	// second backup, the first one is on the page already, and a failure row
+	// for it would be a lie about a machine that is working.
+	if err != nil && !started && !errors.Is(err, backupbus.ErrAlreadyRunning) {
+		if recErr := d.backups.RecordFailedStart(ctx, req, err.Error(), time.Now); recErr != nil {
+			d.log.Warn("could not record a backup that failed to start", "err", recErr)
+		}
+	}
+
+	return err
+}
+
+// runBackup is the work, and reports whether it got as far as the runner.
+//
+// The flag rather than an error type, because "did this record itself" is a
+// fact about how far execution reached and not about what went wrong.
+func (d *deps) runBackup(ctx context.Context, plan planbus.Plan) (backupbus.Request, bool, error) {
 	// The one gate every way of starting a backup passes through: the
 	// scheduler, `sion-backup run`, and the status page's button. A plan with
 	// no targets can be stored -- it is what a machine holds between enrolment
@@ -528,21 +553,21 @@ func (d *deps) backup(ctx context.Context, plan planbus.Plan) error {
 	// record a success, and turn the dashboard green for a machine that is not
 	// backed up.
 	if err := plan.Runnable(); err != nil {
-		return err
+		return backupbus.Request{NodeID: plan.NodeID}, false, err
 	}
 
 	// Before the credentials, and before anything is reported as started:
 	// this is the machine making sure it still has the program that does the
 	// work. Ordinarily it is one exec of `restic version` and nothing else.
 	if err := d.ensureRestic(ctx); err != nil {
-		return err
+		return backupbus.Request{NodeID: plan.NodeID}, false, err
 	}
 
 	// Fetched now, used once, wiped on the way out. Nothing here is written to
 	// this machine's disk — see business/domain/credential.
 	set, err := d.creds.ForRun(ctx)
 	if err != nil {
-		return err
+		return backupbus.Request{NodeID: plan.NodeID}, false, err
 	}
 	defer set.Wipe()
 
@@ -589,7 +614,7 @@ func (d *deps) backup(ctx context.Context, plan planbus.Plan) error {
 	// the server just named has not started a backup, so it must not report
 	// one. See openRepository for the rule it holds.
 	if err := d.openRepository(ctx, plan, set); err != nil {
-		return err
+		return req, false, err
 	}
 
 	// The dashboard is told a run has started before it starts, so a machine
@@ -598,7 +623,10 @@ func (d *deps) backup(ctx context.Context, plan planbus.Plan) error {
 
 	run, err := d.backups.Run(ctx, req, time.Now)
 	if err != nil {
-		return err
+		// The runner writes its own row from the moment it accepts a run, so
+		// anything it reports has already been recorded -- except a refusal
+		// to start a second one, which records nothing and needs nothing.
+		return req, !errors.Is(err, backupbus.ErrAlreadyRunning), err
 	}
 
 	d.log.Info("backup finished",
@@ -646,7 +674,7 @@ func (d *deps) backup(ctx context.Context, plan planbus.Plan) error {
 		}
 	}
 
-	return nil
+	return req, true, nil
 }
 
 // measureEvery is how often the repository size is recounted.

@@ -106,6 +106,21 @@ form.settings { display: grid; gap: 1.1rem; max-width: 40rem; }
 label { display: block; font-weight: 550; margin-bottom: 0.2rem; }
 .hint { color: var(--muted); font-size: 0.88rem; margin: 0.2rem 0 0; }
 
+/* What just happened, when somebody pressed a button.
+ *
+ * Under the verdict rather than above it: the verdict answers "is this
+ * computer backed up", which is the question the page exists for, and a
+ * notice about a click is a smaller thing than that however recently it
+ * happened. */
+.notice {
+  margin: -0.75rem 0 1.5rem;
+  padding: 0.5rem 0.75rem;
+  border-left: 3px solid var(--fg);
+  background: var(--panel);
+  color: var(--muted);
+  font-size: 0.92rem;
+}
+
 input[type=text], input[type=number], textarea {
   width: 100%;
   padding: 0.45rem 0.55rem;

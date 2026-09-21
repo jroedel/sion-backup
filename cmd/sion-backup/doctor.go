@@ -243,6 +243,14 @@ func doctorCmd(args []string) error {
 
 		age := time.Since(last.StartedAt).Round(time.Minute)
 
+		// A run in progress carries OutcomeFailed as its placeholder until it
+		// finishes, so reading the outcome of the newest row reports a
+		// healthy backup as a failed one -- for as long as it takes, which on
+		// a first full upload is most of a day.
+		if last.Unfinished() {
+			return fmt.Sprintf("a backup has been running for %s", age), nil
+		}
+
 		if !last.Outcome.Good() {
 			return "", fmt.Errorf("%s, %s ago: %s", last.Outcome, age, last.Message)
 		}

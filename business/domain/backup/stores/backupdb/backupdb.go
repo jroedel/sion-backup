@@ -178,6 +178,33 @@ func (s *Store) Last(ctx context.Context) (backupbus.Run, error) {
 	return runs[0], nil
 }
 
+// LastFinished returns the most recent run that has an outcome.
+//
+// Separate from Last, which is the most recent row of any kind. A run still in
+// progress holds OutcomeFailed as its placeholder, and a caller asking "how
+// did the last backup go" must not be handed one.
+func (s *Store) LastFinished(ctx context.Context) (backupbus.Run, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT `+columns+` FROM run
+		 WHERE finished_at IS NOT NULL
+		 ORDER BY id DESC LIMIT 1`)
+	if err != nil {
+		return backupbus.Run{}, fmt.Errorf("backupdb: reading the last finished run: %w", err)
+	}
+	defer rows.Close()
+
+	runs, err := scanRuns(rows)
+	if err != nil {
+		return backupbus.Run{}, err
+	}
+
+	if len(runs) == 0 {
+		return backupbus.Run{}, backupbus.ErrNoRuns
+	}
+
+	return runs[0], nil
+}
+
 // Unreported returns finished runs the fleet dashboard has not been told
 // about, oldest first so the dashboard receives them in the order they
 // happened.
