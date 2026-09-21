@@ -1,6 +1,9 @@
 package restic
 
-import "testing"
+import (
+	"runtime"
+	"testing"
+)
 
 func TestTheHostOfARepositoryURL(t *testing.T) {
 	for _, tc := range []struct{ url, want string }{
@@ -53,5 +56,43 @@ func TestAnOrdinaryFailureIsNotAResolverOne(t *testing.T) {
 		if host, ok := (&Error{Stderr: stderr}).Unresolvable(); ok {
 			t.Errorf("%q was read as a failure to look up %q", stderr, host)
 		}
+	}
+}
+
+// TestWindowsIsNotAskedForOneFileSystem is a two-second failure that nothing
+// would have caught: restic implements --one-file-system with device IDs,
+// Windows has none, and it refuses the whole backup rather than the flag.
+//
+//	Fatal: Device IDs are not supported on Windows
+//	exit 1, no snapshot
+//
+// Every backup on every Windows machine failed this way until a gate ran one.
+func TestWindowsIsNotAskedForOneFileSystem(t *testing.T) {
+	if supportsOneFileSystem("windows") {
+		t.Error("windows would be asked for --one-file-system")
+	}
+
+	for _, goos := range []string{"linux", "darwin", "freebsd"} {
+		if !supportsOneFileSystem(goos) {
+			t.Errorf("%s lost --one-file-system, which it supports and needs", goos)
+		}
+	}
+}
+
+// TestTheFlagFollowsThePlatform asserts the rule reaches the command line, on
+// whichever platform this test is running.
+func TestTheFlagFollowsThePlatform(t *testing.T) {
+	args := backupArgs(BackupOptions{OneFileSystem: true, Targets: []string{"/srv"}})
+
+	var found bool
+
+	for _, a := range args {
+		if a == "--one-file-system" {
+			found = true
+		}
+	}
+
+	if want := supportsOneFileSystem(runtime.GOOS); found != want {
+		t.Errorf("--one-file-system present = %v on %s, want %v", found, runtime.GOOS, want)
 	}
 }
